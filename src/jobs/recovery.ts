@@ -77,7 +77,7 @@ export interface StartupRecoveryOptions {
 }
 
 export class StartupRecovery {
-  private started = false;
+  private initializationPromise: Promise<void> | null = null;
   private readyState = false;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
@@ -94,9 +94,21 @@ export class StartupRecovery {
     return this.readyState;
   }
 
-  async start(): Promise<void> {
-    if (this.started) return;
-    this.started = true;
+  start(): Promise<void> {
+    if (this.initializationPromise !== null) {
+      return this.initializationPromise;
+    }
+    const initializationPromise = this.initialize();
+    this.initializationPromise = initializationPromise;
+    void initializationPromise.catch(() => {
+      if (this.initializationPromise === initializationPromise) {
+        this.initializationPromise = null;
+      }
+    });
+    return initializationPromise;
+  }
+
+  private async initialize(): Promise<void> {
     try {
       await this.options.cleanupOrphans?.();
       this.failInterruptedQueuedJobs();
@@ -114,7 +126,6 @@ export class StartupRecovery {
       this.sweepTimer.unref();
       this.readyState = true;
     } catch (cause) {
-      this.started = false;
       this.readyState = false;
       if (this.sweepTimer !== null) {
         this.destroyInterval(this.sweepTimer);

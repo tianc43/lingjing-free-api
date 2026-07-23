@@ -17,7 +17,11 @@ import {
 } from "../../src/jobs/recovery.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
-import type { JobRecord, NewJob } from "../../src/jobs/types.js";
+import type {
+  CapacityLease,
+  JobRecord,
+  NewJob
+} from "../../src/jobs/types.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 
 const directories: string[] = [];
@@ -55,6 +59,49 @@ function submitting(repository: SqliteJobRepository): JobRecord {
   });
 }
 
+function recoveryTransport(records: readonly unknown[] = []): {
+  transport: LingjingTransport;
+  read: ReturnType<typeof vi.fn>;
+  submitOnce: ReturnType<typeof vi.fn>;
+} {
+  const read = vi.fn(() => Promise.resolve({ records }));
+  const submitOnce = vi.fn(() => Promise.resolve({}));
+  return {
+    transport: { read, submitOnce } as unknown as LingjingTransport,
+    read,
+    submitOnce
+  };
+}
+
+function submissionSensitiveResumeRunner(
+  repository: SqliteJobRepository,
+  transport: LingjingTransport
+): (job: JobRecord, lease: CapacityLease) => Promise<void> {
+  return async (job, lease) => {
+    try {
+      if (job.status === "queued" || job.status === "submitting") {
+        await transport.submitOnce(
+          "/joycreator/AIModelApiConsole/executeByApiId",
+          { apiId: job.apiId, params: [] }
+        );
+        return;
+      }
+      if (job.status !== "discovering") return;
+      const discovered = await discoverAsset(transport, job);
+      const asset = discovered.asset;
+      if (asset?.taskId === null || asset?.taskId === undefined) return;
+      repository.transition(job.id, ["discovering"], {
+        status: "processing",
+        upstreamTaskId: asset.taskId,
+        creationCode: asset.creationCode,
+        discoveredAt: 10_200
+      });
+    } finally {
+      lease.release();
+    }
+  };
+}
+
 describe("startup recovery", () => {
   it("removes real orphan media files older than the last clean start", async () => {
     const directory = mkdtempSync(join(tmpdir(), "lingjing-orphans-"));
@@ -82,12 +129,10 @@ describe("startup recovery", () => {
   it("recovers a submitting job without issuing another generation POST", async () => {
     const repository = createRepository();
     const job = submitting(repository);
-    const generationPost = vi.fn();
-    const resumeJob = vi.fn((recovered: JobRecord) => {
-      expect(recovered.status).toBe("discovering");
-      expect(generationPost).not.toHaveBeenCalled();
-      return Promise.resolve();
-    });
+    const upstream = recoveryTransport();
+    const resumeJob = vi.fn(
+      submissionSensitiveResumeRunner(repository, upstream.transport)
+    );
     const recovery = new StartupRecovery({
       repository,
       capacity: new CapacityManager(5),
@@ -103,7 +148,7 @@ describe("startup recovery", () => {
     expect(recovery.ready).toBe(true);
     expect(resumeJob).toHaveBeenCalledTimes(1);
     expect(repository.findById(job.id)?.status).toBe("discovering");
-    expect(generationPost).toHaveBeenCalledTimes(0);
+    expect(upstream.submitOnce).toHaveBeenCalledTimes(0);
     recovery.close();
     repository.close();
   });
@@ -126,9 +171,7 @@ describe("startup recovery", () => {
     });
     firstRepository.close();
 
-    const submitOnce = vi.fn(() => Promise.resolve({}));
-    const read = vi.fn(() => Promise.resolve({
-      records: [{
+    const upstream = recoveryTransport([{
         id: "fixture-asset",
         scene: "image-generation",
         modelCode: "model-v1",
@@ -137,32 +180,16 @@ describe("startup recovery", () => {
         creationCode: "fixture-creation",
         reqParam: JSON.stringify(payload),
         status: 0
-      }]
-    }));
-    const transport = {
-      read,
-      submitOnce
-    } as unknown as LingjingTransport;
+      }]);
     const secondRepository = new SqliteJobRepository(databasePath);
     const recovery = new StartupRecovery({
       repository: secondRepository,
       capacity: new CapacityManager(5),
       registry: new JobRunnerRegistry(),
-      resumeJob: async (job, lease) => {
-        const discovered = await discoverAsset(transport, job);
-        expect(discovered.kind).toBe("unique");
-        const asset = discovered.asset;
-        if (asset?.taskId === null || asset?.taskId === undefined) {
-          throw new Error("Fixture asset task id was not discovered");
-        }
-        secondRepository.transition(job.id, ["discovering"], {
-          status: "processing",
-          upstreamTaskId: asset.taskId,
-          creationCode: asset.creationCode,
-          discoveredAt: 10_200
-        });
-        lease.release();
-      },
+      resumeJob: submissionSensitiveResumeRunner(
+        secondRepository,
+        upstream.transport
+      ),
       unknownCapacityHoldMs: 900_000
     });
 
@@ -170,7 +197,7 @@ describe("startup recovery", () => {
       await recovery.start();
       await recovery.waitUntilIdle();
 
-      expect(submitOnce).toHaveBeenCalledTimes(0);
+      expect(upstream.submitOnce).toHaveBeenCalledTimes(0);
       expect(secondRepository.findById(created.id)).toMatchObject({
         status: "processing",
         upstreamTaskId: "fixture-task",
@@ -214,7 +241,10 @@ describe("startup recovery", () => {
   it("fails an interrupted queued job without any upstream request", async () => {
     const repository = createRepository();
     const job = repository.createOrGet(fixtureNewJob).job;
-    const resumeJob = vi.fn();
+    const upstream = recoveryTransport();
+    const resumeJob = vi.fn(
+      submissionSensitiveResumeRunner(repository, upstream.transport)
+    );
     const recovery = new StartupRecovery({
       repository,
       capacity: new CapacityManager(5),
@@ -230,6 +260,7 @@ describe("startup recovery", () => {
       errorCode: "interrupted_before_submit"
     });
     expect(resumeJob).not.toHaveBeenCalled();
+    expect(upstream.submitOnce).toHaveBeenCalledTimes(0);
     recovery.close();
     repository.close();
   });
@@ -258,6 +289,67 @@ describe("startup recovery", () => {
     await recovery.start();
     expect(recovery.ready).toBe(true);
     expect(attempts).toBe(2);
+    recovery.close();
+    repository.close();
+  });
+
+  it("can retry startup after synchronous orphan cleanup failure", async () => {
+    const repository = createRepository();
+    let attempts = 0;
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: new CapacityManager(5),
+      registry: new JobRunnerRegistry(),
+      resumeJob: vi.fn(() => Promise.resolve()),
+      unknownCapacityHoldMs: 900_000,
+      cleanupOrphans: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("synchronous cleanup failure");
+        return Promise.resolve();
+      }
+    });
+
+    await expect(recovery.start()).rejects.toThrowError(
+      "synchronous cleanup failure"
+    );
+    await recovery.start();
+    expect(recovery.ready).toBe(true);
+    expect(attempts).toBe(2);
+    recovery.close();
+    repository.close();
+  });
+
+  it("shares one initialization promise across concurrent starts", async () => {
+    const repository = createRepository();
+    let releaseCleanup: (() => void) | undefined;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupOrphans = vi.fn(() => cleanupGate);
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: new CapacityManager(5),
+      registry: new JobRunnerRegistry(),
+      resumeJob: vi.fn(() => Promise.resolve()),
+      unknownCapacityHoldMs: 900_000,
+      cleanupOrphans
+    });
+
+    const first = recovery.start();
+    const second = recovery.start();
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(second).toBe(first);
+    expect(secondSettled).toBe(false);
+    expect(cleanupOrphans).toHaveBeenCalledTimes(1);
+    expect(recovery.ready).toBe(false);
+    releaseCleanup?.();
+    await Promise.all([first, second]);
+    expect(recovery.ready).toBe(true);
     recovery.close();
     repository.close();
   });

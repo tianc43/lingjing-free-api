@@ -152,10 +152,8 @@ export async function listRecentAssets(
     for (const asset of page) {
       if (asset.createTime < earliest) {
         reachedOldRecord = true;
-        if (collected.has(asset.id)) {
-          collected.delete(asset.id);
-          conflictingIds.add(asset.id);
-        }
+        collected.delete(asset.id);
+        conflictingIds.add(asset.id);
       } else if (!conflictingIds.has(asset.id)) {
         const existing = collected.get(asset.id);
         const merged = existing === undefined

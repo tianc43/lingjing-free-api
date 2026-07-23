@@ -179,7 +179,7 @@ describe("listRecentAssets", () => {
         : [
             asset({
               id: "enriched",
-              modelCode: "model-v2",
+              modelCode: "model-v1",
               reqParam: {
                 ...submitPayload,
                 params: [{ idx: "1", values: "different request" }]
@@ -208,6 +208,22 @@ describe("listRecentAssets", () => {
             asset({ id: "clock-conflict", createTime: 7_999 }),
             asset({ id: "old", createTime: 7_999 })
           ]
+    }));
+
+    const assets = await listRecentAssets(
+      { read } as unknown as LingjingTransport,
+      jobFixture
+    );
+
+    expect(assets).toEqual([]);
+  });
+
+  it("keeps an old id blacklisted when a recent representation follows", async () => {
+    const read = vi.fn(() => Promise.resolve({
+      records: [
+        asset({ id: "old-then-recent", createTime: 7_999 }),
+        asset({ id: "old-then-recent", createTime: 10_100 })
+      ]
     }));
 
     const assets = await listRecentAssets(
