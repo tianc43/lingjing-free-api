@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,7 +21,7 @@ async function createClientWithSessionMode(mode: "browser-state" | "cookie-file"
   mocks.push(mock);
   const session = mock.createSession(mode);
   await session.seed();
-  return { mock, client: new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher, sleep: () => Promise.resolve() }) };
+  return { mock, session, client: new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher, sleep: () => Promise.resolve() }) };
 }
 
 describe("LingjingClient contract", () => {
@@ -58,7 +58,7 @@ describe("LingjingClient contract", () => {
     const { client, mock } = await createClientWithSessionMode();
     mock.respondWithResult({ single: { uploadUrl: "https://object-storage.example/signed-part" } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
-    await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "leak", cookie: "leak", origin: "leak", referer: "leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
+    await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "leak", cookie: "leak", origin: "leak", referer: "leak", "x-csrf-token": "leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
     expect(mock.objectStorageHeaders.cookie).toBeUndefined();
     expect(mock.objectStorageHeaders["x-csrf-token"]).toBeUndefined();
     expect(mock.objectStorageHeaders.authorization).toBeUndefined();
@@ -101,6 +101,233 @@ describe("LingjingClient contract", () => {
     mock.respondWithResult({ uploadUrl: signed.toString() });
     await client.uploadApi("/some-other-upload", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
+  });
+
+  it.each([
+    null,
+    [],
+    { single: null },
+    { single: [] },
+    { single: {} },
+    { single: { uploadUrl: null } },
+    { single: { uploadUrl: "not-a-url" } },
+    { single: { uploadUrl: "http://object-storage.example/signed-part" } },
+    { multipart: null },
+    { multipart: [] },
+    { multipart: {} },
+    { multipart: { parts: null } },
+    { multipart: { parts: {} } },
+    { multipart: { parts: [null] } },
+    { multipart: { parts: [{ uploadUrl: null }] } },
+    {
+      single: { uploadUrl: "https://object-storage.example/signed-part" },
+      multipart: { parts: [null] }
+    }
+  ])("rejects malformed upload init shapes without registering a URL: %j", async (result) => {
+    const { client, mock } = await createClientWithSessionMode();
+    const signed = new URL("https://object-storage.example/signed-part");
+    mock.respondWithResult(result);
+    await expect(client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("init"),
+      timeoutMs: 5_000
+    })).rejects.toMatchObject({ code: "lingjing_upstream_error" });
+    await expect(client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    })).rejects.toThrow("trusted");
+  });
+
+  it("registers every validated HTTPS multipart upload URL", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const first = new URL("https://object-storage.example/part-one");
+    const second = new URL("https://object-storage.example/part-two");
+    mock.respondWithResult({
+      multipart: {
+        parts: [
+          { uploadUrl: first.toString() },
+          { uploadUrl: second.toString() }
+        ]
+      }
+    });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("init"),
+      timeoutMs: 5_000
+    });
+    await expect(client.putSigned(first, {
+      method: "PUT",
+      body: Buffer.from("first"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+    await expect(client.putSigned(second, {
+      method: "PUT",
+      body: Buffer.from("second"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+  });
+
+  it("refreshes a CSRF read failure once and retries with the new cookie and token", async () => {
+    const mock = new MockLingjing();
+    mocks.push(mock);
+    const session = mock.createSession("browser-state");
+    await session.seed();
+    session.refreshOnInvalidate("refreshed-csrf");
+    const refreshingClient = new LingjingClient({
+      baseUrl: mock.baseUrl,
+      session,
+      dispatcher: mock.dispatcher,
+      sleep: () => Promise.resolve()
+    });
+    mock.failCsrfReads(2);
+    await expect(refreshingClient.read("/csrf-refresh")).resolves.toEqual({ ok: true });
+    expect(mock.count("/csrf-refresh")).toBe(3);
+    expect(session.invalidateCount).toBe(1);
+    expect(session.refreshCount).toBe(1);
+    expect(session.loadCount).toBe(4);
+    for (const retriedHeaders of mock.headersFor("/csrf-refresh").slice(1)) {
+      expect(retriedHeaders.cookie).toContain("csrfToken=refreshed-csrf");
+      expect(retriedHeaders.cookie).toContain("session=refreshed-session");
+      expect(retriedHeaders["x-csrf-token"]).toBe("refreshed-csrf");
+    }
+  });
+
+  it("applies Set-Cookie before reporting malformed JSON", async () => {
+    const mock = new MockLingjing();
+    mocks.push(mock);
+    const session = mock.createSession("browser-state");
+    await session.seed();
+    const malformedClient = new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher });
+    mock.respondWithSetCookie("csrfToken=malformed-rotated; Path=/; Secure");
+    mock.respondWithMalformedJson();
+    await expect(malformedClient.submitOnce("/submit-malformed-cookie", {}))
+      .rejects.toMatchObject({ code: "lingjing_submit_ambiguous" });
+    expect(session.applySetCookiesCount).toBe(1);
+    await expect(session.cookieString()).resolves.toContain("csrfToken=malformed-rotated");
+  });
+
+  it("keeps a timed out submit single-shot and safely mapped", async () => {
+    const { mock, session } = await createClientWithSessionMode();
+    const client = new LingjingClient({
+      baseUrl: mock.baseUrl,
+      session,
+      dispatcher: mock.timeoutDispatcher
+    });
+    vi.useFakeTimers();
+    try {
+      const outcome = client.submitOnce("/submit-timeout", {}).then(
+        () => null,
+        (cause: unknown) => cause
+      );
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(await outcome).toMatchObject({
+        code: "lingjing_submit_ambiguous",
+        statusCode: 502
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(mock.lastSubmitHeadersTimeout).toBe(15_000);
+    expect(mock.count("/submit-timeout")).toBe(1);
+  });
+
+  it.each([
+    ["malformed", "lingjing_submit_ambiguous", 502],
+    ["csrf", "lingjing_csrf_expired", 503]
+  ] as const)("keeps %s submit failures single-shot and safely mapped", async (mode, expectedCode, expectedStatusCode) => {
+    const { client, mock } = await createClientWithSessionMode();
+    if (mode === "malformed") mock.respondWithMalformedJson();
+    if (mode === "csrf") mock.respondWithCsrfError();
+    const path = `/submit-${mode}`;
+    await expect(client.submitOnce(path, {})).rejects.toMatchObject({
+      code: expectedCode,
+      statusCode: expectedStatusCode
+    });
+    expect(mock.count(path)).toBe(1);
+  });
+
+  it("times out a signed upload without retrying", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const signed = new URL("https://object-storage.example/timeout-part");
+    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("init"),
+      timeoutMs: 5_000
+    });
+    await expect(client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5
+    })).rejects.toThrow();
+    expect(mock.count("/timeout-part")).toBe(1);
+  });
+
+  it("does not follow signed upload redirects and explicitly disables them", async () => {
+    const mock = new MockLingjing();
+    mocks.push(mock);
+    const session = mock.createSession("browser-state");
+    await session.seed();
+    const client = new LingjingClient({
+      baseUrl: mock.baseUrl,
+      session,
+      dispatcher: mock.recordingDispatcher
+    });
+    const signed = new URL("https://object-storage.example/redirect-part");
+    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("init"),
+      timeoutMs: 5_000
+    });
+    const response = await client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    });
+    expect(response.statusCode).toBe(302);
+    expect(mock.lastMaxRedirections).toBe(0);
+    expect(mock.count("/redirect-part")).toBe(1);
+    expect(mock.count("/redirect-target")).toBe(0);
+  });
+
+  it("returns raw signed status and preserves duplicate response headers", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const signed = new URL("https://object-storage.example/raw-part");
+    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("init"),
+      timeoutMs: 5_000
+    });
+    mock.respondToSignedUpload(206, { "set-cookie": ["part=a", "part=b"] });
+    await expect(client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({
+      statusCode: 206,
+      headers: { "set-cookie": ["part=a", "part=b"] }
+    });
+  });
+
+  it("loads a fresh session for each logical Lingjing request", async () => {
+    const mock = new MockLingjing();
+    mocks.push(mock);
+    const session = mock.createSession("browser-state");
+    await session.seed();
+    const client = new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher });
+    await client.read("/fresh-read");
+    expect(session.loadCount).toBe(1);
+    await client.submitOnce("/fresh-submit", {});
+    expect(session.loadCount).toBe(2);
+    await client.uploadApi("/fresh-upload", {
+      method: "POST",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    });
+    expect(session.loadCount).toBe(3);
   });
 
   it("rejects absolute, scheme-relative, and cross-origin logical paths", async () => {

@@ -1,6 +1,6 @@
 import { request, type Dispatcher } from "undici";
 import { Readable } from "node:stream";
-import { AppError } from "../errors.js";
+import { AppError, errors } from "../errors.js";
 import { type Envelope, unwrapEnvelope } from "./envelope.js";
 import { SubmitAmbiguousError, TransportUncertainError, isTransportUncertain } from "./error-map.js";
 import type { LingjingClientOptions, LingjingTransport, ReadRequest, SignedUploadResponse, UploadRequest } from "./types.js";
@@ -20,6 +20,12 @@ function headerRecord(headers: Record<string, string | string[] | undefined>): R
 
 function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 export class LingjingClient implements LingjingTransport {
@@ -87,15 +93,17 @@ export class LingjingClient implements LingjingTransport {
     const controller = new AbortController();
     const timer = setTimeout(() => { controller.abort(); }, init.timeoutMs);
     try {
-      const response = await request(url, {
+      const requestOptions: NonNullable<Parameters<typeof request>[1]> & { maxRedirections: number } = {
         method: init.method,
         headers,
         body: init.body as never,
         signal: controller.signal,
         ...(this.dispatcher === undefined ? {} : { dispatcher: this.dispatcher }),
         headersTimeout: init.timeoutMs,
-        bodyTimeout: init.timeoutMs
-      });
+        bodyTimeout: init.timeoutMs,
+        maxRedirections: 0
+      };
+      const response = await request(url, requestOptions);
       await response.body.dump();
       return { statusCode: response.statusCode, headers: headerRecord(response.headers) };
     } finally { clearTimeout(timer); }
@@ -142,19 +150,31 @@ export class LingjingClient implements LingjingTransport {
   }
 
   private registerSignedUploadUrls(value: unknown): void {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return;
-    const result = value as { single?: { uploadUrl?: unknown }; multipart?: { parts?: unknown } };
-    const urls: unknown[] = [];
-    if (result.single !== undefined) urls.push(result.single.uploadUrl);
-    if (result.multipart !== undefined && Array.isArray(result.multipart.parts)) {
-      for (const part of result.multipart.parts) if (typeof part === "object" && part !== null) urls.push((part as { uploadUrl?: unknown }).uploadUrl);
+    if (!isPlainObject(value)) throw errors.upstream();
+    const candidates: unknown[] = [];
+    if ("single" in value) {
+      if (!isPlainObject(value.single)) throw errors.upstream();
+      candidates.push(value.single.uploadUrl);
     }
-    for (const candidate of urls) {
-      if (typeof candidate !== "string") continue;
+    if ("multipart" in value) {
+      if (!isPlainObject(value.multipart) || !Array.isArray(value.multipart.parts)) throw errors.upstream();
+      for (const part of value.multipart.parts) {
+        if (!isPlainObject(part)) throw errors.upstream();
+        candidates.push(part.uploadUrl);
+      }
+    }
+    const validatedUrls = new Set<string>();
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string") throw errors.upstream();
       try {
         const url = new URL(candidate);
-        if (url.protocol === "https:" && url.origin !== this.baseUrl.origin) this.signedUploadUrls.add(url.toString());
-      } catch { /* schema URL is invalid */ }
+        if (url.protocol !== "https:" || url.origin === this.baseUrl.origin) throw errors.upstream();
+        validatedUrls.add(url.toString());
+      } catch (cause) {
+        if (cause instanceof AppError) throw cause;
+        throw errors.upstream();
+      }
     }
+    for (const url of validatedUrls) this.signedUploadUrls.add(url);
   }
 }
