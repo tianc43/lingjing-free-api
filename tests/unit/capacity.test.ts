@@ -95,6 +95,29 @@ describe("CapacityManager", () => {
     expect(manager.counts().active).toBe(0);
   });
 
+  it("does not give a duplicate admission ownership of an active job lease", async () => {
+    const manager = new CapacityManager(1, 2);
+    const owner = await manager.admit("request-owner").acquire("job-shared");
+    const duplicateAdmission = manager.admit("request-duplicate");
+    const duplicate = await duplicateAdmission.acquire("job-shared");
+    let laterGranted = false;
+    const laterPromise = manager.admit("request-later").acquire("job-later").then((lease) => {
+      laterGranted = true;
+      return lease;
+    });
+
+    duplicate.release();
+    duplicateAdmission.release();
+    await Promise.resolve();
+    expect(laterGranted).toBe(false);
+    expect(manager.activeJobIds()).toEqual(["job-shared"]);
+
+    owner.release();
+    const later = await laterPromise;
+    expect(laterGranted).toBe(true);
+    later.release();
+  });
+
   it("rejects converting one admission to different job IDs", async () => {
     const manager = new CapacityManager(1);
     const admission = manager.admit("request-a");
@@ -118,13 +141,54 @@ describe("CapacityManager", () => {
 
   it("keeps unknown jobs leased until hold expiry", () => {
     const manager = new CapacityManager(5);
-    manager.restore("job-unknown", "unknown", 10_000);
+    manager.restore("job-unknown", "unknown", 10_000, 0);
 
     expect(manager.activeJobIds()).toContain("job-unknown");
     manager.expireUnknown(9_999);
     expect(manager.activeJobIds()).toContain("job-unknown");
     manager.expireUnknown(10_000);
     expect(manager.activeJobIds()).not.toContain("job-unknown");
+  });
+
+  it.each(["processing", "discovering", "submitting"] as const)(
+    "clears an unknown hold when recovery refreshes the job to %s",
+    (status) => {
+      const manager = new CapacityManager(1);
+      const lease = manager.restore("job-refresh", "unknown", 10_000, 0);
+
+      expect(manager.restore("job-refresh", status, null, 1)).toBe(lease);
+      manager.expireUnknown(10_000);
+      expect(manager.activeJobIds()).toContain("job-refresh");
+      lease?.release();
+    }
+  );
+
+  it("uses the current clock by default when restoring unknown jobs", () => {
+    const manager = new CapacityManager(1);
+
+    expect(manager.restore(
+      "job-expired-default-clock",
+      "unknown",
+      Date.now() - 1
+    )).toBeNull();
+    expect(manager.counts().active).toBe(0);
+  });
+
+  it("releases an existing lease refreshed to an expired unknown state", async () => {
+    const manager = new CapacityManager(1, 1);
+    manager.restore("job-stale", "processing", null, 0);
+    let laterGranted = false;
+    const laterPromise = manager.admit("request-later").acquire("job-later").then((lease) => {
+      laterGranted = true;
+      return lease;
+    });
+
+    expect(manager.restore("job-stale", "unknown", 10_000, 10_000)).toBeNull();
+    await Promise.resolve();
+    expect(laterGranted).toBe(true);
+    const later = await laterPromise;
+    expect(manager.activeJobIds()).toEqual(["job-later"]);
+    later.release();
   });
 
   it("restores only recoverable active states and deduplicates restored leases", () => {
@@ -157,7 +221,7 @@ describe("CapacityManager", () => {
     const pending = admission.acquire("job-recovered");
 
     const restored = manager.restore("job-recovered", "discovering", null);
-    await expect(pending).resolves.toBe(restored);
+    await expect(pending).resolves.toMatchObject({ jobId: "job-recovered" });
     expect(manager.activeJobIds().filter((id) => id === "job-recovered")).toHaveLength(1);
     expect(manager.counts()).toMatchObject({ active: 2, admitted: 0 });
     active?.release();

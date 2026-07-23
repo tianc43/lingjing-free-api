@@ -1,7 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
@@ -11,6 +17,7 @@ import {
   createUpstreamFingerprint,
   hashIdempotencyKey
 } from "../../src/jobs/fingerprint.js";
+import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { JobOutput, JobResult, NewJob } from "../../src/jobs/types.js";
 
@@ -69,6 +76,23 @@ function rawJob(databasePath: string, jobId: string): Record<string, unknown> {
   } finally {
     database.close();
   }
+}
+
+async function waitForReady(
+  directory: string,
+  expectedCount: number
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const readyCount = readdirSync(directory)
+      .filter((name) => name.startsWith("ready-"))
+      .length;
+    if (readyCount === expectedCount) return;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 5);
+    });
+  }
+  throw new Error(`Only some of ${String(expectedCount)} contenders reached the ready barrier`);
 }
 
 describe("job fingerprints", () => {
@@ -174,6 +198,41 @@ describe("SqliteJobRepository", () => {
     repository.close();
   });
 
+  it("keeps raw request content and idempotency keys out of the SQLite file", () => {
+    const databasePath = temporaryDatabasePath();
+    const prompt = "raw prompt must never persist";
+    const inputUrl = "https://input.example/private-source.png";
+    const idempotencyKey = "raw-idempotency-key-must-never-persist";
+    const repository = new SqliteJobRepository(databasePath);
+    const { job } = repository.createOrGet({
+      ...fixtureNewJob,
+      requestFingerprint: createRequestFingerprint({
+        model: fixtureNewJob.model,
+        parameters: { prompt },
+        inputContentHashes: [hashIdempotencyKey(inputUrl)]
+      }),
+      idempotencyKeyHash: hashIdempotencyKey(idempotencyKey)
+    });
+    repository.transition(job.id, ["queued"], {
+      status: "failed",
+      result: {
+        outputs: [{
+          ...fixtureOutput,
+          prompt,
+          input: inputUrl
+        }]
+      } as unknown as JobResult
+    });
+    repository.close();
+
+    const rawRow = JSON.stringify(rawJob(databasePath, job.id));
+    const rawFile = readFileSync(databasePath).toString("utf8");
+    for (const secret of [prompt, inputUrl, idempotencyKey]) {
+      expect(rawRow).not.toContain(secret);
+      expect(rawFile).not.toContain(secret);
+    }
+  });
+
   it("returns the same job for a repeated idempotency hash", () => {
     const repository = new SqliteJobRepository(":memory:");
     const first = repository.createOrGet({
@@ -237,7 +296,8 @@ describe("SqliteJobRepository", () => {
 
   it("allows only one creator under cross-process idempotency contention", async () => {
     const databasePath = temporaryDatabasePath();
-    const startMarker = join(databasePath, "..", "start");
+    const databaseDirectory = dirname(databasePath);
+    const startMarker = join(databaseDirectory, "start");
     const moduleUrl = pathToFileURL(join(
       process.cwd(),
       "src",
@@ -249,9 +309,10 @@ describe("SqliteJobRepository", () => {
       idempotencyKeyHash: "d".repeat(64)
     })).toString("base64url");
     const script = [
-      "import { existsSync } from 'node:fs';",
+      "import { existsSync, writeFileSync } from 'node:fs';",
       "import { setTimeout as delay } from 'node:timers/promises';",
       `import { SqliteJobRepository } from ${JSON.stringify(moduleUrl)};`,
+      "writeFileSync(process.argv[4], '', 'utf8');",
       "while (!existsSync(process.argv[3])) await delay(5);",
       "const repository = new SqliteJobRepository(process.argv[1]);",
       "const value = JSON.parse(Buffer.from(process.argv[2], 'base64url').toString('utf8'));",
@@ -260,7 +321,7 @@ describe("SqliteJobRepository", () => {
       "process.stdout.write(JSON.stringify({ created: result.created, id: result.job.id }));"
     ].join("\n");
 
-    const attempts = Array.from({ length: 6 }, async () => {
+    const attempts = Array.from({ length: 6 }, async (_value, index) => {
       const { stdout } = await execFileAsync(process.execPath, [
         "--import",
         "tsx",
@@ -269,21 +330,81 @@ describe("SqliteJobRepository", () => {
         script,
         databasePath,
         input,
-        startMarker
+        startMarker,
+        join(databaseDirectory, `ready-${String(index)}`)
       ], {
         cwd: process.cwd(),
         windowsHide: true
       });
       return JSON.parse(stdout) as { created: boolean; id: string };
     });
-    await new Promise((resolve) => {
-      setTimeout(resolve, 250);
-    });
+    await waitForReady(databaseDirectory, attempts.length);
     writeFileSync(startMarker, "", "utf8");
     const results = await Promise.all(attempts);
 
     expect(results.filter((result) => result.created)).toHaveLength(1);
     expect(new Set(results.map((result) => result.id))).toHaveLength(1);
+  }, 20_000);
+
+  it("returns one creator and one conflict for concurrent fingerprints sharing a key", async () => {
+    const databasePath = temporaryDatabasePath();
+    const databaseDirectory = dirname(databasePath);
+    const startMarker = join(databaseDirectory, "start");
+    const moduleUrl = pathToFileURL(join(
+      process.cwd(),
+      "src",
+      "jobs",
+      "sqlite-repository.ts"
+    )).href;
+    const inputs = ["e", "f"].map((fingerprint) => Buffer.from(JSON.stringify({
+      ...fixtureNewJob,
+      requestFingerprint: fingerprint.repeat(64),
+      idempotencyKeyHash: "9".repeat(64)
+    })).toString("base64url"));
+    const script = [
+      "import { existsSync, writeFileSync } from 'node:fs';",
+      "import { setTimeout as delay } from 'node:timers/promises';",
+      `import { SqliteJobRepository } from ${JSON.stringify(moduleUrl)};`,
+      "writeFileSync(process.argv[4], '', 'utf8');",
+      "while (!existsSync(process.argv[3])) await delay(5);",
+      "const repository = new SqliteJobRepository(process.argv[1]);",
+      "const value = JSON.parse(Buffer.from(process.argv[2], 'base64url').toString('utf8'));",
+      "try {",
+      "  const result = repository.createOrGet(value);",
+      "  process.stdout.write(JSON.stringify({ created: result.created, id: result.job.id }));",
+      "} catch (cause) {",
+      "  process.stdout.write(JSON.stringify({ code: cause?.code ?? 'unknown' }));",
+      "} finally {",
+      "  repository.close();",
+      "}"
+    ].join("\n");
+    const attempts = inputs.map(async (input, index) => {
+      const { stdout } = await execFileAsync(process.execPath, [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "--eval",
+        script,
+        databasePath,
+        input,
+        startMarker,
+        join(databaseDirectory, `ready-${String(index)}`)
+      ], {
+        cwd: process.cwd(),
+        windowsHide: true
+      });
+      return JSON.parse(stdout) as {
+        created?: boolean;
+        id?: string;
+        code?: string;
+      };
+    });
+    await waitForReady(databaseDirectory, attempts.length);
+    writeFileSync(startMarker, "", "utf8");
+    const results = await Promise.all(attempts);
+
+    expect(results.filter((result) => result.created === true)).toHaveLength(1);
+    expect(results.filter((result) => result.code === "idempotency_conflict")).toHaveLength(1);
   }, 20_000);
 
   it("rejects illegal transitions atomically", () => {
@@ -400,6 +521,35 @@ describe("SqliteJobRepository", () => {
       submitting.id
     ]);
     repository.close();
+  });
+
+  it("reopens recoverable jobs into capacity and expires their unknown hold", () => {
+    const databasePath = temporaryDatabasePath();
+    const first = new SqliteJobRepository(databasePath);
+    const { job } = first.createOrGet(fixtureNewJob);
+    first.transition(job.id, ["queued"], { status: "submitting" });
+    first.transition(job.id, ["submitting"], {
+      status: "unknown",
+      unknownHoldUntil: 10_000
+    });
+    first.close();
+
+    const second = new SqliteJobRepository(databasePath);
+    const recovered = second.recoverable(9_999);
+    expect(recovered.map((item) => item.id)).toEqual([job.id]);
+    const manager = new CapacityManager(1);
+    for (const item of recovered) {
+      manager.restore(
+        item.id,
+        item.status,
+        item.unknownHoldUntil,
+        9_999
+      );
+    }
+    expect(manager.activeJobIds()).toEqual([job.id]);
+    manager.expireUnknown(10_000);
+    expect(manager.activeJobIds()).toEqual([]);
+    second.close();
   });
 
   it("lists jobs by status and limit without content fields", () => {

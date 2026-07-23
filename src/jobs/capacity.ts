@@ -29,12 +29,21 @@ function capacityQueueFull(): AppError {
 
 class Lease implements CapacityLease {
   private released = false;
+  unknownHoldUntil: number | null;
 
   constructor(
     readonly jobId: string,
     private readonly owner: CapacityManager,
-    readonly unknownHoldUntil: number | null
-  ) {}
+    unknownHoldUntil: number | null
+  ) {
+    this.unknownHoldUntil = unknownHoldUntil;
+  }
+
+  refresh(status: JobStatus, unknownHoldUntil: number | null): void {
+    this.unknownHoldUntil = status === "unknown"
+      ? unknownHoldUntil
+      : null;
+  }
 
   release(): void {
     if (this.released) return;
@@ -43,10 +52,19 @@ class Lease implements CapacityLease {
   }
 }
 
+class ObserverLease implements CapacityLease {
+  constructor(readonly jobId: string) {}
+
+  release(): void {
+    // The admission observes an existing worker lease but does not own capacity.
+  }
+}
+
 class Admission implements CapacityAdmission {
   jobId: string | null = null;
   pending: PendingLease | null = null;
   released = false;
+  ownsLease = false;
 
   constructor(
     readonly requestId: string,
@@ -99,10 +117,11 @@ export class CapacityManager {
     jobId: string,
     status: JobStatus,
     unknownHoldUntil: number | null,
-    now?: number
+    now = Date.now()
   ): CapacityLease | null {
-    const existing = this.activeLeases.get(jobId);
-    if (existing !== undefined) return existing;
+    if (!Number.isFinite(now)) {
+      throw new TypeError("Capacity recovery clock must be finite");
+    }
     if (
       status !== "submitting"
       && status !== "discovering"
@@ -111,15 +130,22 @@ export class CapacityManager {
     ) {
       return null;
     }
+    const existing = this.activeLeases.get(jobId);
     if (
       status === "unknown"
       && (
         unknownHoldUntil === null
         || !Number.isFinite(unknownHoldUntil)
-        || (now !== undefined && unknownHoldUntil <= now)
+        || unknownHoldUntil <= now
       )
     ) {
+      existing?.release();
       return null;
+    }
+
+    if (existing !== undefined) {
+      existing.refresh(status, unknownHoldUntil);
+      return existing;
     }
 
     const lease = new Lease(
@@ -132,7 +158,7 @@ export class CapacityManager {
     if (queued !== undefined && queued.pending !== null) {
       this.queuedJobs.delete(jobId);
       this.removeQueuedAdmission(queued);
-      queued.pending.resolve(lease);
+      queued.pending.resolve(new ObserverLease(jobId));
     }
     this.pump();
     return lease;
@@ -181,7 +207,7 @@ export class CapacityManager {
       admission.jobId = jobId;
       this.removeQueuedAdmission(admission);
       admission.pending = {
-        promise: Promise.resolve(active),
+        promise: Promise.resolve(new ObserverLease(jobId)),
         resolve: () => undefined,
         reject: () => undefined
       };
@@ -197,9 +223,15 @@ export class CapacityManager {
     ) {
       admission.jobId = jobId;
       this.removeQueuedAdmission(admission);
-      admission.pending = queued.pending;
+      admission.pending = {
+        promise: queued.pending.promise.then(
+          () => new ObserverLease(jobId)
+        ),
+        resolve: () => undefined,
+        reject: () => undefined
+      };
       this.pump();
-      return queued.pending.promise;
+      return admission.pending.promise;
     }
 
     admission.jobId = jobId;
@@ -229,7 +261,7 @@ export class CapacityManager {
 
     if (admission.jobId !== null) {
       const active = this.activeLeases.get(admission.jobId);
-      if (active !== undefined) {
+      if (active !== undefined && admission.ownsLease) {
         active.release();
         return;
       }
@@ -274,6 +306,7 @@ export class CapacityManager {
       this.queuedJobs.delete(admission.jobId);
       const lease = new Lease(admission.jobId, this, null);
       this.activeLeases.set(admission.jobId, lease);
+      admission.ownsLease = true;
       admission.pending.resolve(lease);
     }
   }

@@ -67,8 +67,27 @@ const VERSION_ONE_SQL = `
 export function configureJobDatabase(database: Database.Database): void {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 10000");
-  database.pragma("journal_mode = WAL");
-  database.pragma("synchronous = NORMAL");
+  const retryBuffer = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + 10_000;
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      database.pragma("journal_mode = WAL");
+      database.pragma("synchronous = NORMAL");
+      return;
+    } catch (cause) {
+      const code = typeof cause === "object" && cause !== null && "code" in cause
+        ? (cause as { code?: unknown }).code
+        : undefined;
+      if (
+        (code !== "SQLITE_BUSY" && code !== "SQLITE_LOCKED")
+        || Date.now() >= deadline
+      ) {
+        throw cause;
+      }
+      Atomics.wait(retryBuffer, 0, 0, 10);
+    }
+  }
+  throw new Error("Timed out while enabling SQLite WAL mode");
 }
 
 export function migrateJobDatabase(database: Database.Database): void {
