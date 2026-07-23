@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { errors } from "../../errors.js";
 import type { JobRecord } from "../../jobs/types.js";
 import type { MediaInput } from "../../media/types.js";
 import { parseGenerationMultipart } from "../multipart.js";
 import {
+  generationHeadersSchema,
   imageApiRequestSchema,
   imageGenerationResponseSchema
 } from "../schemas/generation.js";
@@ -43,7 +43,10 @@ export function registerImageRoutes(
   app.post("/v1/images/generations", {
     schema: routeSchema({
       security: bearerSecurity,
-      body: z.union([imageApiRequestSchema, z.unknown()]),
+      headers: generationHeadersSchema,
+      bodyContent: {
+        "application/json": imageApiRequestSchema
+      },
       response: {
         200: imageGenerationResponseSchema,
         202: taskResponseSchema,
@@ -64,14 +67,12 @@ export function registerImageRoutes(
       const multipart = request.isMultipart()
         ? await parseGenerationMultipart(request, dependencies)
         : null;
+      media = multipart?.media ?? [];
       const input = imageApiRequestSchema.parse(
         multipart?.body ?? request.body
       );
       assertNoControlCollisions(input.parameters, IMAGE_CONTROL_FIELDS);
-      media = [
-        ...(multipart?.media ?? []),
-        ...mediaFromStrings(input.input_images ?? [])
-      ];
+      media.push(...mediaFromStrings(input.input_images ?? []));
 
       const model = await dependencies.catalog.resolve(
         input.model,
@@ -100,6 +101,7 @@ export function registerImageRoutes(
       setIfSupported(values, model, ["n", "taskNum", "count"], input.n);
       validateDynamicValues(model, values);
 
+      transferred = true;
       const handle = await dependencies.coordinator.create({
         kind: "image",
         sourceType: "image-generation",
@@ -108,7 +110,6 @@ export function registerImageRoutes(
         media,
         idempotencyKey: requestIdempotencyKey
       });
-      transferred = true;
       const waited = await waitedJob(
         handle,
         input.response_mode,

@@ -34,6 +34,53 @@ describe("LingjingGenerationCoordinator", () => {
     ]);
   });
 
+  it("disposes prepared media when admission rejects before preparation", async () => {
+    const app = createGenerationHarness({
+      capacityActiveLimit: 1,
+      capacityMaxQueuedRequests: 0
+    });
+    harnesses.push(app);
+    const blockingAdmission = app.capacity.admit("blocking-request");
+    const blockingLease = await blockingAdmission.acquire("blocking-job");
+    const media = trackedMedia();
+
+    try {
+      await expect(app.coordinator.create(fixtureRequest({
+        media: [{
+          source: { type: "prepared", media },
+          kind: "image"
+        }]
+      }))).rejects.toMatchObject({
+        code: "lingjing_capacity_queue_full"
+      });
+
+      expect(media.disposeCount()).toBe(1);
+      expect(app.events).toEqual([]);
+    } finally {
+      blockingLease.release();
+    }
+  });
+
+  it("disposes prepared media when catalog resolution rejects before preparation", async () => {
+    const failure = new Error("injected catalog failure");
+    const app = createGenerationHarness({ catalogFailure: failure });
+    harnesses.push(app);
+    const media = trackedMedia();
+
+    await expect(app.coordinator.create(fixtureRequest({
+      media: [{
+        source: { type: "prepared", media },
+        kind: "image"
+      }]
+    }))).rejects.toBe(failure);
+
+    expect(media.disposeCount()).toBe(1);
+    expect(app.events).toEqual([
+      "account",
+      "catalog:707:image-generation:true"
+    ]);
+  });
+
   it("returns the existing job for a repeated idempotency key", async () => {
     const app = harness();
     const firstMedia = trackedMedia(Buffer.from("same"));

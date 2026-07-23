@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { errors } from "../../errors.js";
 import type { MediaInput } from "../../media/types.js";
 import { parseGenerationMultipart } from "../multipart.js";
 import { taskResponseSchema } from "../presenters.js";
 import {
+  generationHeadersSchema,
   videoApiRequestSchema,
   videoGenerationResponseSchema
 } from "../schemas/generation.js";
@@ -36,7 +36,10 @@ export function registerVideoRoutes(
   app.post("/v1/videos/generations", {
     schema: routeSchema({
       security: bearerSecurity,
-      body: z.union([videoApiRequestSchema, z.unknown()]),
+      headers: generationHeadersSchema,
+      bodyContent: {
+        "application/json": videoApiRequestSchema
+      },
       response: {
         200: videoGenerationResponseSchema,
         202: taskResponseSchema,
@@ -57,14 +60,12 @@ export function registerVideoRoutes(
       const multipart = request.isMultipart()
         ? await parseGenerationMultipart(request, dependencies)
         : null;
+      media = multipart?.media ?? [];
       const input = videoApiRequestSchema.parse(
         multipart?.body ?? request.body
       );
       assertNoControlCollisions(input.parameters, VIDEO_CONTROL_FIELDS);
-      media = [
-        ...(multipart?.media ?? []),
-        ...mediaFromStrings(input.input_images ?? [])
-      ];
+      media.push(...mediaFromStrings(input.input_images ?? []));
       if (input.mode === "image-to-video" && media.length === 0) {
         throw errors.invalidRequest(
           "image-to-video requires an input image",
@@ -101,6 +102,7 @@ export function registerVideoRoutes(
       setIfSupported(values, model, ["ratio"], input.ratio);
       validateDynamicValues(model, values);
 
+      transferred = true;
       const handle = await dependencies.coordinator.create({
         kind: "video",
         sourceType: input.mode,
@@ -109,7 +111,6 @@ export function registerVideoRoutes(
         media,
         idempotencyKey: requestIdempotencyKey
       });
-      transferred = true;
       const waited = await waitedJob(
         handle,
         input.response_mode,

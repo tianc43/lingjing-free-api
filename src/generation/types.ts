@@ -23,6 +23,10 @@ export interface GenerationHandle {
 }
 
 export interface GenerationCoordinator {
+  /**
+   * Takes ownership of every prepared media input when invoked, including
+   * requests that reject before a job is created.
+   */
   create(request: GenerationRequest): Promise<GenerationHandle>;
   resume(jobId: string): Promise<GenerationHandle>;
   stopPollers(): void;

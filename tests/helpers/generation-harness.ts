@@ -161,10 +161,16 @@ export function createGenerationHarness(options: {
   now?: () => number;
   unknownCapacityHoldMs?: number;
   mediaMaxFiles?: number;
+  capacityActiveLimit?: number;
+  capacityMaxQueuedRequests?: number;
+  catalogFailure?: Error;
 } = {}): GenerationHarness {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-generation-"));
   const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
-  const capacity = new CapacityManager(5, 10);
+  const capacity = new CapacityManager(
+    options.capacityActiveLimit ?? 5,
+    options.capacityMaxQueuedRequests ?? 10
+  );
   const registry = new CountingRegistry();
   const assets: FixtureAsset[] = [];
   const statuses = new Map<string, number[]>();
@@ -355,7 +361,9 @@ export function createGenerationHarness(options: {
     catalog: {
       resolve: (model, sourceType, charged) => {
         events.push(`catalog:${model}:${sourceType}:${String(charged)}`);
-        return Promise.resolve(resolvedModel);
+        return options.catalogFailure === undefined
+          ? Promise.resolve(resolvedModel)
+          : Promise.reject(options.catalogFailure);
       }
     },
     transport,

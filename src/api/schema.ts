@@ -29,15 +29,33 @@ export function jsonSchema(
 export function routeSchema(input: {
   security: typeof publicSecurity | typeof bearerSecurity;
   body?: z.ZodType;
+  bodyContent?: Record<string, z.ZodType>;
+  headers?: z.ZodType;
   params?: z.ZodType;
   querystring?: z.ZodType;
   response: Record<number, z.ZodType>;
 }): FastifySchema {
   return {
     security: input.security,
-    ...(input.body === undefined
+    ...(input.bodyContent === undefined
+      ? input.body === undefined
+        ? {}
+        : { body: jsonSchema(input.body, "input") }
+      : {
+          body: {
+            content: Object.fromEntries(
+              Object.entries(input.bodyContent).map(
+                ([contentType, schema]) => [
+                  contentType,
+                  { schema: jsonSchema(schema, "input") }
+                ]
+              )
+            )
+          }
+        }),
+    ...(input.headers === undefined
       ? {}
-      : { body: jsonSchema(input.body, "input") }),
+      : { headers: jsonSchema(input.headers, "input") }),
     ...(input.params === undefined
       ? {}
       : { params: jsonSchema(input.params, "input") }),

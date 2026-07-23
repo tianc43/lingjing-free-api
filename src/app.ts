@@ -49,6 +49,11 @@ export async function buildApp(
     loggerInstance,
     trustProxy: false,
     bodyLimit: dependencies.config.jsonBodyLimitBytes,
+    ajv: {
+      customOptions: {
+        removeAdditional: false
+      }
+    },
     logController: new LogController({ disableRequestLogging: true })
   });
 

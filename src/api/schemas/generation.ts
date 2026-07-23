@@ -5,6 +5,10 @@ const inputImagesSchema = z.array(z.string().min(1)).max(14);
 
 export const idempotencyKeySchema = z.string().min(8).max(200);
 
+export const generationHeadersSchema = z.object({
+  "idempotency-key": idempotencyKeySchema.optional()
+}).loose();
+
 export const imageApiRequestSchema = z.object({
   model: z.string().min(1),
   prompt: z.string().min(1),

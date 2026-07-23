@@ -22,6 +22,7 @@ const IMAGE_MIME_TYPES = new Set([
   "image/webp"
 ]);
 const MULTIPART_LIMIT_CODES = new Set([
+  "FST_FIELDS_LIMIT",
   "FST_FILES_LIMIT",
   "FST_PARTS_LIMIT",
   "FST_REQ_FILE_TOO_LARGE"

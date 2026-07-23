@@ -110,6 +110,12 @@ async function disposeAll(media: Iterable<PreparedMedia>): Promise<void> {
   );
 }
 
+function preparedInputs(media: Iterable<MediaInput>): PreparedMedia[] {
+  return [...media].flatMap((input) => (
+    input.source.type === "prepared" ? [input.source.media] : []
+  ));
+}
+
 async function hashMedia(media: PreparedMedia): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of media.openRead()) {
@@ -208,7 +214,14 @@ implements GenerationCoordinator {
   }
 
   async create(request: GenerationRequest): Promise<GenerationHandle> {
-    const admission = this.options.capacity.admit(randomUUID());
+    const ownedPrepared = new Set(preparedInputs(request.media));
+    let admission: ReturnType<CapacityManager["admit"]>;
+    try {
+      admission = this.options.capacity.admit(randomUUID());
+    } catch (cause) {
+      await disposeAll(ownedPrepared);
+      throw cause;
+    }
     const prepared: PreparedMedia[] = [];
     let ownsPrepared = true;
     let createdJob: JobRecord | null = null;
@@ -224,7 +237,9 @@ implements GenerationCoordinator {
       validateMedia(request, model);
 
       for (const input of request.media) {
-        prepared.push(await this.options.prepareMedia(input));
+        const media = await this.options.prepareMedia(input);
+        prepared.push(media);
+        ownedPrepared.add(media);
       }
       if (new Set(prepared).size !== prepared.length) {
         throw errors.invalidRequest(
@@ -259,7 +274,7 @@ implements GenerationCoordinator {
       createdJob = result.job;
 
       if (!result.created) {
-        await disposeAll(prepared);
+        await disposeAll(ownedPrepared);
         ownsPrepared = false;
         admission.release();
         return this.handle(result.job);
@@ -301,7 +316,7 @@ implements GenerationCoordinator {
             "runner_not_started"
           ));
         }
-        await disposeAll(prepared);
+        await disposeAll(ownedPrepared);
         ownsPrepared = false;
         lease.release();
         await scheduled.promise;
@@ -313,7 +328,7 @@ implements GenerationCoordinator {
       const durable = await this.waitUntilDurable(result.job.id);
       return this.handle(durable);
     } catch (cause) {
-      if (ownsPrepared) await disposeAll(prepared);
+      if (ownsPrepared) await disposeAll(ownedPrepared);
       if (createdJob === null) admission.release();
       throw cause;
     }

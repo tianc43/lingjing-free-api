@@ -1,3 +1,6 @@
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -12,6 +15,13 @@ import type {
   PreparedMedia,
   TempBudget
 } from "../../src/media/types.js";
+import { createTempBudget } from "../../src/media/temp-budget.js";
+import {
+  createPreparedTempFileFromStream
+} from "../../src/media/temp-files.js";
+import type { AppConfig } from "../../src/config.js";
+import type { AppDependencies } from "../../src/app.js";
+import { errors } from "../../src/errors.js";
 import {
   authorizedInject,
   createTestApp,
@@ -140,15 +150,55 @@ function multipartBody(fields: Record<string, string>, files: Array<{
 
 describe("image generation API", () => {
   let fixture: TestApp;
+  const temporaryDirectories: string[] = [];
   let requests: GenerationRequest[];
   let outputFetches: string[];
+  let outputDisposals: number[];
   let finalJob: JobRecord;
   let initialJob: JobRecord;
   let waitedSignal: AbortSignal | undefined;
 
+  async function useProductionMultipartMedia(
+    limits: Partial<Pick<
+      AppConfig,
+      "maxImageBytes" | "maxRequestMediaBytes" | "maxTempBytes"
+    >>
+  ): Promise<string> {
+    const previous = fixture.dependencies;
+    const directory = mkdtempSync(join(
+      tmpdir(),
+      "lingjing-route-media-"
+    ));
+    temporaryDirectories.push(directory);
+    const config = { ...previous.config, ...limits };
+    const globalBudget = createTempBudget(config.maxTempBytes);
+    const media: AppDependencies["media"] = {
+      createRequestBudget: () => createRequestMediaBudget(
+        config.maxRequestMediaBytes
+      ),
+      prepareStream: (stream, options) =>
+        createPreparedTempFileFromStream(stream, {
+          ...options,
+          tempDirectory: directory,
+          tempBudget: globalBudget
+        }),
+      fetchOutput: (url, options) =>
+        previous.media.fetchOutput(url, options)
+    };
+    await fixture.close();
+    fixture = await createTestApp({
+      config,
+      catalog: previous.catalog,
+      coordinator: previous.coordinator,
+      media
+    });
+    return directory;
+  }
+
   beforeEach(async () => {
     requests = [];
     outputFetches = [];
+    outputDisposals = [];
     finalJob = job("completed");
     initialJob = finalJob;
     const media = {
@@ -182,10 +232,17 @@ describe("image generation API", () => {
         url: URL
       ): Promise<PreparedMedia> => {
         outputFetches.push(url.toString());
-        return Promise.resolve(prepared(Buffer.from(
+        const index = outputDisposals.length;
+        outputDisposals.push(0);
+        const media = prepared(Buffer.from(
           url.pathname.includes("two") ? "two" : "one",
           "utf8"
-        )));
+        ));
+        media.dispose = () => {
+          outputDisposals[index] = (outputDisposals[index] ?? 0) + 1;
+          return Promise.resolve();
+        };
+        return Promise.resolve(media);
       }
     };
     fixture = await createTestApp({
@@ -235,6 +292,9 @@ describe("image generation API", () => {
 
   afterEach(async () => {
     await fixture.close();
+    for (const directory of temporaryDirectories.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("returns an OpenAI-style waited image result", async () => {
@@ -262,13 +322,14 @@ describe("image generation API", () => {
     expect(body).toMatchObject({
       data: [{ url: "https://media.example/result-one.png" }]
     });
-    expect(requests[0]).toMatchObject({
+    expect(requests).toEqual([{
       kind: "image",
       sourceType: "image-generation",
       model: "fixture-image",
       idempotencyKey: "image-request-1",
-      values: { prompt: "fixture prompt" }
-    });
+      values: { prompt: "fixture prompt" },
+      media: []
+    }]);
   });
 
   it("returns 202 with a queryable recoverable job for async mode", async () => {
@@ -312,8 +373,16 @@ describe("image generation API", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(requests[0]?.media).toHaveLength(1);
-    expect(requests[0]?.media[0]?.source.type).toBe("prepared");
+    const media = requests[0]?.media[0];
+    expect(media?.source.type).toBe("prepared");
+    expect(requests).toEqual([{
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-image",
+      values: { prompt: "fixture prompt" },
+      media: media === undefined ? [] : [media],
+      idempotencyKey: null
+    }]);
   });
 
   it("returns every normalized image when n is greater than one", async () => {
@@ -359,6 +428,50 @@ describe("image generation API", () => {
       { b64_json: Buffer.from("two").toString("base64") }
     ]);
     expect(outputFetches).toEqual(fixtureOutputs.map((item) => item.url));
+    expect(outputDisposals).toEqual([1, 1]);
+  });
+
+  it("disposes already fetched base64 media once when a later fetch fails safely", async () => {
+    finalJob = job("completed", fixtureOutputs);
+    initialJob = finalJob;
+    let calls = 0;
+    fixture.dependencies.media.fetchOutput = (url) => {
+      calls += 1;
+      if (calls === 2) {
+        return Promise.reject(new Error(
+          "private-fetch-cause https://secret.example/output?token=private"
+        ));
+      }
+      outputFetches.push(url.toString());
+      outputDisposals.push(0);
+      const media = prepared(Buffer.from("one", "utf8"));
+      media.dispose = () => {
+        outputDisposals[0] = (outputDisposals[0] ?? 0) + 1;
+        return Promise.resolve();
+      };
+      return Promise.resolve(media);
+    };
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      payload: {
+        model: "fixture-image",
+        prompt: "fixture prompt",
+        n: 2,
+        response_format: "b64_json"
+      }
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      error: { code: "lingjing_upstream_error" }
+    });
+    expect(response.body).not.toContain("private-fetch-cause");
+    expect(response.body).not.toContain("secret.example");
+    expect(response.body).not.toContain("private");
+    expect(outputDisposals).toEqual([1]);
   });
 
   it("never presentation-fetches an arbitrary input URL", async () => {
@@ -375,12 +488,19 @@ describe("image generation API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(outputFetches).toEqual([]);
-    expect(requests[0]?.media).toEqual([{
+    expect(requests).toEqual([{
       kind: "image",
-      source: {
-        type: "url",
-        value: "https://input.example/private.png"
-      }
+      sourceType: "image-generation",
+      model: "fixture-image",
+      values: { prompt: "fixture prompt" },
+      media: [{
+        kind: "image",
+        source: {
+          type: "url",
+          value: "https://input.example/private.png"
+        }
+      }],
+      idempotencyKey: null
     }]);
   });
 
@@ -548,70 +668,118 @@ describe("image generation API", () => {
     });
   });
 
-  it("limits multipart image count, file size, aggregate size, and MIME type", async () => {
+  it("returns exactly 413 when multipart image count exceeds fourteen", async () => {
     const baseFields = {
       model: "fixture-image",
       prompt: "fixture prompt"
     };
-    const cases = [
-      multipartBody(baseFields, Array.from({ length: 15 }, () => ({
-        data: fixturePng
-      }))),
-      multipartBody(baseFields, [{
-        data: Buffer.alloc(17),
-        contentType: "image/svg+xml"
-      }])
-    ];
-    for (const multipart of cases) {
-      const response = await authorizedInject(fixture.app, {
-        method: "POST",
-        url: "/v1/images/generations",
-        headers: {
-          "content-type": `multipart/form-data; boundary=${multipart.boundary}`
-        },
-        payload: multipart.body
-      });
-      expect([400, 413]).toContain(response.statusCode);
-    }
+    const multipart = multipartBody(
+      baseFields,
+      Array.from({ length: 15 }, () => ({ data: fixturePng }))
+    );
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({
+      error: { code: "request_too_large" }
+    });
   });
 
-  it("rejects multipart aggregate bytes with a request-too-large error", async () => {
-    fixture.dependencies.media.createRequestBudget = () =>
-      createRequestMediaBudget(12);
-    fixture.dependencies.media.prepareStream = async (stream, options) => {
-      const lease = options.requestBudget.reserve(0);
-      const chunks: Buffer[] = [];
-      let size = 0;
-      try {
-        for await (const chunk of stream) {
-          const value = Buffer.isBuffer(chunk)
-            ? chunk
-            : Buffer.from(chunk as unknown as Uint8Array);
-          size += value.byteLength;
-          lease.growTo(size);
-          chunks.push(value);
-        }
-        const item = prepared(
-          Buffer.concat(chunks),
-          options.contentType,
-          size
-        );
-        item.dispose = vi.fn(() => {
-          lease.release();
-          return Promise.resolve();
-        });
-        return item;
-      } catch (cause) {
-        lease.release();
-        throw cause;
-      }
+  it("returns exactly 400 for an unsupported multipart image MIME type", async () => {
+    const multipart = multipartBody({
+      model: "fixture-image",
+      prompt: "fixture prompt"
+    }, [{
+      data: fixturePng,
+      contentType: "image/svg+xml"
+    }]);
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: { code: "invalid_request" }
+    });
+  });
+
+  it("maps more than fifty real multipart fields to exactly 413", async () => {
+    const fields: Record<string, string> = {
+      model: "fixture-image",
+      prompt: "fixture prompt"
     };
+    for (let index = 0; index < 49; index += 1) {
+      fields[`extra-${String(index)}`] = "value";
+    }
+    const multipart = multipartBody(fields, []);
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({
+      error: { code: "request_too_large" }
+    });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("uses the production stream path to reject a supported image over its per-file limit with 413", async () => {
+    const directory = await useProductionMultipartMedia({
+      maxImageBytes: 8,
+      maxRequestMediaBytes: 32,
+      maxTempBytes: 64
+    });
+    const multipart = multipartBody({
+      model: "fixture-image",
+      prompt: "fixture prompt"
+    }, [{ data: Buffer.alloc(9), contentType: "image/png" }]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({
+      error: { code: "request_too_large" }
+    });
+    expect(readdirSync(directory)).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("uses the production shared budget to reject aggregate multipart bytes with 413", async () => {
+    const directory = await useProductionMultipartMedia({
+      maxImageBytes: 8,
+      maxRequestMediaBytes: 12,
+      maxTempBytes: 64
+    });
     const multipart = multipartBody({
       model: "fixture-image",
       prompt: "fixture prompt"
     }, [
-      { data: Buffer.alloc(8) },
-      { data: Buffer.alloc(8) }
+      { data: Buffer.alloc(8), contentType: "image/png" },
+      { data: Buffer.alloc(8), contentType: "image/png" }
     ]);
 
     const response = await authorizedInject(fixture.app, {
@@ -627,6 +795,129 @@ describe("image generation API", () => {
     expect(response.json()).toMatchObject({
       error: { code: "request_too_large" }
     });
+    expect(readdirSync(directory)).toEqual([]);
     expect(requests).toHaveLength(0);
+  });
+
+  it("disposes every production temp file when multipart parsing fails after an earlier file", async () => {
+    const directory = await useProductionMultipartMedia({
+      maxImageBytes: 16,
+      maxRequestMediaBytes: 32,
+      maxTempBytes: 64
+    });
+    const multipart = multipartBody({
+      model: "fixture-image",
+      prompt: "fixture prompt"
+    }, [
+      { data: fixturePng, contentType: "image/png" },
+      { data: fixturePng, contentType: "image/svg+xml" }
+    ]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(readdirSync(directory)).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("disposes production temp files when body validation fails after multipart parsing", async () => {
+    const directory = await useProductionMultipartMedia({
+      maxImageBytes: 16,
+      maxRequestMediaBytes: 32,
+      maxTempBytes: 64
+    });
+    const multipart = multipartBody({
+      model: "fixture-image"
+    }, [{ data: fixturePng }]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(readdirSync(directory)).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("transfers multipart ownership to a successful coordinator exactly once", async () => {
+    const dispose = vi.fn(() => Promise.resolve());
+    const media = { ...prepared(fixturePng), dispose };
+    fixture.dependencies.media.prepareStream = async (stream) => {
+      for await (const chunk of stream) void chunk;
+      return media;
+    };
+    fixture.dependencies.coordinator.create = vi.fn(
+      async (request: GenerationRequest) => {
+        for (const input of request.media) {
+          if (input.source.type === "prepared") {
+            await input.source.media.dispose();
+          }
+        }
+        return handle(finalJob);
+      }
+    );
+    const multipart = multipartBody({
+      model: "fixture-image",
+      prompt: "fixture prompt"
+    }, [{ data: fixturePng }]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("does not double-dispose multipart media when the coordinator rejects after taking ownership", async () => {
+    const dispose = vi.fn(() => Promise.resolve());
+    const media = { ...prepared(fixturePng), dispose };
+    fixture.dependencies.media.prepareStream = async (stream) => {
+      for await (const chunk of stream) void chunk;
+      return media;
+    };
+    fixture.dependencies.coordinator.create = vi.fn(
+      async (request: GenerationRequest) => {
+        for (const input of request.media) {
+          if (input.source.type === "prepared") {
+            await input.source.media.dispose();
+          }
+        }
+        throw errors.invalidRequest("Injected coordinator rejection");
+      }
+    );
+    const multipart = multipartBody({
+      model: "fixture-image",
+      prompt: "fixture prompt"
+    }, [{ data: fixturePng }]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });

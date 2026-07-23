@@ -35,15 +35,16 @@ function unlimitedBudget(): TempBudget {
   };
 }
 
-function videoMultipartBody(): { boundary: string; body: Buffer } {
-  const boundary = "----lingjing-video-multipart-boundary";
-  const fields = [
+function videoMultipartBody(
+  fields: Array<[string, string]> = [
     ["model", "fixture-video"],
     ["prompt", "fixture prompt"],
     ["mode", "image-to-video"]
-  ];
+  ]
+): { boundary: string; body: Buffer } {
+  const boundary = "----lingjing-video-multipart-boundary";
   const chunks = fields.map(([name, value]) => Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="${name as string}"\r\n\r\n${value as string}\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
     "utf8"
   ));
   chunks.push(Buffer.from(
@@ -259,7 +260,7 @@ describe("video generation API", () => {
         duration: 5
       }]
     });
-    expect(requests[0]).toMatchObject({
+    expect(requests).toEqual([{
       kind: "video",
       sourceType: "text-to-video",
       model: "fixture-video",
@@ -270,8 +271,9 @@ describe("video generation API", () => {
         resolution: "1080p",
         ratio: "16:9"
       },
-      media: []
-    });
+      media: [],
+      idempotencyKey: null
+    }]);
     expect(waitedTimeout).toBe(
       fixture.dependencies.config.videoWaitTimeoutMs
     );
@@ -312,16 +314,23 @@ describe("video generation API", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(requests[0]).toMatchObject({
+    expect(requests).toEqual([{
+      kind: "video",
       sourceType: "image-to-video",
+      model: "fixture-video",
+      values: {
+        model: "fixture-video",
+        prompt: "fixture"
+      },
       media: [{
         kind: "image",
         source: {
           type: "url",
           value: "https://input.example/frame.png"
         }
-      }]
-    });
+      }],
+      idempotencyKey: null
+    }]);
   });
 
   it("accepts a real multipart image for image-to-video without buffering it in the route", async () => {
@@ -336,8 +345,53 @@ describe("video generation API", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(requests[0]?.sourceType).toBe("image-to-video");
-    expect(requests[0]?.media[0]?.source.type).toBe("prepared");
+    const media = requests[0]?.media[0];
+    expect(media?.source.type).toBe("prepared");
+    expect(requests).toEqual([{
+      kind: "video",
+      sourceType: "image-to-video",
+      model: "fixture-video",
+      values: {
+        model: "fixture-video",
+        prompt: "fixture prompt"
+      },
+      media: media === undefined ? [] : [media],
+      idempotencyKey: null
+    }]);
+  });
+
+  it("disposes parsed multipart media when body validation rejects", async () => {
+    const dispose = vi.fn(() => Promise.resolve());
+    fixture.dependencies.media.prepareStream = async (
+      stream,
+      options
+    ) => {
+      for await (const chunk of stream) void chunk;
+      return {
+        filename: options.filename,
+        contentType: options.contentType,
+        size: 4,
+        openRead: () => Readable.from(Buffer.from([1, 2, 3, 4])),
+        dispose
+      };
+    };
+    const multipart = videoMultipartBody([
+      ["model", "fixture-video"],
+      ["prompt", "fixture prompt"]
+    ]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos/generations",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${multipart.boundary}`
+      },
+      payload: multipart.body
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
   });
 
   it("validates duration and resolution against the resolved model", async () => {
@@ -513,7 +567,25 @@ describe("video generation API", () => {
       paths: Record<string, {
         post?: {
           security?: unknown[];
-          requestBody?: unknown;
+          parameters?: Array<{
+            name?: string;
+            in?: string;
+            required?: boolean;
+            schema?: Record<string, unknown>;
+          }>;
+          requestBody?: {
+            content?: Record<string, {
+              schema?: {
+                anyOf?: unknown;
+                type?: string;
+                required?: string[];
+                additionalProperties?: boolean;
+                properties?: Record<string, {
+                  enum?: string[];
+                }>;
+              };
+            }>;
+          };
           responses?: Record<string, unknown>;
         };
       }>;
@@ -528,6 +600,41 @@ describe("video generation API", () => {
       expect(
         specification.paths[path]?.post?.requestBody
       ).toBeDefined();
+      const jsonSchema = specification.paths[path]?.post
+        ?.requestBody?.content?.["application/json"]?.schema;
+      expect(jsonSchema?.anyOf).toBeUndefined();
+      expect(jsonSchema?.type).toBe("object");
+      expect(jsonSchema?.additionalProperties).toBe(false);
+      expect(jsonSchema?.required).toEqual(path.includes("images")
+        ? ["model", "prompt"]
+        : ["model", "prompt", "mode"]);
+      expect(
+        jsonSchema?.properties?.response_mode?.enum
+      ).toEqual(["wait", "async"]);
+      if (path.includes("images")) {
+        expect(
+          jsonSchema?.properties?.response_format?.enum
+        ).toEqual(["url", "b64_json"]);
+      } else {
+        expect(jsonSchema?.properties?.mode?.enum).toEqual([
+          "text-to-video",
+          "image-to-video"
+        ]);
+      }
+      const idempotency = specification.paths[path]?.post
+        ?.parameters?.find((parameter) =>
+          parameter.name === "idempotency-key"
+        );
+      expect(idempotency).toEqual({
+        name: "idempotency-key",
+        in: "header",
+        required: false,
+        schema: {
+          type: "string",
+          minLength: 8,
+          maxLength: 200
+        }
+      });
       const responses = specification.paths[path]?.post?.responses;
       expect(responses).toBeDefined();
       expect(Object.hasOwn(responses ?? {}, "200")).toBe(true);
