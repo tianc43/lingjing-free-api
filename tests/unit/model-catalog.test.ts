@@ -48,4 +48,12 @@ describe("dynamic model normalization", () => {
     const cached = await service.resolve("707", "image-generation");
     expect(cached.parameters.find((parameter) => parameter.idx === "1")?.required).toBe(true);
   });
+  it("uses apiId before an alias collision and rejects ambiguous aliases", async () => {
+    const duplicate = structuredClone(imageFixture) as { result: Array<Record<string, unknown>> };
+    const original = duplicate.result.at(0); if (original === undefined) throw new Error("fixture malformed");
+    duplicate.result.push({ ...original, apiId: "other", id: "other" });
+    const service = new CatalogService({ read: <T>() => Promise.resolve(duplicate as T) }, 60_000);
+    await expect(service.resolve("707", "image-generation")).resolves.toMatchObject({ apiId: "707" });
+    await expect(service.resolve("fixture-seedream-5-0-lite", "image-generation")).rejects.toMatchObject({ code: "model_catalog_changed" });
+  });
 });

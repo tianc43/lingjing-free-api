@@ -4,6 +4,8 @@ import { normalizeModels } from "../../src/models/normalize.js";
 import { buildPayload } from "../../src/models/payload-builder.js";
 
 const fixture: unknown = JSON.parse(readFileSync(new URL("../fixtures/models/image-generation.json", import.meta.url), "utf8"));
+const textVideoFixture: unknown = JSON.parse(readFileSync(new URL("../fixtures/models/text-to-video.json", import.meta.url), "utf8"));
+const imageVideoFixture: unknown = JSON.parse(readFileSync(new URL("../fixtures/models/image-to-video.json", import.meta.url), "utf8"));
 const normalizedImageModel = normalizeModels("image-generation", fixture).at(0);
 if (normalizedImageModel === undefined) throw new Error("fixture is malformed");
 
@@ -30,5 +32,13 @@ describe("buildPayload", () => {
     const requiredImageModel = structuredClone(normalizedImageModel);
     const image = requiredImageModel.parameters.at(0); if (image === undefined) throw new Error("fixture malformed"); image.required = true;
     try { buildPayload({ model: requiredImageModel, spaceId: 0, values: { prompt: "x", image: [] } }); } catch (cause) { expect(cause).toMatchObject({ code: "invalid_request" }); }
+  });
+  it("normalizes and validates each video fixture", () => {
+    const textVideo = normalizeModels("text-to-video", textVideoFixture).at(0);
+    const imageVideo = normalizeModels("image-to-video", imageVideoFixture).at(0);
+    if (textVideo === undefined || imageVideo === undefined) throw new Error("fixture malformed");
+    expect(buildPayload({ model: textVideo, spaceId: 0, values: { prompt: "x", model: "fixture-motion", duration: 3, resolution: "720p", ratio: "16:9", watermark: false, seed: 1 } }).params).toHaveLength(7);
+    expect(buildPayload({ model: imageVideo, spaceId: 0, values: { image: ["fixture/path.png"], prompt: "x", duration: 3, resolution: "720p", ratio: "16:9", watermark: false, seed: 1 } }).params).toHaveLength(7);
+    expect(() => buildPayload({ model: imageVideo, spaceId: 0, values: { image: ["a", "b"], prompt: "x" } })).toThrow();
   });
 });
