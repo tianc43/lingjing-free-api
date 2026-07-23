@@ -421,14 +421,14 @@ implements GenerationCoordinator {
 
       let discovery: DiscoveryResult;
       try {
-        discovery = await submitReservation.run(
-          () => this.options.discoveryLock.runExclusive(async () => {
-            const baselineIds = await this.snapshotAssetIds(spaceId);
-            const submitting = this.transition(job.id, ["queued"], {
-              status: "submitting",
-              submittedAt: this.now(),
-              upstreamFingerprint
-            });
+        discovery = await this.options.discoveryLock.runExclusive(async () => {
+          const baselineIds = await this.snapshotAssetIds(spaceId);
+          const submitting = this.transition(job.id, ["queued"], {
+            status: "submitting",
+            submittedAt: this.now(),
+            upstreamFingerprint
+          });
+          await submitReservation.run(async () => {
             try {
               await this.options.transport.submitOnce(
                 GENERATION_ENDPOINT,
@@ -448,19 +448,18 @@ implements GenerationCoordinator {
                 throw cause;
               }
             }
-            this.pollerAbort.signal.throwIfAborted();
-            const discovering = this.transition(
-              submitting.id,
-              ["submitting"],
-              { status: "discovering" }
-            );
-            return this.discoverer.discover(
-              discovering,
-              baselineIds,
-              this.pollerAbort.signal
-            );
-          })
-        );
+          });
+          const discovering = this.transition(
+            submitting.id,
+            ["submitting"],
+            { status: "discovering" }
+          );
+          return this.discoverer.discover(
+            discovering,
+            baselineIds,
+            this.pollerAbort.signal
+          );
+        });
       } catch (cause) {
         const current = this.options.repository.findById(job.id);
         if (current?.status !== "discovering") throw cause;

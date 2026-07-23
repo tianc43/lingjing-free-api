@@ -38,7 +38,7 @@ function isSafeToken(value: string): boolean {
     || normalized.startsWith("fixture-")
     || normalized === "change-me"
     || normalized === "[REDACTED]"
-    || /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/u.test(normalized)
+    || /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-)?\}$/u.test(normalized)
     || /^\$env:[A-Z][A-Z0-9_]*$/u.test(normalized)
     || /^\$[A-Z][A-Z0-9_]*$/u.test(normalized);
   if (directlySafe) return true;
@@ -63,6 +63,17 @@ function walkJson(
   }
   if (typeof value !== "object" || value === null) return;
   const record = value as Record<string, unknown>;
+  if (Array.isArray(record.cookies)) {
+    for (const [index, cookie] of record.cookies.entries()) {
+      if (typeof cookie !== "object" || cookie === null) continue;
+      const cookieValue = (cookie as Record<string, unknown>).value;
+      if (typeof cookieValue === "string" && !isSafeToken(cookieValue)) {
+        violations.push(
+          `${source}:${path}.cookies[${String(index)}].value contains non-fixture credential`
+        );
+      }
+    }
+  }
   const cookieName = typeof record.name === "string"
     ? normalizeSecretName(record.name)
     : "";

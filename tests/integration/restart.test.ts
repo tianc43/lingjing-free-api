@@ -344,7 +344,7 @@ describe("durable restart recovery", () => {
     }
   );
 
-  it("keeps the written-but-unconfirmed submit durable across a timed-out shutdown and recovers it in the second runtime", async () => {
+  it("drains one written submit, closes once, and recovers it in the second runtime", async () => {
     const path = databasePath();
     const first = startFirstRuntime(path, "submitting");
     await first.reached;
@@ -356,33 +356,32 @@ describe("durable restart recovery", () => {
     };
     const recovery = { close: () => undefined };
 
-    await expect(shutdownServer({
+    let shutdownSettled = false;
+    const shutdown = shutdownServer({
       app,
       registry: first.registry,
       coordinator: first.coordinator,
       recovery,
       repository: first.repository,
-      submitDrainTimeoutMs: 5,
-      runnerIdleTimeoutMs: 100
-    })).rejects.toThrow("Timed out draining submit critical sections");
+      submitDrainTimeoutMs: 1_000,
+      runnerIdleTimeoutMs: 1_000
+    }).finally(() => {
+      shutdownSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(shutdownSettled).toBe(false);
     expect(onlyJob(first.repository).status).toBe("submitting");
 
-    first.coordinator.stopPollers();
     first.release();
-    await first.registry.waitUntilIdle();
-    const stopped = onlyJob(first.repository);
     const payload = first.payload();
-    expect(stopped.status).toBe("submitting");
-    await shutdownServer({
-      app,
-      registry: first.registry,
-      coordinator: first.coordinator,
-      recovery,
-      repository: first.repository,
-      submitDrainTimeoutMs: 100,
-      runnerIdleTimeoutMs: 100
-    });
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
 
+    const stoppedRepository = new SqliteJobRepository(path);
+    const stopped = onlyJob(stoppedRepository);
+    expect(["submitting", "discovering"]).toContain(stopped.status);
+    expect(stopped.status).not.toBe("completed");
+    stoppedRepository.close();
     const recovered = await recoverSecondRuntime(
       path,
       stopped.id,

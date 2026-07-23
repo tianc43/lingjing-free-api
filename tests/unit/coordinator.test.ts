@@ -173,6 +173,22 @@ describe("LingjingGenerationCoordinator", () => {
     expect(job.upstreamTaskId).toMatch(/^fixture-task-/u);
   });
 
+  it("finishes the submit reservation and persists a rejected submit once", async () => {
+    const app = harness();
+    app.failNextSubmit(new Error("injected submit rejection"));
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.repository.findById(handle.job.id)).toMatchObject({
+      status: "failed",
+      errorCode: "generation_submit_rejected"
+    });
+    expect(app.submitCount()).toBe(1);
+    await expect(app.registry.drainSubmitCriticalSections(0))
+      .resolves.toBeUndefined();
+  });
+
   it("holds capacity when discovery is ambiguous", async () => {
     const app = harness();
     app.addAssetsPerSubmit(2);

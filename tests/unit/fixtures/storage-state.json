@@ -12,7 +12,7 @@
     },
     {
       "name": "fixture_session",
-      "value": "value",
+      "value": "fixture-session-value",
       "domain": ".fixture.invalid",
       "path": "/",
       "expires": -1,
@@ -32,7 +32,7 @@
     },
     {
       "name": "api-cookie",
-      "value": "before",
+      "value": "fixture-before",
       "domain": "fixture.invalid",
       "path": "/api",
       "expires": -1,
@@ -42,7 +42,7 @@
     },
     {
       "name": "domain-cookie",
-      "value": "before-domain",
+      "value": "fixture-before-domain",
       "domain": ".fixture.invalid",
       "path": "/",
       "expires": -1,
@@ -52,7 +52,7 @@
     },
     {
       "name": "domain-cookie",
-      "value": "before-host",
+      "value": "fixture-before-host",
       "domain": "fixture.invalid",
       "path": "/",
       "expires": -1,

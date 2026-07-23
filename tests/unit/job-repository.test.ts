@@ -24,6 +24,12 @@ import type { JobOutput, JobResult, NewJob } from "../../src/jobs/types.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
+const cleanupModuleUrl = pathToFileURL(join(
+  process.cwd(),
+  "tests",
+  "helpers",
+  "cleanup.ts"
+)).href;
 
 function temporaryDatabasePath(): string {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-jobs-"));
@@ -313,6 +319,7 @@ describe("SqliteJobRepository", () => {
       "import { existsSync, writeFileSync } from 'node:fs';",
       "import { setTimeout as delay } from 'node:timers/promises';",
       `import { SqliteJobRepository } from ${JSON.stringify(moduleUrl)};`,
+      `import { isExpectedWalContentionCloseError } from ${JSON.stringify(cleanupModuleUrl)};`,
       "writeFileSync(process.argv[4], '', 'utf8');",
       "while (!existsSync(process.argv[3])) await delay(5);",
       "const repository = new SqliteJobRepository(process.argv[1]);",
@@ -321,7 +328,7 @@ describe("SqliteJobRepository", () => {
       "try {",
       "  repository.close();",
       "} catch (cause) {",
-      "  if (!(cause instanceof Error) || !cause.message.startsWith('WAL checkpoint incomplete after ') || !cause.message.endsWith('; repository was closed safely')) throw cause;",
+      "  if (!isExpectedWalContentionCloseError(cause)) throw cause;",
       "}",
       "process.stdout.write(JSON.stringify({ created: result.created, id: result.job.id }));"
     ].join("\n");
@@ -370,6 +377,7 @@ describe("SqliteJobRepository", () => {
       "import { existsSync, writeFileSync } from 'node:fs';",
       "import { setTimeout as delay } from 'node:timers/promises';",
       `import { SqliteJobRepository } from ${JSON.stringify(moduleUrl)};`,
+      `import { isExpectedWalContentionCloseError } from ${JSON.stringify(cleanupModuleUrl)};`,
       "writeFileSync(process.argv[4], '', 'utf8');",
       "while (!existsSync(process.argv[3])) await delay(5);",
       "const repository = new SqliteJobRepository(process.argv[1]);",
@@ -383,7 +391,7 @@ describe("SqliteJobRepository", () => {
       "  try {",
       "    repository.close();",
       "  } catch (cause) {",
-      "    if (!(cause instanceof Error) || !cause.message.startsWith('WAL checkpoint incomplete after ') || !cause.message.endsWith('; repository was closed safely')) throw cause;",
+      "    if (!isExpectedWalContentionCloseError(cause)) throw cause;",
       "  }",
       "}"
     ].join("\n");

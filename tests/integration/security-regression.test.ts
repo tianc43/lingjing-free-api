@@ -159,6 +159,25 @@ describe("security regression", () => {
       })
     ],
     [
+      "storage-state-arbitrary-cookie.json",
+      JSON.stringify({
+        cookies: [{
+          name: "thor",
+          value: ["stolen", "cookie-value"].join("-")
+        }],
+        origins: [{ origin: "https://lingjing.jdcloud.com" }]
+      })
+    ],
+    [
+      "placeholder-default-secret.env",
+      [
+        "LINGJING_API_KEY",
+        "=",
+        "${SAFE_NAME:-",
+        "stolen-secret-value}"
+      ].join("")
+    ],
+    [
       "media.txt",
       [
         "https://img13.",
@@ -172,27 +191,27 @@ describe("security regression", () => {
     ]);
   });
 
-  it("allows only exact placeholders and fixture-prefixed values", () => {
-    expect(scanSecrets([
-      {
-        name: "placeholders.env",
-        content: [
-          "LINGJING_API_KEY=change-me",
-          "apiKey=${LINGJING_API_KEY}",
-          "authorization=$env:LINGJING_API_KEY"
-        ].join("\n")
-      },
-      {
-        name: "fixtures.yml",
-        content: [
-          "originPin: fixture-account",
-          "taskId: fixture-task",
-          "cookie: fixture-cookie",
-          "csrfToken: fixture-csrf",
-          "apiKey: fixture-downstream"
-        ].join("\n")
-      }
-    ])).toEqual([]);
+  it.each([
+    ["braced", "apiKey=${LINGJING_API_KEY}"],
+    ["empty-default", "cookie=${LINGJING_COOKIE:-}"],
+    ["shell", "taskId=$LINGJING_TASK_ID"],
+    ["powershell", "authorization=$env:LINGJING_API_KEY"]
+  ])("accepts the exact %s placeholder form", (_form, content) => {
+    expect(scanSecrets([{ name: "placeholder.env", content }])).toEqual([]);
+  });
+
+  it("allows exact change-me and fixture-prefixed values", () => {
+    expect(scanSecrets([{
+      name: "fixtures.yml",
+      content: [
+        "apiKey: change-me",
+        "originPin: fixture-account",
+        "taskId: fixture-task",
+        "cookie: fixture-cookie",
+        "csrfToken: fixture-csrf",
+        "apiKey: fixture-downstream"
+      ].join("\n")
+    }])).toEqual([]);
   });
 
   it("builds and scans a fresh dist plus tracked files, package output and logs", () => {

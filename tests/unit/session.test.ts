@@ -34,7 +34,8 @@ describe("session providers", () => {
       new URL(origin)
     );
     const snapshot = await provider.load();
-    expect(await snapshot.jar.getCookieString(origin)).toContain("fixture_session=value");
+    expect(await snapshot.jar.getCookieString(origin))
+      .toContain("fixture_session=fixture-session-value");
     expect(JSON.stringify(provider.describe())).not.toContain("value");
   });
 

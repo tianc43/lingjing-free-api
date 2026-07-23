@@ -135,6 +135,7 @@ export interface GenerationHarness {
   addAssetsPerSubmit(count: 1 | 2): void;
   resolveAmbiguity(): void;
   disconnectNextSubmit(): void;
+  failNextSubmit(cause: Error): void;
   failNextPostSubmitAssetRead(): void;
   failNextTaskRead(): void;
   blockNextAssetRead(): {
@@ -181,6 +182,7 @@ export function createGenerationHarness(options: {
   let uploadCalls = 0;
   let assetsPerSubmit: 1 | 2 = 1;
   let disconnect = false;
+  let submitFailure: Error | null = null;
   let failPostSubmitAssetRead = false;
   let failTaskRead = false;
   let assetReadGate: {
@@ -293,6 +295,11 @@ export function createGenerationHarness(options: {
       }
       submissions += 1;
       criticalEvents.push(`submit:${String(submissions)}`);
+      if (submitFailure !== null) {
+        const cause = submitFailure;
+        submitFailure = null;
+        throw cause;
+      }
       const submittedAt = Date.now();
       for (let offset = 0; offset < assetsPerSubmit; offset += 1) {
         const sequence = submissions * 10 + offset + 1;
@@ -406,6 +413,9 @@ export function createGenerationHarness(options: {
     },
     disconnectNextSubmit: () => {
       disconnect = true;
+    },
+    failNextSubmit: (cause) => {
+      submitFailure = cause;
     },
     failNextPostSubmitAssetRead: () => {
       failPostSubmitAssetRead = true;
