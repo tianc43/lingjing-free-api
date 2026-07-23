@@ -29,11 +29,27 @@ function normalizeSecretName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/gu, "");
 }
 
+function unwrapPairedQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value.at(-1);
+  return (
+    first === last
+    && (first === "\"" || first === "'" || first === "`")
+  )
+    ? value.slice(1, -1)
+    : value;
+}
+
+function normalizeAtomicToken(value: string): string {
+  const unwrapped = unwrapPairedQuotes(value.trim());
+  return /^Bearer[ \t]+/iu.test(unwrapped)
+    ? unwrapped.replace(/^Bearer[ \t]+/iu, "")
+    : unwrapped;
+}
+
 function isSafeAtomicToken(value: string): boolean {
-  const normalized = value
-    .trim()
-    .replace(/^Bearer\s+/iu, "")
-    .replace(/^["'`]|["'`,;]$/gu, "");
+  const normalized = normalizeAtomicToken(value);
   return normalized.length === 0
     || normalized.startsWith("fixture-")
     || normalized === "change-me"
@@ -45,9 +61,7 @@ function isSafeAtomicToken(value: string): boolean {
 
 function isSafeCookieHeader(value: string): boolean {
   if (isSafeAtomicToken(value)) return true;
-  const normalized = value
-    .trim()
-    .replace(/^["'`]|["'`,;]$/gu, "");
+  const normalized = unwrapPairedQuotes(value.trim());
   const cookieParts = normalized.split(";").map((part) => part.trim());
   return cookieParts.length > 0 && cookieParts.every((part) => {
     const separator = part.indexOf("=");
@@ -59,6 +73,85 @@ function isSafeNamedValue(name: string, value: string): boolean {
   return name.toLowerCase() === "cookie"
     ? isSafeCookieHeader(value)
     : isSafeAtomicToken(value);
+}
+
+function sourcePath(name: string): string {
+  return name
+    .replaceAll("\\", "/")
+    .replace(/^(?:git|dist):/iu, "");
+}
+
+function sourceBasename(name: string): string {
+  return sourcePath(name).split("/").at(-1)?.toLowerCase() ?? "";
+}
+
+function isLogSource(name: string): boolean {
+  return sourceBasename(name).endsWith(".log");
+}
+
+function scansBareAssignments(name: string): boolean {
+  const basename = sourceBasename(name);
+  return basename === ".env"
+    || basename.startsWith(".env.")
+    || basename.endsWith(".env")
+    || /\.(?:ya?ml|md|txt|log)$/u.test(basename);
+}
+
+function stripTrueInlineComment(value: string): string {
+  let quote: "\"" | "'" | "`" | null = null;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === undefined) continue;
+    if (quote !== null) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (character === "\\" && quote !== "'") {
+        escaped = true;
+        continue;
+      }
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (
+      character === "#"
+      && (index === 0 || /\s/u.test(value[index - 1] ?? ""))
+    ) {
+      return value.slice(0, index).trimEnd();
+    }
+  }
+  return value.trimEnd();
+}
+
+function scanBareAssignments(
+  input: SecurityInput,
+  violations: string[]
+): void {
+  for (const line of input.content.split(/\r?\n/u)) {
+    const match =
+      /^\s*(?:-\s*)?([A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*(.*)$/u.exec(line);
+    const name = match?.[1];
+    const rawValue = match?.[2];
+    if (
+      name === undefined
+      || rawValue === undefined
+      || !SECRET_NAMES.has(normalizeSecretName(name))
+    ) {
+      continue;
+    }
+    const value = stripTrueInlineComment(rawValue);
+    if (!isSafeNamedValue(name, value)) {
+      violations.push(
+        `${input.name} contains non-fixture sensitive assignment`
+      );
+    }
+  }
 }
 
 function walkJson(
@@ -145,37 +238,29 @@ function scanText(input: SecurityInput, violations: string[]): void {
       );
     }
   }
-  if (/\.(?:env|ya?ml|md|txt|log)$/iu.test(input.name)) {
-    const bareAssignments =
-      /^\s*(?:-\s*)?(origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*([^\s#,\]]+)/gimu;
-    for (const match of input.content.matchAll(bareAssignments)) {
-      const name = match[1];
-      const value = match[2];
-      if (
-        name !== undefined
-        && value !== undefined
-        && !isSafeNamedValue(name, value)
-      ) {
-        violations.push(
-          `${input.name} contains non-fixture sensitive assignment`
-        );
-      }
-    }
-    const bareAuthorization =
-      /^\s*(?:-\s*)?authorization\s*[:=]\s*(?:Bearer\s+)?([^\s#,\]]+)/gimu;
-    for (const match of input.content.matchAll(bareAuthorization)) {
-      const value = match[1];
-      if (value !== undefined && !isSafeAtomicToken(value)) {
-        violations.push(
-          `${input.name} contains non-fixture sensitive assignment`
-        );
-      }
-    }
+  if (scansBareAssignments(input.name)) {
+    scanBareAssignments(input, violations);
   }
   const jdMediaUrl =
     /\bhttps?:\/\/(?:[a-z0-9-]+\.)?(?:360buyimg\.com|jcloudcs\.com|jdcdn\.com|jdcloud-oss\.com)\/[^\s"'<>)]*/giu;
   if (jdMediaUrl.test(input.content)) {
     violations.push(`${input.name} contains a JD media URL`);
+  }
+  if (isLogSource(input.name)) {
+    for (const [index, line] of input.content.split(/\r?\n/u).entries()) {
+      if (line.trim().length === 0) continue;
+      try {
+        walkJson(
+          JSON.parse(line) as unknown,
+          input.name,
+          `$line[${String(index + 1)}]`,
+          violations
+        );
+      } catch {
+        // Log files may mix plain text and JSONL records.
+      }
+    }
+    return;
   }
   try {
     const parsed = JSON.parse(input.content) as unknown;
@@ -184,17 +269,14 @@ function scanText(input: SecurityInput, violations: string[]): void {
       && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : null;
-    const securityShaped = input.name.endsWith(".log")
-      || topLevel !== null && (
-        "cookies" in topLevel
-        || "origins" in topLevel
-        || Object.keys(topLevel).some((key) =>
-          SECRET_NAMES.has(key.toLowerCase())
-        )
-      );
-    if (securityShaped) {
-      walkJson(parsed, input.name, "$", violations);
-    }
+    const securityShaped = topLevel !== null && (
+      "cookies" in topLevel
+      || "origins" in topLevel
+      || Object.keys(topLevel).some((key) =>
+        SECRET_NAMES.has(normalizeSecretName(key))
+      )
+    );
+    if (securityShaped) walkJson(parsed, input.name, "$", violations);
   } catch {
     // Most tracked files are source or documentation rather than JSON.
   }
@@ -256,6 +338,30 @@ function npmCommand(): { executable: string; prefix: string[] } {
   return { executable: "npm", prefix: [] };
 }
 
+export function isForbiddenPackagePath(path: string): boolean {
+  const segments = path
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/u, "")
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => segment.toLowerCase());
+  if (segments.some((segment) => (
+    segment === ".env"
+    || segment.startsWith(".env.")
+    || segment === "data"
+    || segment === "test"
+    || segment === "tests"
+    || segment === "playwright-report"
+    || segment === "test-results"
+    || segment === "storage-state"
+    || segment.startsWith("storage-state.")
+  ))) {
+    return true;
+  }
+  const basename = segments.at(-1) ?? "";
+  return /\.(?:sqlite|db|mp4|mov|avi|webm)$/u.test(basename);
+}
+
 export function collectProjectSecurityInputs(
   projectRoot: string,
   captured: readonly SecurityInput[] = []
@@ -289,12 +395,10 @@ export function collectProjectSecurityInputs(
   const packageManifest = JSON.parse(packageDryRun) as Array<{
     files?: Array<{ path?: string }>;
   }>;
-  const forbiddenPackagePath =
-    /(?:^|\/)(?:\.env(?:\.|$)|data|tests?|storage-state|playwright-report|test-results)(?:\/|$)|\.(?:sqlite|db)$|\.(?:mp4|mov|avi|webm)$/iu;
   for (const file of packageManifest.flatMap((entry) => entry.files ?? [])) {
     if (
       typeof file.path === "string"
-      && forbiddenPackagePath.test(file.path.replaceAll("\\", "/"))
+      && isForbiddenPackagePath(file.path)
     ) {
       throw new Error(`npm package contains forbidden path: ${file.path}`);
     }

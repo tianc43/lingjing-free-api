@@ -16,6 +16,7 @@ import { createTempBudget } from "../../src/media/temp-budget.js";
 import {
   assertNoSensitiveValues,
   collectProjectSecurityInputs,
+  isForbiddenPackagePath,
   scanSecrets
 } from "../helpers/secret-scan.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
@@ -246,6 +247,107 @@ describe("security regression", () => {
     expect(scanSecrets([{ name, content }])).toEqual([
       expect.stringContaining(name)
     ]);
+  });
+
+  it.each([
+    [
+      "git:.env.example",
+      ["LINGJING_API_KEY=${SAFE_NAME:-}", "stolen-secret"].join(",")
+    ],
+    [
+      "git:config/.env.production",
+      ["LINGJING_API_KEY=change-me", "stolen-secret"].join(",")
+    ],
+    [
+      "git:config\\.env.local",
+      ["LINGJING_API_KEY=\"change-me", "\""].join(",")
+    ],
+    [
+      "git:.env.semicolon",
+      ["LINGJING_API_KEY=change-me", ""].join(";")
+    ],
+    [
+      "git:.env.backtick",
+      ["LINGJING_API_KEY=change-me", ""].join("`")
+    ]
+  ])("rejects the complete bare assignment RHS in %s", (name, content) => {
+    expect(scanSecrets([{ name, content }])).toEqual([
+      expect.stringContaining(name)
+    ]);
+  });
+
+  it("strips only an unquoted inline comment from a bare assignment", () => {
+    expect(scanSecrets([{
+      name: "git:.env.example",
+      content: "LINGJING_API_KEY=fixture-downstream # operator note"
+    }])).toEqual([]);
+
+    const quotedHash = [
+      "LINGJING_API_KEY=\"change-me,",
+      "#not-a-comment\""
+    ].join("");
+    expect(scanSecrets([{
+      name: "git:.env.example",
+      content: quotedHash
+    }])).toEqual([
+      expect.stringContaining("git:.env.example")
+    ]);
+  });
+
+  it("parses every non-empty Pino JSONL line independently", () => {
+    const content = [
+      JSON.stringify({ level: 30, status: "fixture-ok" }),
+      JSON.stringify({
+        level: 40,
+        cookies: [{
+          name: "thor",
+          value: ["stolen", "jsonl-cookie"].join("-")
+        }]
+      })
+    ].join("\n");
+
+    expect(scanSecrets([{
+      name: "captured-pino.log",
+      content
+    }])).toEqual([
+      expect.stringContaining("captured-pino.log")
+    ]);
+  });
+
+  it("accepts multi-line fixture-only Pino JSONL", () => {
+    const content = [
+      JSON.stringify({ level: 30, status: "fixture-ok" }),
+      JSON.stringify({
+        level: 30,
+        cookies: [{ name: "thor", value: "fixture-jsonl-cookie" }]
+      })
+    ].join("\n");
+
+    expect(scanSecrets([{ name: "fixture-pino.log", content }])).toEqual([]);
+  });
+
+  it.each([
+    ".env",
+    ".env.production",
+    "config/.env.local",
+    "config\\.env.test",
+    "tests",
+    "data/private.txt",
+    "storage-state.json",
+    "result.sqlite",
+    "media.mp4"
+  ])("rejects forbidden package path %s", (path) => {
+    expect(isForbiddenPackagePath(path)).toBe(true);
+  });
+
+  it.each([
+    "dist/environment.js",
+    "dist/my.env.production.js",
+    "dist/database.js",
+    "dist/contest.js",
+    "README.md"
+  ])("does not reject normal package path %s", (path) => {
+    expect(isForbiddenPackagePath(path)).toBe(false);
   });
 
   it.each([
