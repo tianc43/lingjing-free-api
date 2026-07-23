@@ -39,6 +39,21 @@ describe("redactForLog", () => {
     });
   });
 
+  it.each([
+    ["./callback?query-secret=yes#fragment-secret", "./callback"],
+    ["callback?query-secret=yes#fragment-secret", "callback"],
+    ["../callback?query-secret=yes#fragment-secret", "../callback"],
+    ["?query-secret=yes", ""],
+    ["#fragment-secret", ""]
+  ])("strips all relative URL reference metadata from %s", (reference, expected) => {
+    const safe = redactForLog({ callbackUrl: reference, description: "ordinary text?unchanged#fragment" });
+    const serialized = JSON.stringify(safe);
+
+    expect(serialized).not.toContain("query-secret");
+    expect(serialized).not.toContain("fragment-secret");
+    expect(safe).toEqual({ callbackUrl: expected, description: "ordinary text?unchanged#fragment" });
+  });
+
   it("redacts real Pino output and emits only safe serializer fields outside development", () => {
     const output: string[] = [];
     const stream = new Writable({

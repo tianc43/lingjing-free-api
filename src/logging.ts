@@ -11,27 +11,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function safeUrl(value: string): string {
+function isUrlField(key: string): boolean {
+  const normalizedKey = key.toLowerCase();
+  return normalizedKey === "href" || normalizedKey === "uri" || normalizedKey.endsWith("url") || normalizedKey.endsWith("uri");
+}
+
+function safeUrl(value: string, isUrlReference = false): string {
   try {
     const url = new URL(value);
     url.search = "";
     url.hash = "";
     return url.toString();
   } catch {
-    if (value.startsWith("/")) {
-      const url = new URL(value, "http://localhost");
-      return url.pathname;
+    if (isUrlReference) {
+      return value.split(/[?#]/, 1)[0] ?? value;
     }
     return value;
   }
 }
 
-export function redactForLog(value: unknown): unknown {
+export function redactForLog(value: unknown, isUrlReference = false): unknown {
   if (Array.isArray(value)) {
-    return value.map(redactForLog);
+    return value.map((entry) => redactForLog(entry, isUrlReference));
   }
   if (!isRecord(value)) {
-    return typeof value === "string" ? safeUrl(value) : value;
+    return typeof value === "string" ? safeUrl(value, isUrlReference) : value;
   }
 
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
@@ -45,7 +49,7 @@ export function redactForLog(value: unknown): unknown {
     if (mediaKeys.has(normalizedKey) && Array.isArray(entry)) {
       return [key, `[MEDIA count=${String(entry.length)}]`];
     }
-    return [key, redactForLog(entry)];
+    return [key, redactForLog(entry, isUrlField(key))];
   }));
 }
 
@@ -53,7 +57,7 @@ function requestSerializer(request: unknown): Record<string, unknown> {
   if (!isRecord(request)) {
     return {};
   }
-  const url = typeof request.url === "string" ? safeUrl(request.url) : undefined;
+  const url = typeof request.url === "string" ? safeUrl(request.url, true) : undefined;
   return {
     ...(typeof request.method === "string" ? { method: request.method } : {}),
     ...(url === undefined ? {} : { pathname: new URL(url, "http://localhost").pathname })
