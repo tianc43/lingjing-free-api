@@ -56,7 +56,7 @@ function isSafeCookieHeader(value: string): boolean {
 }
 
 function isSafeNamedValue(name: string, value: string): boolean {
-  return normalizeSecretName(name) === "cookie"
+  return name.toLowerCase() === "cookie"
     ? isSafeCookieHeader(value)
     : isSafeAtomicToken(value);
 }

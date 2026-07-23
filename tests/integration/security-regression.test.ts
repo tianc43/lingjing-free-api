@@ -147,12 +147,19 @@ describe("security regression", () => {
           name: "cookie",
           value: similarAtomicValue
         })
+      },
+      {
+        name: "atomic-cookie-lookalike-field.log",
+        content: JSON.stringify({
+          [["coo", "kie"].join("-")]: cookieShapedAtomicValue
+        })
       }
     ]);
 
     expect(violations).toEqual(expect.arrayContaining([
       expect.stringContaining("atomic-storage-state.json"),
-      expect.stringContaining("atomic-named-record.log")
+      expect.stringContaining("atomic-named-record.log"),
+      expect.stringContaining("atomic-cookie-lookalike-field.log")
     ]));
   });
 
