@@ -451,6 +451,16 @@ export class SqliteJobRepository {
     return rows.map((row) => rowToJob(row));
   }
 
+  history(id: string): JobStatus[] {
+    const rows = this.openDatabase().prepare(`
+      SELECT status
+      FROM job_status_history
+      WHERE job_id = ?
+      ORDER BY id ASC
+    `).all(id) as Array<{ status: JobStatus }>;
+    return rows.map((row) => row.status);
+  }
+
   close(): void {
     const database = this.database;
     if (database === null) return;

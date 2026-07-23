@@ -1,37 +1,11 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { JobRunnerRegistry } from "../generation/runner-registry.js";
 import type { CapacityManager } from "./capacity.js";
 import type { SqliteJobRepository } from "./sqlite-repository.js";
 import type { CapacityLease, JobRecord } from "./types.js";
 
-export class JobRunnerRegistry {
-  private readonly running = new Map<string, Promise<void>>();
-
-  startOnce(
-    jobId: string,
-    start: () => Promise<void>
-  ): Promise<void> {
-    const existing = this.running.get(jobId);
-    if (existing !== undefined) return existing;
-
-    const promise = Promise.resolve().then(start);
-    this.running.set(jobId, promise);
-    void promise.finally(() => {
-      if (this.running.get(jobId) === promise) this.running.delete(jobId);
-    }).catch(() => undefined);
-    return promise;
-  }
-
-  isRunning(jobId: string): boolean {
-    return this.running.has(jobId);
-  }
-
-  async waitUntilIdle(): Promise<void> {
-    while (this.running.size > 0) {
-      await Promise.allSettled([...this.running.values()]);
-    }
-  }
-}
+export { JobRunnerRegistry } from "../generation/runner-registry.js";
 
 export async function removeOrphanTemporaryFiles(
   directory: string,
@@ -229,6 +203,6 @@ export class StartupRecovery {
     return this.options.registry.startOnce(
       job.id,
       () => this.options.resumeJob(job, lease)
-    );
+    ).promise;
   }
 }
