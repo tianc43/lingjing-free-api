@@ -1,7 +1,7 @@
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareDataUri } from "../../src/media/data-uri.js";
 import { createTempBudget } from "../../src/media/temp-budget.js";
 
@@ -63,6 +63,34 @@ describe("data URI media preparation", () => {
 
     expect(tempBudget.usedBytes()).toBe(0);
     expect(requestBudget.usedBytes()).toBe(0);
+  });
+
+  it("reserves decoded bytes before calling Buffer.from", async () => {
+    const directory = await testDirectory();
+    const encoded = Buffer.alloc(3).toString("base64");
+    const tempBudget = createTempBudget(2);
+    const requestBudget = createTempBudget(10);
+    const from = vi.spyOn(Buffer, "from");
+    try {
+      await expect(
+        prepareDataUri(`data:image/png;base64,${encoded}`, {
+          kind: "image",
+          maxBytes: 10,
+          tempDirectory: directory,
+          tempBudget,
+          requestBudget
+        })
+      ).rejects.toMatchObject({ code: "temporary_storage_exhausted" });
+
+      const base64Calls = from.mock.calls.filter(
+        (call) => (call as unknown[])[1] === "base64"
+      );
+      expect(base64Calls).toHaveLength(0);
+      expect(tempBudget.usedBytes()).toBe(0);
+      expect(requestBudget.usedBytes()).toBe(0);
+    } finally {
+      from.mockRestore();
+    }
   });
 
   it("writes a private disposable temp file with a safe generated name", async () => {

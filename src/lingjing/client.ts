@@ -2,12 +2,18 @@ import { request, type Dispatcher } from "undici";
 import { Readable } from "node:stream";
 import { AppError, errors } from "../errors.js";
 import { type Envelope, unwrapEnvelope } from "./envelope.js";
-import { SubmitAmbiguousError, TransportUncertainError, isTransportUncertain } from "./error-map.js";
+import {
+  SubmitAmbiguousError,
+  TransportUncertainError,
+  isTransportUncertain,
+  markInitializedUploadError
+} from "./error-map.js";
 import type { LingjingClientOptions, LingjingTransport, ReadRequest, SignedUploadResponse, UploadRequest } from "./types.js";
 
 const DEFAULT_BASE_URL = new URL("https://lingjing.jdcloud.com");
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_READ_RETRIES = 2;
+const SIGNED_UPLOAD_TTL_MS = 10 * 60_000;
 const CREDENTIAL_HEADERS = new Set(["authorization", "cookie", "x-csrf-token", "origin", "referer"]);
 
 function setCookieValues(value: string | string[] | undefined): string[] {
@@ -32,7 +38,10 @@ export class LingjingClient implements LingjingTransport {
   private readonly baseUrl: URL;
   private readonly dispatcher: Dispatcher | undefined;
   private readonly sleep: (milliseconds: number) => Promise<void>;
-  private readonly signedUploadUrls = new Map<string, string>();
+  private readonly signedUploadUrls = new Map<
+    string,
+    { uploadId: string; expiresAt: number }
+  >();
 
   constructor(private readonly options: LingjingClientOptions) {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
@@ -41,7 +50,6 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async read<T>(path: string, init: ReadRequest = {}): Promise<T> {
-    this.signedUploadUrls.clear();
     let csrfRefreshed = false;
     for (let attempt = 0; attempt <= MAX_READ_RETRIES; attempt += 1) {
       try {
@@ -67,7 +75,6 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async submitOnce<T>(path: string, body: unknown): Promise<T> {
-    this.signedUploadUrls.clear();
     let requestWritten = false;
     try {
       requestWritten = true;
@@ -81,7 +88,15 @@ export class LingjingClient implements LingjingTransport {
   async uploadApi<T>(path: string, init: UploadRequest): Promise<T> {
     if (path === "/joycreator/upload/init") {
       const result = await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
-      this.registerSignedUploadUrls(result);
+      const uploadId = this.potentialUploadId(result);
+      try {
+        this.registerSignedUploadUrls(result);
+      } catch (cause) {
+        if (uploadId !== undefined) {
+          throw markInitializedUploadError(cause, uploadId);
+        }
+        throw cause;
+      }
       return result;
     }
     if (path === "/joycreator/upload/complete" || path === "/joycreator/upload/cancel") {
@@ -89,17 +104,16 @@ export class LingjingClient implements LingjingTransport {
       try {
         return await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
       } finally {
-        if (uploadId === undefined) this.signedUploadUrls.clear();
-        else this.removeSignedUploadUrls(uploadId);
+        if (uploadId !== undefined) this.removeSignedUploadUrls(uploadId);
       }
     }
-    this.signedUploadUrls.clear();
     return this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
   }
 
   async putSigned(url: URL, init: UploadRequest): Promise<SignedUploadResponse> {
     if (init.method !== "PUT") throw new Error("Signed upload requests must use PUT");
     if (url.protocol !== "https:") throw new Error("Signed upload URL must use HTTPS");
+    this.removeExpiredSignedUploadUrls();
     if (!this.signedUploadUrls.delete(url.toString())) throw new Error("Signed upload URL is not trusted or has already been consumed");
     const headers = Object.fromEntries(Object.entries(init.headers ?? {}).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
     const controller = new AbortController();
@@ -162,6 +176,7 @@ export class LingjingClient implements LingjingTransport {
   }
 
   private registerSignedUploadUrls(value: unknown): void {
+    this.removeExpiredSignedUploadUrls();
     if (!isPlainObject(value)) throw errors.upstream();
     const hasSingle = "single" in value;
     const hasMultipart = "multipart" in value;
@@ -203,10 +218,25 @@ export class LingjingClient implements LingjingTransport {
     if (validatedUrls.size !== candidates.length) throw errors.upstream();
     for (const url of validatedUrls) {
       const owner = this.signedUploadUrls.get(url);
-      if (owner !== undefined && owner !== uploadId) throw errors.upstream();
+      if (owner !== undefined && owner.uploadId !== uploadId) throw errors.upstream();
     }
     this.removeSignedUploadUrls(uploadId);
-    for (const url of validatedUrls) this.signedUploadUrls.set(url, uploadId);
+    const expiresAt = Date.now() + SIGNED_UPLOAD_TTL_MS;
+    for (const url of validatedUrls) {
+      this.signedUploadUrls.set(url, { uploadId, expiresAt });
+    }
+  }
+
+  private potentialUploadId(value: unknown): string | undefined {
+    if (!isPlainObject(value)) return undefined;
+    const branches = [value.single, value.multipart]
+      .filter(isPlainObject)
+      .map((branch) => branch.uploadId)
+      .filter((uploadId): uploadId is string => (
+        typeof uploadId === "string" && uploadId.trim().length > 0
+      ));
+    const unique = new Set(branches);
+    return unique.size === 1 ? branches[0] : undefined;
   }
 
   private uploadIdFromBody(body: UploadRequest["body"]): string | undefined {
@@ -224,7 +254,14 @@ export class LingjingClient implements LingjingTransport {
 
   private removeSignedUploadUrls(uploadId: string): void {
     for (const [url, owner] of this.signedUploadUrls) {
-      if (owner === uploadId) this.signedUploadUrls.delete(url);
+      if (owner.uploadId === uploadId) this.signedUploadUrls.delete(url);
+    }
+  }
+
+  private removeExpiredSignedUploadUrls(): void {
+    const now = Date.now();
+    for (const [url, capability] of this.signedUploadUrls) {
+      if (capability.expiresAt <= now) this.signedUploadUrls.delete(url);
     }
   }
 }

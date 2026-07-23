@@ -1,5 +1,6 @@
 import { Agent, request as undiciRequest, type Dispatcher } from "undici";
 import { basename } from "node:path";
+import type { LookupFunction } from "node:net";
 import type { AddressResolver, ValidatedTarget } from "./address-policy.js";
 import {
   assertPublicHttpTarget,
@@ -48,19 +49,25 @@ export interface RemoteFetchOptions {
   maxBytes: number;
 }
 
+export function createPinnedLookup(
+  target: ValidatedTarget
+): LookupFunction {
+  return (_hostname, options, callback): void => {
+    if (options.all) {
+      callback(null, [{
+        address: target.address,
+        family: target.family
+      }]);
+      return;
+    }
+    callback(null, target.address, target.family);
+  };
+}
+
 function createPinnedDispatcher(target: ValidatedTarget): PinnedDispatcher {
   return new Agent({
     connect: {
-      lookup(_hostname, options, callback): void {
-        if (options.all) {
-          callback(null, [{
-            address: target.address,
-            family: target.family
-          }]);
-          return;
-        }
-        callback(null, target.address, target.family);
-      }
+      lookup: createPinnedLookup(target)
     }
   });
 }

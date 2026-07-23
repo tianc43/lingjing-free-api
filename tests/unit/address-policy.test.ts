@@ -8,6 +8,7 @@ import {
   type AddressResolver
 } from "../../src/media/address-policy.js";
 import {
+  createPinnedLookup,
   RemoteMediaFetcher,
   type PinnedDispatcherFactory,
   type RemoteRequest
@@ -27,6 +28,28 @@ afterEach(async () => {
 });
 
 describe("remote media address policy", () => {
+  it("default pinned lookup returns only the validated address", async () => {
+    const lookup = createPinnedLookup({
+      hostname: "rebind.test",
+      address: "93.184.216.34",
+      family: 4
+    });
+
+    const addresses = await new Promise<unknown>((resolve, reject) => {
+      lookup("rebind.test", { all: true }, (error, value) => {
+        if (error !== null) {
+          reject(error);
+          return;
+        }
+        resolve(value);
+      });
+    });
+
+    expect(addresses).toEqual([
+      { address: "93.184.216.34", family: 4 }
+    ]);
+  });
+
   it.each([
     "http://127.0.0.1/a.png",
     "http://[::1]/a.png",

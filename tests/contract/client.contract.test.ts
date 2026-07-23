@@ -4,8 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LingjingClient } from "../../src/lingjing/client.js";
+import type { PreparedMedia } from "../../src/media/types.js";
 import { CookieFileProvider } from "../../src/session/cookie-file-provider.js";
 import { StorageStateProvider } from "../../src/session/storage-state-provider.js";
+import { LingjingUploadService } from "../../src/uploads/upload-service.js";
 import { MockLingjing } from "../helpers/mock-lingjing.js";
 
 const mocks: MockLingjing[] = [];
@@ -22,6 +24,21 @@ async function createClientWithSessionMode(mode: "browser-state" | "cookie-file"
   const session = mock.createSession(mode);
   await session.seed();
   return { mock, session, client: new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher, sleep: () => Promise.resolve() }) };
+}
+
+function preparedMedia(): PreparedMedia & { disposeCount: () => number } {
+  let disposed = 0;
+  return {
+    filename: "fixture.png",
+    contentType: "image/png",
+    size: 3,
+    openRead: () => Readable.from("png"),
+    dispose: () => {
+      disposed += 1;
+      return Promise.resolve();
+    },
+    disposeCount: () => disposed
+  };
 }
 
 describe("LingjingClient contract", () => {
@@ -110,13 +127,131 @@ describe("LingjingClient contract", () => {
     })).resolves.toMatchObject({ statusCode: 200 });
   });
 
-  it("invalidates signed URL trust after an unrelated logical request", async () => {
+  it("preserves a general upload capability across read, submit, materials and other requests", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/signed-part");
     mock.respondWithResult({ single: { uploadId: "upload-unrelated", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await client.read("/unrelated");
-    await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
+    await client.submitOnce("/unrelated-submit", {});
+    await client.uploadApi("/joycreator/AIModelApiConsole/uploadMaterials", {
+      method: "POST",
+      body: Buffer.from("materials"),
+      timeoutMs: 5_000
+    });
+    await client.uploadApi("/some-other-upload", {
+      method: "POST",
+      body: Buffer.from("other"),
+      timeoutMs: 5_000
+    });
+    await expect(client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+    await expect(client.putSigned(signed, {
+      method: "PUT",
+      body: Buffer.from("x"),
+      timeoutMs: 5_000
+    })).rejects.toThrow("trusted");
+  });
+
+  it("complete or cancel removes only the matching upload capability", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const first = new URL("https://object-storage.example/scoped-first");
+    const second = new URL("https://object-storage.example/scoped-second");
+    mock.respondWithResult({
+      single: { uploadId: "scope-first", uploadUrl: first.toString() }
+    });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("first"),
+      timeoutMs: 5_000
+    });
+    mock.respondWithResult({
+      single: { uploadId: "scope-second", uploadUrl: second.toString() }
+    });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("second"),
+      timeoutMs: 5_000
+    });
+
+    await client.uploadApi("/joycreator/upload/cancel", {
+      method: "POST",
+      body: JSON.stringify({ uploadId: "scope-first" }),
+      timeoutMs: 5_000
+    });
+
+    await expect(client.putSigned(first, {
+      method: "PUT",
+      body: Buffer.from("first"),
+      timeoutMs: 5_000
+    })).rejects.toThrow("trusted");
+    await expect(client.putSigned(second, {
+      method: "PUT",
+      body: Buffer.from("second"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+  });
+
+  it("expires abandoned signed URL capabilities", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const { client, mock } = await createClientWithSessionMode();
+      const signed = new URL("https://object-storage.example/expired");
+      mock.respondWithResult({
+        single: { uploadId: "upload-expired", uploadUrl: signed.toString() }
+      });
+      await client.uploadApi("/joycreator/upload/init", {
+        method: "POST",
+        body: Buffer.from("init"),
+        timeoutMs: 5_000
+      });
+
+      vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+      await expect(client.putSigned(signed, {
+        method: "PUT",
+        body: Buffer.from("x"),
+        timeoutMs: 5_000
+      })).rejects.toThrow("trusted");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels once through the real client when init registration fails after the network response", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const media = preparedMedia();
+    const uploads = new LingjingUploadService(client, {
+      uploadStrategy: "general"
+    });
+    mock.respondWithResult({
+      single: {
+        uploadId: "registration-failed",
+        uploadUrl: "http://object-storage.example/unsafe"
+      }
+    });
+
+    const error = await uploads.upload(media, {
+      sceneCode: "fixture-scene",
+      modelCode: "fixture-model",
+      spaceId: 42
+    }).then(
+      () => undefined,
+      (cause: unknown) => cause
+    );
+
+    expect(error).toMatchObject({
+      code: "lingjing_upstream_error",
+      message: "Lingjing upstream request failed"
+    });
+    expect(mock.count("/joycreator/upload/init")).toBe(1);
+    expect(mock.count("/joycreator/upload/cancel")).toBe(1);
+    expect(mock.count("/joycreator/upload/complete")).toBe(0);
+    expect(mock.count("/unsafe")).toBe(0);
+    expect(media.disposeCount()).toBe(1);
   });
 
   it("passes ReadableStream uploads through without JSON encoding", async () => {

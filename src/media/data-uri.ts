@@ -1,6 +1,6 @@
 import { errors } from "../errors.js";
 import type { PreparedMedia, TempBudget } from "./types.js";
-import { createPreparedTempFileFromBuffer } from "./temp-files.js";
+import { createPreparedTempFileFromBufferFactory } from "./temp-files.js";
 
 export interface PrepareDataUriOptions {
   kind: "image" | "video";
@@ -41,6 +41,7 @@ export async function prepareDataUri(
   if (match?.[1] === undefined || match[2] === undefined) {
     throw errors.invalidRequest("Media data URI must be base64 encoded");
   }
+  const encoded = match[2];
   const contentType = match[1].toLowerCase();
   if (
     !/^(?:image|video)\/[a-z0-9][a-z0-9.+-]*$/u.test(contentType)
@@ -49,23 +50,22 @@ export async function prepareDataUri(
     throw errors.invalidRequest("Unsupported media data URI content type");
   }
 
-  const size = decodedBase64Size(match[2]);
+  const size = decodedBase64Size(encoded);
   if (size > options.maxBytes) {
     throw errors.invalidRequest("Media exceeds the configured size limit");
   }
 
   const extension = EXTENSIONS[contentType]
     ?? `.${contentType.split("/")[1]?.replace(/[^a-z0-9]+/gu, "").slice(0, 12) || "bin"}`;
-  const data = Buffer.from(match[2], "base64");
-  if (data.byteLength !== size) {
-    throw errors.invalidRequest("Invalid base64 media data");
-  }
-
-  return createPreparedTempFileFromBuffer(data, {
-    filename: `media${extension}`,
-    contentType,
-    tempDirectory: options.tempDirectory,
-    tempBudget: options.tempBudget,
-    requestBudget: options.requestBudget
-  });
+  return createPreparedTempFileFromBufferFactory(
+    size,
+    () => Buffer.from(encoded, "base64"),
+    {
+      filename: `media${extension}`,
+      contentType,
+      tempDirectory: options.tempDirectory,
+      tempBudget: options.tempBudget,
+      requestBudget: options.requestBudget
+    }
+  );
 }

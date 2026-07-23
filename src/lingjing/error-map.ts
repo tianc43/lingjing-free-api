@@ -19,6 +19,30 @@ export class TransportUncertainError extends Error {
   }
 }
 
+const INITIALIZED_UPLOAD_ID = "initializedUploadId";
+
+export function markInitializedUploadError(
+  cause: unknown,
+  uploadId: string
+): Error {
+  const error = cause instanceof Error ? cause : errors.upstream();
+  Object.defineProperty(error, INITIALIZED_UPLOAD_ID, {
+    value: uploadId,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  });
+  return error;
+}
+
+export function initializedUploadId(cause: unknown): string | undefined {
+  if (!(cause instanceof Error)) return undefined;
+  const value: unknown = Reflect.get(cause, INITIALIZED_UPLOAD_ID);
+  return typeof value === "string" && value.length > 0
+    ? value
+    : undefined;
+}
+
 export function mapUpstreamError(error: UpstreamError | null | undefined, statusCode?: number): AppError {
   const code = (typeof error?.code === "string" || typeof error?.code === "number" ? String(error.code) : "").toUpperCase();
   const message = (typeof error?.message === "string" ? error.message : "").toUpperCase();

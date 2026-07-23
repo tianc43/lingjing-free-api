@@ -6,6 +6,7 @@ import type {
   LingjingTransport,
   SignedUploadResponse
 } from "../lingjing/types.js";
+import { initializedUploadId } from "../lingjing/error-map.js";
 import type { InitUploadResult, UploadService } from "./types.js";
 
 const UPLOAD_TIMEOUT_MS = 30_000;
@@ -315,6 +316,7 @@ export class LingjingUploadService implements UploadService {
       );
       return normalizeMaterial(completed);
     } catch (cause) {
+      uploadId ??= initializedUploadId(cause);
       const original = sanitizeError(cause, errors.upstream());
       if (uploadId !== undefined) {
         await this.cancel(uploadId).catch(() => undefined);

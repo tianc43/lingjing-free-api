@@ -117,23 +117,45 @@ async function privateTempFile(
   const filename = safeFilename(options.filename);
   const path = join(options.tempDirectory, filename);
   const handle = await open(path, "wx", 0o600);
-  await chmod(path, 0o600);
-  return { handle, path, filename };
+  try {
+    await chmod(path, 0o600);
+    return { handle, path, filename };
+  } catch (cause) {
+    await handle.close().catch(() => undefined);
+    await rm(path, { force: true }).catch(() => undefined);
+    throw cause;
+  }
 }
 
 export async function createPreparedTempFileFromBuffer(
   data: Buffer,
   options: BufferTempFileOptions
 ): Promise<PreparedMedia> {
+  return createPreparedTempFileFromBufferFactory(
+    data.byteLength,
+    () => data,
+    options
+  );
+}
+
+export async function createPreparedTempFileFromBufferFactory(
+  expectedSize: number,
+  materialize: () => Buffer,
+  options: BufferTempFileOptions
+): Promise<PreparedMedia> {
   const leases = reserveBoth(
     options.tempBudget,
     options.requestBudget,
-    data.byteLength
+    expectedSize
   );
   let temporary:
     | Awaited<ReturnType<typeof privateTempFile>>
     | undefined;
   try {
+    const data = materialize();
+    if (data.byteLength !== expectedSize) {
+      throw errors.invalidRequest("Decoded media size did not match its preflight size");
+    }
     temporary = await privateTempFile(options);
     await temporary.handle.writeFile(data);
     await temporary.handle.close();
@@ -141,7 +163,7 @@ export async function createPreparedTempFileFromBuffer(
       temporary.path,
       temporary.filename,
       options.contentType,
-      data.byteLength,
+      expectedSize,
       leases
     );
   } catch (cause) {
