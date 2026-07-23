@@ -34,7 +34,26 @@ export function routeSchema(input: {
   params?: z.ZodType;
   querystring?: z.ZodType;
   response: Record<number, z.ZodType>;
+  responseContent?: Record<number, Record<string, z.ZodType>>;
 }): FastifySchema {
+  const response = Object.fromEntries(
+    Object.entries(input.response).map(([status, schema]) => [
+      status,
+      jsonSchema(schema)
+    ])
+  );
+  for (const [status, content] of Object.entries(
+    input.responseContent ?? {}
+  )) {
+    response[status] = {
+      content: Object.fromEntries(
+        Object.entries(content).map(([contentType, schema]) => [
+          contentType,
+          { schema: jsonSchema(schema) }
+        ])
+      )
+    };
+  }
   return {
     security: input.security,
     ...(input.bodyContent === undefined
@@ -62,11 +81,6 @@ export function routeSchema(input: {
     ...(input.querystring === undefined
       ? {}
       : { querystring: jsonSchema(input.querystring, "input") }),
-    response: Object.fromEntries(
-      Object.entries(input.response).map(([status, schema]) => [
-        status,
-        jsonSchema(schema)
-      ])
-    )
+    response
   };
 }

@@ -12,6 +12,7 @@ import Fastify, {
 import { isAuthorized } from "./api/auth.js";
 import { registerErrorHandler } from "./api/error-handler.js";
 import { registerAccountRoutes } from "./api/routes/account.js";
+import { registerChatRoutes } from "./api/routes/chat.js";
 import { registerImageRoutes } from "./api/routes/images.js";
 import { registerModelRoutes } from "./api/routes/models.js";
 import { registerSystemRoutes } from "./api/routes/system.js";
@@ -131,6 +132,7 @@ export async function buildApp(
     }
 
     registerAccountRoutes(protectedApp, dependencies);
+    registerChatRoutes(protectedApp, dependencies);
     registerImageRoutes(protectedApp, dependencies);
     registerModelRoutes(protectedApp, dependencies);
     registerTaskRoutes(protectedApp, dependencies);
