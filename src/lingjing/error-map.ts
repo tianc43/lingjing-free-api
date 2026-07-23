@@ -25,10 +25,10 @@ export function mapUpstreamError(error: UpstreamError | null | undefined, status
   const text = `${code} ${message}`;
   if (text.includes("USER_NOT_LOGIN") || code === "406") return errors.loginRequired();
   if (text.includes("CSRF")) return errors.csrfExpired();
-  if (text.includes("PERMISSION") || statusCode === 403) return errors.permissionDenied();
   if (text.includes("QUOTA") || text.includes("POINT")) return errors.insufficientQuota();
   if (text.includes("AUDIT") || text.includes("CONTENT")) return errors.contentPolicy();
   if (text.includes("RATE") || statusCode === 429) return errors.rateLimited();
+  if (text.includes("PERMISSION") || statusCode === 403) return errors.permissionDenied();
   return errors.upstream();
 }
 

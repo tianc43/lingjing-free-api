@@ -24,4 +24,19 @@ describe("unwrapEnvelope", () => {
       expect(error).toMatchObject({ statusCode: 502, code: "lingjing_upstream_error" });
     }
   });
+
+  it.each([
+    [403, null, "lingjing_permission_denied"],
+    [429, null, "lingjing_rate_limited"],
+    [400, { code: "AUDIT", message: "audit rejected" }, "content_policy_violation"],
+    [400, { code: "CSRF", message: "expired" }, "lingjing_csrf_expired"],
+    [402, { code: "QUOTA", message: "empty" }, "lingjing_insufficient_points"]
+  ])("maps every non-2xx envelope (%i)", (statusCode, error, code) => {
+    try {
+      unwrapEnvelope({ error, result: null }, statusCode);
+      throw new Error("Expected unwrapEnvelope to throw");
+    } catch (caught) {
+      expect(caught).toMatchObject({ code });
+    }
+  });
 });

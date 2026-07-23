@@ -54,6 +54,7 @@ export class MockLingjing {
   private readFailures = 0;
   private setCookie: string | null = null;
   private disconnectNextSubmit = false;
+  private nextResult: unknown = { ok: true };
 
   constructor() {
     this.dispatcher.disableNetConnect();
@@ -73,6 +74,7 @@ export class MockLingjing {
   failReads(count: number): void { this.readFailures = count; }
   disconnectSubmit(): void { this.disconnectNextSubmit = true; }
   respondWithSetCookie(value: string): void { this.setCookie = value; }
+  respondWithResult(value: unknown): void { this.nextResult = value; }
   count(path: string): number { return this.counts.get(path) ?? 0; }
 
   private reply(options: { path: string; method: string; headers?: unknown }): { statusCode: number; data: string; responseOptions?: { headers: Record<string, string> } } {
@@ -91,6 +93,8 @@ export class MockLingjing {
     }
     const responseOptions = this.setCookie === null ? undefined : { headers: { "set-cookie": this.setCookie } };
     this.setCookie = null;
-    return { statusCode: 200, data: JSON.stringify({ requestId: "fixture", error: null, result: { ok: true } }), ...(responseOptions === undefined ? {} : { responseOptions }) };
+    const result = this.nextResult;
+    this.nextResult = { ok: true };
+    return { statusCode: 200, data: JSON.stringify({ requestId: "fixture", error: null, result }), ...(responseOptions === undefined ? {} : { responseOptions }) };
   }
 }

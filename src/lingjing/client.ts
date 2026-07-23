@@ -1,7 +1,8 @@
-import { request, type Dispatcher } from "undici";
+import { fetch, request, type Dispatcher } from "undici";
+import { Readable } from "node:stream";
 import { AppError } from "../errors.js";
 import { type Envelope, unwrapEnvelope } from "./envelope.js";
-import { SubmitAmbiguousError, TransportUncertainError, isTransportUncertain, mapUpstreamError } from "./error-map.js";
+import { SubmitAmbiguousError, TransportUncertainError, isTransportUncertain } from "./error-map.js";
 import type { LingjingClientOptions, LingjingTransport, ReadRequest, SignedUploadResponse, UploadRequest } from "./types.js";
 
 const DEFAULT_BASE_URL = new URL("https://lingjing.jdcloud.com");
@@ -25,6 +26,7 @@ export class LingjingClient implements LingjingTransport {
   private readonly baseUrl: URL;
   private readonly dispatcher: Dispatcher | undefined;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly signedUploadUrls = new Set<string>();
 
   constructor(private readonly options: LingjingClientOptions) {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
@@ -33,6 +35,7 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async read<T>(path: string, init: ReadRequest = {}): Promise<T> {
+    this.signedUploadUrls.clear();
     let csrfRefreshed = false;
     for (let attempt = 0; attempt <= MAX_READ_RETRIES; attempt += 1) {
       try {
@@ -58,6 +61,7 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async submitOnce<T>(path: string, body: unknown): Promise<T> {
+    this.signedUploadUrls.clear();
     let requestWritten = false;
     try {
       requestWritten = true;
@@ -69,22 +73,27 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async uploadApi<T>(path: string, init: UploadRequest): Promise<T> {
-    return this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
+    this.signedUploadUrls.clear();
+    const result = await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
+    this.registerSignedUploadUrls(result);
+    return result;
   }
 
   async putSigned(url: URL, init: UploadRequest): Promise<SignedUploadResponse> {
+    if (init.method !== "PUT") throw new Error("Signed upload requests must use PUT");
     if (url.protocol !== "https:") throw new Error("Signed upload URL must use HTTPS");
+    if (!this.signedUploadUrls.delete(url.toString())) throw new Error("Signed upload URL is not trusted or has already been consumed");
     const headers = Object.fromEntries(Object.entries(init.headers ?? {}).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
-    const response = await request(url, {
+    const response = await fetch(url, {
       method: init.method,
       headers,
       body: init.body as never,
+      duplex: "half",
+      redirect: "manual",
       ...(this.dispatcher === undefined ? {} : { dispatcher: this.dispatcher }),
-      headersTimeout: init.timeoutMs,
-      bodyTimeout: init.timeoutMs
     });
-    await response.body.dump();
-    return { statusCode: response.statusCode, headers: headerRecord(response.headers) };
+    await response.arrayBuffer();
+    return { statusCode: response.status, headers: headerRecord(Object.fromEntries(response.headers.entries())) };
   }
 
   private async perform<T>(path: string, init: { method: "GET" | "POST" | "PUT"; body?: unknown; query?: ReadRequest["query"]; headers?: Record<string, string>; timeoutMs?: number; timestamp?: boolean }): Promise<T> {
@@ -94,7 +103,7 @@ export class LingjingClient implements LingjingTransport {
     const headers: Record<string, string> = { Accept: "application/json", ...(init.headers ?? {}) };
     if (cookie.length > 0) headers.Cookie = cookie;
     if (snapshot.csrfToken !== null) headers["x-csrf-token"] = snapshot.csrfToken;
-    const jsonBody = init.body !== undefined && !(typeof init.body === "string" || Buffer.isBuffer(init.body) || init.body instanceof Uint8Array || init.body instanceof FormData);
+    const jsonBody = init.body !== undefined && !(typeof init.body === "string" || Buffer.isBuffer(init.body) || init.body instanceof Uint8Array || init.body instanceof FormData || init.body instanceof Readable);
     if (jsonBody) headers["content-type"] ??= "application/json";
     const payload = jsonBody ? JSON.stringify(init.body) : init.body;
     let response;
@@ -110,7 +119,6 @@ export class LingjingClient implements LingjingTransport {
     } catch {
       throw new TransportUncertainError();
     }
-    if (response.statusCode >= 500 && (typeof value !== "object" || value === null)) throw mapUpstreamError(undefined, response.statusCode);
     return unwrapEnvelope<T>(value as Envelope<T>, response.statusCode);
   }
 
@@ -126,5 +134,20 @@ export class LingjingClient implements LingjingTransport {
   private isRetryableReadFailure(cause: unknown): boolean {
     if (cause instanceof TransportUncertainError) return true;
     return cause instanceof AppError && (cause.code === "lingjing_upstream_error" || cause.code === "lingjing_csrf_expired" || cause.code === "lingjing_rate_limited");
+  }
+
+  private registerSignedUploadUrls(value: unknown): void {
+    const collect = (candidate: unknown): void => {
+      if (typeof candidate === "string") {
+        try {
+          const url = new URL(candidate);
+          if (url.protocol === "https:" && url.origin !== this.baseUrl.origin) this.signedUploadUrls.add(url.toString());
+        } catch { /* non-URL values are not upload URLs */ }
+        return;
+      }
+      if (Array.isArray(candidate)) { for (const item of candidate) collect(item); return; }
+      if (typeof candidate === "object" && candidate !== null) for (const item of Object.values(candidate)) collect(item);
+    };
+    collect(value);
   }
 }
