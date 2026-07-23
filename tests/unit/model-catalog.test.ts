@@ -1,59 +1,503 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ReadRequest } from "../../src/lingjing/types.js";
 import { CatalogService } from "../../src/models/catalog.js";
 import { normalizeModels } from "../../src/models/normalize.js";
 
-const imageFixture: unknown = JSON.parse(readFileSync(new URL("../fixtures/models/image-generation.json", import.meta.url), "utf8"));
+type RawModel = Record<string, unknown> & {
+  apiId: string | number;
+  parameters: Array<Record<string, unknown>>;
+};
+
+interface FixtureEnvelope {
+  result: RawModel[];
+}
+
+function readFixture(name: string): FixtureEnvelope {
+  return JSON.parse(
+    readFileSync(new URL(`../fixtures/models/${name}.json`, import.meta.url), "utf8")
+  ) as FixtureEnvelope;
+}
+
+function onlyRaw(fixture: FixtureEnvelope): RawModel {
+  const raw = fixture.result.at(0);
+  if (raw === undefined) throw new Error("fixture is malformed");
+  return raw;
+}
+
+function transportReturning(
+  listed: unknown,
+  refreshed: unknown = listed,
+  calls: Array<{ path: string; init?: ReadRequest }> = []
+) {
+  return {
+    read<T>(path: string, init?: ReadRequest): Promise<T> {
+      calls.push({ path, ...(init === undefined ? {} : { init }) });
+      return Promise.resolve(
+        (path.endsWith("/getByApiId") ? refreshed : listed) as T
+      );
+    }
+  };
+}
+
+const imageFixture = readFixture("image-generation");
+const textVideoFixture = readFixture("text-to-video");
+const imageVideoFixture = readFixture("image-to-video");
 
 describe("dynamic model normalization", () => {
-  it("creates stable apiId and readable alias identifiers", () => {
+  it("normalizes the image-generation fixture exactly", () => {
     const models = normalizeModels("image-generation", imageFixture);
-    expect(models[0]).toMatchObject({ id: "707", apiId: "707", alias: "fixture-seedream-5-0-lite", sourceType: "image-generation" });
-    expect(models[0]?.parameters.find((item) => item.key === "prompt")).toMatchObject({ required: true, kind: "string" });
+    expect(models[0]?.rawRevision).toMatch(/^[a-f0-9]{64}$/u);
+    expect(models).toEqual([
+      {
+        id: "707",
+        apiId: "707",
+        alias: "fixture-seedream-5-0-lite",
+        displayName: "fixture-seedream-5-0-lite",
+        sourceType: "image-generation",
+        modelCode: "fixture-image-model",
+        refId: "fixture-image-ref",
+        sceneCode: "fixture-image-scene",
+        expectedAssetScene: "fixture-image-asset",
+        uploadStrategy: "general",
+        priceQuerySchema: { taskNum: "taskNum" },
+        parameters: [
+          {
+            idx: "1",
+            key: "image",
+            displayName: "参考图",
+            required: false,
+            kind: "image-list",
+            maxFiles: 2
+          },
+          {
+            idx: "2",
+            key: "prompt",
+            displayName: "提示词",
+            required: true,
+            kind: "string"
+          },
+          {
+            idx: "3",
+            key: "size",
+            displayName: "尺寸",
+            required: false,
+            kind: "enum",
+            defaultValue: "1024x1024",
+            options: ["1024x1024", "2048x2048"]
+          },
+          {
+            idx: "4",
+            key: "webSearch",
+            displayName: "联网搜索",
+            required: false,
+            kind: "boolean",
+            defaultValue: false
+          },
+          {
+            idx: "5",
+            key: "taskNum",
+            displayName: "生成数量",
+            required: false,
+            kind: "number",
+            minimum: 1,
+            maximum: 4
+          }
+        ],
+        pricing: { unit: "fixture-points" },
+        rawRevision: models[0]?.rawRevision
+      }
+    ]);
+  });
+
+  it("normalizes the text-to-video fixture exactly", () => {
+    const models = normalizeModels("text-to-video", textVideoFixture);
+    expect(models[0]?.rawRevision).toMatch(/^[a-f0-9]{64}$/u);
+    expect(models).toEqual([
+      {
+        id: "fake-text-video-1",
+        apiId: "fake-text-video-1",
+        alias: "fixture-motion",
+        displayName: "fixture-motion",
+        sourceType: "text-to-video",
+        modelCode: "fixture-text-video-model",
+        refId: "fixture-text-video-ref",
+        sceneCode: "fixture-video-scene",
+        expectedAssetScene: "fixture-video-asset",
+        uploadStrategy: "materials",
+        priceQuerySchema: {
+          duration: "duration",
+          resolution: "resolution"
+        },
+        parameters: [
+          {
+            idx: "1",
+            key: "prompt",
+            displayName: "提示词",
+            required: true,
+            kind: "string"
+          },
+          {
+            idx: "2",
+            key: "model",
+            displayName: "模型",
+            required: true,
+            kind: "enum",
+            options: ["fixture-motion"]
+          },
+          {
+            idx: "3",
+            key: "duration",
+            displayName: "时长",
+            required: false,
+            kind: "number",
+            minimum: 3,
+            maximum: 10
+          },
+          {
+            idx: "4",
+            key: "resolution",
+            displayName: "分辨率",
+            required: false,
+            kind: "enum",
+            options: ["720p", "1080p"]
+          },
+          {
+            idx: "5",
+            key: "ratio",
+            displayName: "比例",
+            required: false,
+            kind: "enum",
+            options: ["16:9", "9:16"]
+          },
+          {
+            idx: "6",
+            key: "watermark",
+            displayName: "水印",
+            required: false,
+            kind: "boolean"
+          },
+          {
+            idx: "7",
+            key: "seed",
+            displayName: "随机种子",
+            required: false,
+            kind: "number"
+          }
+        ],
+        pricing: { unit: "fixture-video-points" },
+        rawRevision: models[0]?.rawRevision
+      }
+    ]);
+  });
+
+  it("normalizes the image-to-video fixture exactly", () => {
+    const models = normalizeModels("image-to-video", imageVideoFixture);
+    expect(models[0]?.rawRevision).toMatch(/^[a-f0-9]{64}$/u);
+    expect(models).toEqual([
+      {
+        id: "fake-image-video-1",
+        apiId: "fake-image-video-1",
+        alias: "fixture-image-motion",
+        displayName: "fixture-image-motion",
+        sourceType: "image-to-video",
+        modelCode: "fixture-image-video-model",
+        refId: "fixture-image-video-ref",
+        sceneCode: "fixture-image-video-scene",
+        expectedAssetScene: "fixture-image-video-asset",
+        uploadStrategy: "materials",
+        priceQuerySchema: { taskNum: "taskNum" },
+        parameters: [
+          {
+            idx: "1",
+            key: "image",
+            displayName: "首帧图",
+            required: true,
+            kind: "image-list",
+            maxFiles: 1
+          },
+          {
+            idx: "2",
+            key: "prompt",
+            displayName: "提示词",
+            required: true,
+            kind: "string"
+          },
+          {
+            idx: "3",
+            key: "model",
+            displayName: "模型",
+            required: true,
+            kind: "enum",
+            options: ["fixture-image-motion"]
+          },
+          {
+            idx: "4",
+            key: "duration",
+            displayName: "时长",
+            required: false,
+            kind: "number",
+            minimum: 3,
+            maximum: 10
+          },
+          {
+            idx: "5",
+            key: "resolution",
+            displayName: "分辨率",
+            required: false,
+            kind: "enum",
+            options: ["720p", "1080p"]
+          },
+          {
+            idx: "6",
+            key: "ratio",
+            displayName: "比例",
+            required: false,
+            kind: "enum",
+            options: ["16:9", "9:16"]
+          },
+          {
+            idx: "7",
+            key: "watermark",
+            displayName: "水印",
+            required: false,
+            kind: "boolean"
+          },
+          {
+            idx: "8",
+            key: "seed",
+            displayName: "随机种子",
+            required: false,
+            kind: "number"
+          }
+        ],
+        pricing: { unit: "fixture-image-video-points" },
+        rawRevision: models[0]?.rawRevision
+      }
+    ]);
   });
 
   it("changes rawRevision when the upstream schema changes", () => {
     const first = normalizeModels("image-generation", imageFixture);
-    const changed = structuredClone(imageFixture) as { result: Array<{ parameters: Array<{ required: boolean }> }> };
-    const changedModel = changed.result.at(0); const changedParameter = changedModel?.parameters.at(0);
+    const changed = structuredClone(imageFixture);
+    const changedParameter = onlyRaw(changed).parameters.at(0);
     if (changedParameter === undefined) throw new Error("fixture is malformed");
     changedParameter.required = true;
-    expect(first[0]?.rawRevision).not.toBe(normalizeModels("image-generation", changed)[0]?.rawRevision);
+
+    expect(first[0]?.rawRevision).not.toBe(
+      normalizeModels("image-generation", changed)[0]?.rawRevision
+    );
   });
 
   it("uses fieldName as the request key and Chinese metadata only as display text", () => {
-    expect(normalizeModels("image-generation", imageFixture)[0]?.parameters.find((item) => item.idx === "2")).toMatchObject({ key: "prompt", displayName: "提示词" });
+    const prompt = normalizeModels("image-generation", imageFixture)[0]
+      ?.parameters.find((item) => item.idx === "2");
+
+    expect(prompt).toMatchObject({
+      key: "prompt",
+      displayName: "提示词"
+    });
+  });
+});
+
+describe("CatalogService", () => {
+  it("coalesces in-flight catalog reads", async () => {
+    let completeRead: ((value: unknown) => void) | undefined;
+    const calls: string[] = [];
+    const pendingRead = new Promise<unknown>((resolve) => {
+      completeRead = resolve;
+    });
+    const service = new CatalogService({
+      read<T>(path: string): Promise<T> {
+        calls.push(path);
+        return pendingRead as Promise<T>;
+      }
+    }, 60_000);
+
+    const first = service.list("image-generation");
+    const second = service.list("image-generation");
+
+    expect(calls).toEqual([
+      "/joycreator/AIModelApiConsole/getBySourceType"
+    ]);
+    completeRead?.(imageFixture);
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      normalizeModels("image-generation", imageFixture),
+      normalizeModels("image-generation", imageFixture)
+    ]);
   });
 
-  it("coalesces catalog reads, resolves apiId before alias, and refreshes charged models exactly", async () => {
-    const calls: Array<{ path: string; body?: unknown }> = [];
-    const service = new CatalogService({ read: <T>(path: string, init?: { body?: unknown }) => {
-      calls.push({ path, ...(init?.body === undefined ? {} : { body: init.body }) });
-      return Promise.resolve(imageFixture as T);
-    } }, 60_000);
-    const [first, second] = await Promise.all([service.list("image-generation"), service.list("image-generation")]);
-    expect(first).toEqual(second);
-    expect(calls).toHaveLength(1);
-    await expect(service.resolve("707", "image-generation", true)).resolves.toMatchObject({ apiId: "707" });
-    expect(calls.map((call) => call.path)).toContain("/joycreator/AIModelApiConsole/getByApiId");
+  it("fetches again after the source cache TTL expires", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-23T00:00:00.000Z"));
+      const calls: Array<{ path: string; init?: ReadRequest }> = [];
+      const service = new CatalogService(
+        transportReturning(imageFixture, imageFixture, calls),
+        1_000
+      );
+
+      await service.list("image-generation");
+      vi.advanceTimersByTime(1_001);
+      await service.list("image-generation");
+
+      expect(calls).toHaveLength(2);
+      expect(calls).toEqual([
+        {
+          path: "/joycreator/AIModelApiConsole/getBySourceType",
+          init: {
+            method: "POST",
+            body: { sourceType: "image-generation" }
+          }
+        },
+        {
+          path: "/joycreator/AIModelApiConsole/getBySourceType",
+          init: {
+            method: "POST",
+            body: { sourceType: "image-generation" }
+          }
+        }
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
-  it("updates cache then rejects a charged model whose revision changes", async () => {
-    const refreshed = structuredClone(imageFixture) as { result: Array<{ parameters: Array<{ required: boolean }> }> };
-    const item = refreshed.result.at(0)?.parameters.at(0); if (item === undefined) throw new Error("fixture malformed");
-    item.required = true;
-    let reads = 0;
-    const service = new CatalogService({ read: <T>() => Promise.resolve((reads++ === 0 ? imageFixture : refreshed) as T) }, 60_000);
+
+  it("resolves an exact apiId before a different model whose alias is the same text", async () => {
+    const collision = structuredClone(imageFixture);
+    collision.result.push({
+      ...onlyRaw(collision),
+      apiId: "fixture-other-api",
+      id: "fixture-other-api",
+      modelName: "707"
+    });
+    const service = new CatalogService(
+      transportReturning(collision),
+      60_000
+    );
+
+    await expect(service.resolve("707", "image-generation")).resolves
+      .toMatchObject({
+        apiId: "707",
+        alias: "fixture-seedream-5-0-lite"
+      });
+  });
+
+  it("rejects an ambiguous normalized alias", async () => {
+    const duplicate = structuredClone(imageFixture);
+    duplicate.result.push({
+      ...onlyRaw(duplicate),
+      apiId: "fixture-other-api",
+      id: "fixture-other-api"
+    });
+    const service = new CatalogService(
+      transportReturning(duplicate),
+      60_000
+    );
+
+    await expect(
+      service.resolve("fixture-seedream-5-0-lite", "image-generation")
+    ).rejects.toMatchObject({ code: "model_catalog_changed" });
+  });
+
+  it("forces getByApiId with POST and replaces the cached model before revision rejection", async () => {
+    const refreshed = structuredClone(imageFixture);
+    const changedParameter = onlyRaw(refreshed).parameters.at(0);
+    if (changedParameter === undefined) throw new Error("fixture is malformed");
+    changedParameter.required = true;
+    const calls: Array<{ path: string; init?: ReadRequest }> = [];
+    const service = new CatalogService(
+      transportReturning(imageFixture, refreshed, calls),
+      60_000
+    );
+
     await service.list("image-generation");
-    await expect(service.resolve("707", "image-generation", true)).rejects.toMatchObject({ code: "model_catalog_changed" });
+    await expect(
+      service.resolve("707", "image-generation", true)
+    ).rejects.toMatchObject({ code: "model_catalog_changed" });
+
+    expect(calls.at(-1)).toEqual({
+      path: "/joycreator/AIModelApiConsole/getByApiId",
+      init: {
+        method: "POST",
+        body: { apiId: "707" }
+      }
+    });
     const cached = await service.resolve("707", "image-generation");
-    expect(cached.parameters.find((parameter) => parameter.idx === "1")?.required).toBe(true);
+    expect(
+      cached.parameters.find((parameter) => parameter.idx === "1")
+    ).toMatchObject({ required: true });
   });
-  it("uses apiId before an alias collision and rejects ambiguous aliases", async () => {
-    const duplicate = structuredClone(imageFixture) as { result: Array<Record<string, unknown>> };
-    const original = duplicate.result.at(0); if (original === undefined) throw new Error("fixture malformed");
-    duplicate.result.push({ ...original, apiId: "other", id: "other" });
-    const service = new CatalogService({ read: <T>() => Promise.resolve(duplicate as T) }, 60_000);
-    await expect(service.resolve("707", "image-generation")).resolves.toMatchObject({ apiId: "707" });
-    await expect(service.resolve("fixture-seedream-5-0-lite", "image-generation")).rejects.toMatchObject({ code: "model_catalog_changed" });
+
+  it("accepts a charged materials refresh with complete raw metadata", async () => {
+    const service = new CatalogService(
+      transportReturning(textVideoFixture),
+      60_000
+    );
+
+    await expect(
+      service.resolve("fake-text-video-1", "text-to-video", true)
+    ).resolves.toMatchObject({
+      apiId: "fake-text-video-1",
+      uploadStrategy: "materials"
+    });
+  });
+
+  it("accepts explicit materials metadata whose value equals sourceType", async () => {
+    const explicit = structuredClone(textVideoFixture);
+    const raw = onlyRaw(explicit);
+    raw.scene = "text-to-video";
+    raw.assetScene = "text-to-video";
+    const service = new CatalogService(
+      transportReturning(explicit),
+      60_000
+    );
+
+    await expect(
+      service.resolve("fake-text-video-1", "text-to-video", true)
+    ).resolves.toMatchObject({
+      sceneCode: "text-to-video",
+      expectedAssetScene: "text-to-video"
+    });
+  });
+
+  it.each([
+    ["missing modelCode", (raw: RawModel) => { delete raw.modelCode; }],
+    ["empty modelCode", (raw: RawModel) => { raw.modelCode = "  "; }],
+    ["missing scene", (raw: RawModel) => { delete raw.scene; delete raw.sceneCode; }],
+    ["empty scene", (raw: RawModel) => { raw.scene = "  "; }],
+    ["missing assetScene", (raw: RawModel) => { delete raw.assetScene; }],
+    ["empty assetScene", (raw: RawModel) => { raw.assetScene = "  "; }]
+  ])("rejects a charged materials refresh with %s in the raw object", async (_name, mutate) => {
+    const invalid = structuredClone(textVideoFixture);
+    mutate(onlyRaw(invalid));
+    const service = new CatalogService(
+      transportReturning(invalid),
+      60_000
+    );
+
+    await expect(
+      service.resolve("fake-text-video-1", "text-to-video", true)
+    ).rejects.toMatchObject({ code: "model_catalog_changed" });
+  });
+
+  it("does not require materials-only raw metadata for a general upload strategy", async () => {
+    const general = structuredClone(imageFixture);
+    const raw = onlyRaw(general);
+    delete raw.modelCode;
+    delete raw.sceneCode;
+    delete raw.scene;
+    delete raw.assetScene;
+    const service = new CatalogService(
+      transportReturning(general),
+      60_000
+    );
+
+    await expect(
+      service.resolve("707", "image-generation", true)
+    ).resolves.toMatchObject({
+      apiId: "707",
+      uploadStrategy: "general"
+    });
   });
 });

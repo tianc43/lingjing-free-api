@@ -13,6 +13,7 @@ export class MockSessionProvider implements SessionProvider {
   private readonly jar = new CookieJar();
   private csrfToken: string | null = null;
   private refreshToken: string | null = null;
+  private profileOriginPin: string;
   loadCount = 0;
   invalidateCount = 0;
   refreshCount = 0;
@@ -20,6 +21,7 @@ export class MockSessionProvider implements SessionProvider {
 
   constructor(mode: "browser-state" | "cookie-file", private readonly origin: URL) {
     this.mode = mode;
+    this.profileOriginPin = origin.origin;
   }
 
   async seed(): Promise<void> {
@@ -42,7 +44,11 @@ export class MockSessionProvider implements SessionProvider {
   }
 
   loadProfile(): Promise<{ originPin: string }> {
-    return Promise.resolve({ originPin: this.origin.origin });
+    return Promise.resolve({ originPin: this.profileOriginPin });
+  }
+
+  setProfileOriginPin(originPin: string): void {
+    this.profileOriginPin = originPin;
   }
 
   async applySetCookies(url: URL, headers: string[]): Promise<void> {
@@ -81,6 +87,9 @@ export class MockLingjing {
   lastSubmitHeadersTimeout: number | null | undefined;
   private readonly counts = new Map<string, number>();
   private readonly requestHeaders = new Map<string, Record<string, string>[]>();
+  private readonly requestMethods = new Map<string, string[]>();
+  private readonly requestTargets = new Map<string, string[]>();
+  private readonly resultsByPath = new Map<string, unknown>();
   private readFailures = 0;
   private csrfReadFailures = 0;
   private setCookie: string | null = null;
@@ -162,17 +171,30 @@ export class MockLingjing {
   respondWithCsrfError(): void { this.csrfNextResponse = true; }
   respondWithSetCookie(value: string): void { this.setCookie = value; }
   respondWithResult(value: unknown): void { this.nextResult = value; }
+  respondToPath(path: string, value: unknown): void {
+    this.resultsByPath.set(path, value);
+  }
   respondToSignedUpload(statusCode: number, headers: Record<string, string | string[]> = {}): void {
     this.signedStatusCode = statusCode;
     this.signedHeaders = headers;
   }
   count(path: string): number { return this.counts.get(path) ?? 0; }
   headersFor(path: string): Record<string, string>[] { return this.requestHeaders.get(path) ?? []; }
+  methodsFor(path: string): string[] { return this.requestMethods.get(path) ?? []; }
+  targetsFor(path: string): string[] { return this.requestTargets.get(path) ?? []; }
 
   private reply(options: { path: string; method: string; headers?: unknown }): { statusCode: number; data: string; responseOptions?: { headers: Record<string, string | string[]> } } {
     const url = new URL(options.path, this.baseUrl);
     const count = (this.counts.get(url.pathname) ?? 0) + 1;
     this.counts.set(url.pathname, count);
+    this.requestMethods.set(
+      url.pathname,
+      [...(this.requestMethods.get(url.pathname) ?? []), options.method]
+    );
+    this.requestTargets.set(
+      url.pathname,
+      [...(this.requestTargets.get(url.pathname) ?? []), options.path]
+    );
     this.lastHeaders = asHeaders(options.headers as Record<string, HeaderValue>);
     this.requestHeaders.set(url.pathname, [...(this.requestHeaders.get(url.pathname) ?? []), this.lastHeaders]);
     this.lastQuery = Object.fromEntries(url.searchParams.entries());
@@ -202,8 +224,11 @@ export class MockLingjing {
         ...(responseOptions === undefined ? {} : { responseOptions })
       };
     }
-    const result = this.nextResult;
-    this.nextResult = { ok: true };
+    const hasPathResult = this.resultsByPath.has(url.pathname);
+    const result = hasPathResult
+      ? this.resultsByPath.get(url.pathname)
+      : this.nextResult;
+    if (!hasPathResult) this.nextResult = { ok: true };
     return { statusCode: 200, data: JSON.stringify({ requestId: "fixture", error: null, result }), ...(responseOptions === undefined ? {} : { responseOptions }) };
   }
 }
