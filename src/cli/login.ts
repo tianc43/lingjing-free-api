@@ -4,7 +4,26 @@ import { chromium } from "playwright";
 
 const LOGIN_URL = "https://lingjing.jdcloud.com/";
 
-async function waitForAuthenticatedPage(page: import("playwright").Page): Promise<string> {
+interface LoginPage {
+  goto(url: string): Promise<unknown>;
+  url(): string;
+  evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
+  isClosed(): boolean;
+  waitForTimeout(timeout: number): Promise<void>;
+}
+
+interface LoginContext {
+  newPage(): Promise<LoginPage>;
+  storageState(): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+interface LoginBrowser {
+  newContext(): Promise<LoginContext>;
+  close(): Promise<void>;
+}
+
+export async function waitForAuthenticatedPage(page: LoginPage): Promise<string> {
   for (;;) {
     try {
       if (new URL(page.url()).origin !== new URL(LOGIN_URL).origin) {
@@ -38,11 +57,16 @@ async function waitForAuthenticatedPage(page: import("playwright").Page): Promis
   }
 }
 
-async function main(): Promise<void> {
-  const config = parseConfig(process.env);
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
+export async function runLoginCli(
+  config: Pick<ReturnType<typeof parseConfig>, "storageStatePath" | "sessionProfilePath">,
+  launch: () => Promise<LoginBrowser> = async () => chromium.launch({ headless: false }),
+  reportError: (message: string) => void = console.error
+): Promise<number> {
+  let browser: LoginBrowser | undefined;
+  let context: LoginContext | undefined;
   try {
+    browser = await launch();
+    context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(LOGIN_URL);
     console.log("请在打开的浏览器中完成灵境登录，登录成功后将自动保存会话。");
@@ -54,14 +78,16 @@ async function main(): Promise<void> {
     ]);
     console.log(`会话已保存至: ${config.storageStatePath}`);
     console.log(`登录配置已保存至: ${config.sessionProfilePath}`);
+    return 0;
+  } catch (error) {
+    reportError(error instanceof Error ? error.message : "Login cancelled before completion.");
+    return 1;
   } finally {
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
+    await browser?.close().catch(() => undefined);
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Login cancelled before completion.";
-  console.error(message);
-  process.exitCode = 1;
-});
+if (process.argv[1]?.endsWith("login.ts")) {
+  void runLoginCli(parseConfig(process.env)).then((exitCode) => { process.exitCode = exitCode; });
+}

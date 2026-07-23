@@ -15,7 +15,10 @@ export async function atomicWritePrivateJson(targetPath: string, value: unknown)
   }
 }
 
-export async function atomicWritePrivateJsonPair(entries: ReadonlyArray<{ targetPath: string; value: unknown }>): Promise<void> {
+export async function atomicWritePrivateJsonPair(
+  entries: ReadonlyArray<{ targetPath: string; value: unknown }>,
+  replace: (from: string, to: string) => Promise<void> = rename
+): Promise<void> {
   const prepared: Array<{ targetPath: string; temporaryPath: string; backupPath: string }> = [];
   try {
     for (const entry of entries) {
@@ -30,7 +33,7 @@ export async function atomicWritePrivateJsonPair(entries: ReadonlyArray<{ target
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       });
     }
-    for (const item of prepared) await rename(item.temporaryPath, item.targetPath);
+    for (const item of prepared) await replace(item.temporaryPath, item.targetPath);
     await Promise.all(prepared.map((item) => unlink(item.backupPath).catch(() => undefined)));
   } catch (error) {
     await Promise.all(prepared.map(async (item) => {

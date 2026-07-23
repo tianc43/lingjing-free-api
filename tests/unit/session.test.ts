@@ -1,8 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StorageStateProvider } from "../../src/session/storage-state-provider.js";
 import { CookieFileProvider } from "../../src/session/cookie-file-provider.js";
-import { atomicWritePrivateJson } from "../../src/session/atomic-write.js";
+import { atomicWritePrivateJson, atomicWritePrivateJsonPair } from "../../src/session/atomic-write.js";
 import { stat } from "node:fs/promises";
 import {
   copyFixtureToTemporaryFile,
@@ -110,5 +111,39 @@ describe("session providers", () => {
     if (process.platform !== "win32") {
       expect((await stat(target)).mode & 0o077).toBe(0);
     }
+  });
+
+  it("restores both existing files and cleans artifacts when the second replacement fails", async () => {
+    const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    const beforeStorage = await readFile(storagePath, "utf8");
+    const beforeProfile = await readFile(profilePath, "utf8");
+    await expect(atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { changed: "storage" } },
+      { targetPath: profilePath, value: { changed: "profile" } }
+    ], async (from, to) => {
+      if (to === profilePath && from.endsWith(".tmp")) throw new Error("second replacement failed");
+      await (await import("node:fs/promises")).rename(from, to);
+    })).rejects.toThrow("second replacement failed");
+    expect(await readFile(storagePath, "utf8")).toBe(beforeStorage);
+    expect(await readFile(profilePath, "utf8")).toBe(beforeProfile);
+    expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
+  });
+
+  it("leaves no half-pair or artifacts when replacement fails before absent targets are created", async () => {
+    const original = await copyFixtureToTemporaryFile("session-profile.json");
+    const directory = join(dirname(original), "absent");
+    const storagePath = join(directory, "storage-state.json");
+    const profilePath = join(directory, "session-profile.json");
+    await expect(atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { storage: true } },
+      { targetPath: profilePath, value: { profile: true } }
+    ], async (from, to) => {
+      if (to === profilePath && from.endsWith(".tmp")) throw new Error("second replacement failed");
+      await (await import("node:fs/promises")).rename(from, to);
+    })).rejects.toThrow("second replacement failed");
+    await expect(readFile(storagePath, "utf8")).rejects.toBeDefined();
+    await expect(readFile(profilePath, "utf8")).rejects.toBeDefined();
+    expect((await readdir(directory)).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
   });
 });
