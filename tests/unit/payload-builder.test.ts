@@ -18,4 +18,17 @@ describe("buildPayload", () => {
     try { buildPayload({ model: normalizedImageModel, spaceId: 0, values: { prompt: "x", unsupported: true } }); } catch (cause) { expect(cause).toMatchObject({ code: "invalid_request" }); }
     try { buildPayload({ model: normalizedImageModel, spaceId: 0, values: { prompt: "x", size: "stale-size" } }); } catch (cause) { expect(cause).toMatchObject({ code: "model_catalog_changed" }); }
   });
+  it("rejects empty required strings and image lists, explicit undefined, invalid booleans and numbers", () => {
+    expect.assertions(6);
+    const cases = [
+      { prompt: "" }, { prompt: undefined },
+      { prompt: "x", webSearch: "false" }, { prompt: "x", taskNum: Number.NaN }, { prompt: "x", taskNum: 5 }
+    ];
+    for (const values of cases) {
+      try { buildPayload({ model: normalizedImageModel, spaceId: 0, values }); } catch (cause) { expect(cause).toMatchObject({ code: "invalid_request" }); }
+    }
+    const requiredImageModel = structuredClone(normalizedImageModel);
+    const image = requiredImageModel.parameters.at(0); if (image === undefined) throw new Error("fixture malformed"); image.required = true;
+    try { buildPayload({ model: requiredImageModel, spaceId: 0, values: { prompt: "x", image: [] } }); } catch (cause) { expect(cause).toMatchObject({ code: "invalid_request" }); }
+  });
 });

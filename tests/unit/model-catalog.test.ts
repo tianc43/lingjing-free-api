@@ -37,4 +37,15 @@ describe("dynamic model normalization", () => {
     await expect(service.resolve("707", "image-generation", true)).resolves.toMatchObject({ apiId: "707" });
     expect(calls.map((call) => call.path)).toContain("/joycreator/AIModelApiConsole/getByApiId");
   });
+  it("updates cache then rejects a charged model whose revision changes", async () => {
+    const refreshed = structuredClone(imageFixture) as { result: Array<{ parameters: Array<{ required: boolean }> }> };
+    const item = refreshed.result.at(0)?.parameters.at(0); if (item === undefined) throw new Error("fixture malformed");
+    item.required = true;
+    let reads = 0;
+    const service = new CatalogService({ read: <T>() => Promise.resolve((reads++ === 0 ? imageFixture : refreshed) as T) }, 60_000);
+    await service.list("image-generation");
+    await expect(service.resolve("707", "image-generation", true)).rejects.toMatchObject({ code: "model_catalog_changed" });
+    const cached = await service.resolve("707", "image-generation");
+    expect(cached.parameters.find((parameter) => parameter.idx === "1")?.required).toBe(true);
+  });
 });

@@ -26,8 +26,11 @@ export class CatalogService {
     if (!charged) return model;
     const refreshed = await this.transport.read<unknown>("/joycreator/AIModelApiConsole/getByApiId", { method: "POST", body: { apiId: model.apiId } });
     const next = normalizeModels(sourceType, refreshed).find((candidate) => candidate.apiId === model.apiId);
-    if (next === undefined || (next.uploadStrategy === "materials" && next.expectedAssetScene.length === 0)) throw errors.catalogChanged();
-    const entry = this.cache.get(sourceType); if (entry !== undefined) entry.models = entry.models.map((candidate) => candidate.apiId === next.apiId ? next : candidate);
+    if (next === undefined) throw errors.catalogChanged();
+    const entry = this.cache.get(sourceType);
+    if (entry !== undefined) entry.models = entry.models.map((candidate) => candidate.apiId === next.apiId ? next : candidate);
+    const missingMaterialMetadata = next.uploadStrategy === "materials" && (next.modelCode === null || next.modelCode.length === 0 || next.sceneCode === sourceType || next.expectedAssetScene === sourceType);
+    if (missingMaterialMetadata || next.rawRevision !== model.rawRevision) throw errors.catalogChanged();
     return next;
   }
 }
