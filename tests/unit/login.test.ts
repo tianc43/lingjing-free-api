@@ -6,6 +6,7 @@ import { copyFixtureToTemporaryFile } from "../helpers/session-fixtures.js";
 
 describe("login CLI", () => {
   it("reads authenticated state and origin pin in one browser evaluation", async () => {
+    vi.stubGlobal("location", { origin: "https://lingjing.jdcloud.com" });
     vi.stubGlobal("fetch", () => Promise.resolve({ json: () => Promise.resolve({ result: { user: "fixture" } }) }));
     vi.stubGlobal("window", { JDCloud: { account: { originPin: "fixture-origin-pin" } } });
     let evaluations = 0;
@@ -21,6 +22,25 @@ describe("login CLI", () => {
     });
     expect(pin).toBe("fixture-origin-pin");
     expect(evaluations).toBe(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("checks the page origin before requesting authenticated browser state", async () => {
+    let fetches = 0;
+    vi.stubGlobal("location", { origin: "https://fixture.invalid" });
+    vi.stubGlobal("fetch", () => {
+      fetches += 1;
+      return Promise.resolve({ json: () => Promise.resolve({ result: { user: "fixture" } }) });
+    });
+    vi.stubGlobal("window", { JDCloud: { account: { originPin: "fixture-origin-pin" } } });
+    await expect(waitForAuthenticatedPage({
+      goto: () => Promise.resolve(undefined),
+      url: () => "https://lingjing.jdcloud.com/",
+      evaluate: <T>(callback: () => T | Promise<T>) => Promise.resolve(callback()),
+      isClosed: () => true,
+      waitForTimeout: () => Promise.resolve(undefined)
+    })).rejects.toThrow("Login cancelled before completion.");
+    expect(fetches).toBe(0);
     vi.unstubAllGlobals();
   });
 

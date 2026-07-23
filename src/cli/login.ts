@@ -26,27 +26,30 @@ interface LoginBrowser {
 export async function waitForAuthenticatedPage(page: LoginPage): Promise<string> {
   for (;;) {
     try {
-      if (new URL(page.url()).origin !== new URL(LOGIN_URL).origin) {
-        throw new Error("Login cancelled before completion.");
-      }
       const authentication = await page.evaluate(async () => {
+        if (location.origin !== "https://lingjing.jdcloud.com") {
+          return { cancelled: true, authenticated: false, originPin: null };
+        }
         const response = await fetch("/api/user/describeBaseInfo");
         const envelope: unknown = await response.json();
         if (typeof envelope !== "object" || envelope === null) {
-          return { authenticated: false, originPin: null };
+          return { cancelled: false, authenticated: false, originPin: null };
         }
         const value = envelope as { error?: unknown; result?: unknown };
         const account = (window as Window & { JDCloud?: { account?: { originPin?: unknown } } }).JDCloud?.account;
         return {
+          cancelled: false,
           authenticated: !value.error && value.result !== undefined && value.result !== null,
           originPin: typeof account?.originPin === "string" ? account.originPin : null
         };
       });
+      if (authentication.cancelled) throw new Error("Login cancelled before completion.");
       if (authentication.authenticated && authentication.originPin !== null && authentication.originPin.trim().length > 0) {
         return authentication.originPin;
       }
       await page.waitForTimeout(1_000);
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === "Login cancelled before completion.") throw error;
       if (page.isClosed()) {
         throw new Error("Login cancelled before completion.");
       }

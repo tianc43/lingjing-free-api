@@ -212,13 +212,11 @@ describe("session providers", () => {
     expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
   });
 
-  it("recovers the original pair if backup cleanup fails instead of leaving credential backups", async () => {
+  it("retries the first backup cleanup failure without rolling back a committed pair", async () => {
     const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
     const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
-    const beforeStorage = await readFile(storagePath, "utf8");
-    const beforeProfile = await readFile(profilePath, "utf8");
     let failed = false;
-    await expect(atomicWritePrivateJsonPair([
+    await atomicWritePrivateJsonPair([
       { targetPath: storagePath, value: { changed: "storage" } },
       { targetPath: profilePath, value: { changed: "profile" } }
     ], {
@@ -233,9 +231,34 @@ describe("session providers", () => {
         }
         return unlink(path);
       }
-    })).rejects.toThrow("backup cleanup failed");
-    expect(await readFile(storagePath, "utf8")).toBe(beforeStorage);
-    expect(await readFile(profilePath, "utf8")).toBe(beforeProfile);
+    });
+    expect(await readValidStorageState(storagePath)).toEqual({ changed: "storage" });
+    expect(await readValidStorageState(profilePath)).toEqual({ changed: "profile" });
+    expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
+  });
+
+  it("retries the second backup cleanup failure without losing the first committed target", async () => {
+    const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    let cleanups = 0;
+    await atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { changed: "storage" } },
+      { targetPath: profilePath, value: { changed: "profile" } }
+    ], {
+      mkdir,
+      writeFile,
+      chmod,
+      rename,
+      unlink: async (path) => {
+        if (path.endsWith(".bak")) {
+          cleanups += 1;
+          if (cleanups === 2) throw new Error("second backup cleanup failed");
+        }
+        return unlink(path);
+      }
+    });
+    expect(await readValidStorageState(storagePath)).toEqual({ changed: "storage" });
+    expect(await readValidStorageState(profilePath)).toEqual({ changed: "profile" });
     expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
   });
 });

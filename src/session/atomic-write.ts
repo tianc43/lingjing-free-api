@@ -33,6 +33,14 @@ interface PreparedEntry {
   replaced: boolean;
 }
 
+async function cleanupBackup(path: string, operations: AtomicWriteOperations): Promise<void> {
+  try {
+    await operations.unlink(path);
+  } catch {
+    await operations.unlink(path);
+  }
+}
+
 function resolveOperations(operationsOrReplace: AtomicWriteOperations | ((from: string, to: string) => Promise<void>) | undefined): AtomicWriteOperations {
   if (typeof operationsOrReplace === "function") return { ...defaultOperations, rename: operationsOrReplace };
   return operationsOrReplace ?? defaultOperations;
@@ -44,6 +52,7 @@ export async function atomicWritePrivateJsonPair(
 ): Promise<void> {
   const operations = resolveOperations(operationsOrReplace);
   const prepared: PreparedEntry[] = [];
+  let committed = false;
   try {
     for (const entry of entries) {
       const temporaryPath = join(dirname(entry.targetPath), `.${basename(entry.targetPath)}.${randomUUID()}.tmp`);
@@ -65,10 +74,14 @@ export async function atomicWritePrivateJsonPair(
       await operations.rename(item.temporaryPath, item.targetPath);
       item.replaced = true;
     }
+    committed = true;
     for (const item of prepared) {
-      if (item.backedUp) await operations.unlink(item.backupPath);
+      if (item.backedUp) await cleanupBackup(item.backupPath, operations);
     }
   } catch (error) {
+    if (committed) {
+      throw new Error("Credential pair was committed, but backup cleanup failed.");
+    }
     for (const item of [...prepared].reverse()) {
       if (item.replaced) await operations.unlink(item.targetPath).catch(() => undefined);
       if (item.backedUp) await operations.rename(item.backupPath, item.targetPath).catch(() => undefined);
