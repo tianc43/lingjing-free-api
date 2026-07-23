@@ -2,7 +2,7 @@ import pino, { type DestinationStream, type Logger, type LoggerOptions } from "p
 
 const REDACTED = "[REDACTED]";
 const secretKeys = new Set([
-  "authorization", "cookie", "set-cookie", "csrf", "csrftoken", "originpin", "storagestate"
+  "authorization", "cookie", "set-cookie", "csrf", "csrftoken", "x-csrf-token", "originpin", "storagestate"
 ]);
 const promptKeys = new Set(["prompt", "negative_prompt", "system_prompt", "text", "content"]);
 const mediaKeys = new Set(["input_images", "images", "media", "video", "videos"]);
@@ -18,6 +18,10 @@ function safeUrl(value: string): string {
     url.hash = "";
     return url.toString();
   } catch {
+    if (value.startsWith("/")) {
+      const url = new URL(value, "http://localhost");
+      return url.pathname;
+    }
     return value;
   }
 }
@@ -72,7 +76,7 @@ function errorSerializer(error: unknown): Record<string, unknown> {
     result.code = error.code;
   }
   if (process.env.NODE_ENV === "development" && typeof error.stack === "string") {
-    result.stack = error.stack;
+    result.stack = REDACTED;
   }
   return result;
 }

@@ -21,6 +21,24 @@ describe("redactForLog", () => {
     });
   });
 
+  it("redacts CSRF header aliases and strips relative URL queries without altering ordinary text", () => {
+    const safe = redactForLog({
+      callbackUrl: "/callback?query-secret=yes#fragment-secret",
+      "x-csrf-token": "csrf-header-secret",
+      description: "ordinary text"
+    });
+
+    const serialized = JSON.stringify(safe);
+    expect(serialized).not.toContain("query-secret");
+    expect(serialized).not.toContain("fragment-secret");
+    expect(serialized).not.toContain("csrf-header-secret");
+    expect(safe).toEqual({
+      callbackUrl: "/callback",
+      "x-csrf-token": "[REDACTED]",
+      description: "ordinary text"
+    });
+  });
+
   it("redacts real Pino output and emits only safe serializer fields outside development", () => {
     const output: string[] = [];
     const stream = new Writable({
@@ -73,6 +91,41 @@ describe("redactForLog", () => {
       input_images: "[REDACTED]",
       callbackUrl: "https://example.com/callback",
       nested: { cause: "[REDACTED]" }
+    });
+  });
+
+  it("redacts sensitive development error stacks before Pino writes them", () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    const output: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        output.push(chunk.toString("utf8"));
+        callback();
+      }
+    });
+
+    try {
+      createLogger("info", stream).info({
+        err: {
+          code: "safe_error_code",
+          stack: "Error: Bearer stack-secret Cookie cookie-stack-secret prompt stack-prompt-secret\n    at safeFrame (app.ts:1:1)"
+        }
+      }, "safe log");
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+    }
+
+    const serialized = output.join("");
+    for (const secret of ["stack-secret", "cookie-stack-secret", "stack-prompt-secret"]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(JSON.parse(serialized)).toMatchObject({
+      err: { code: "safe_error_code", stack: "[REDACTED]" }
     });
   });
 });
