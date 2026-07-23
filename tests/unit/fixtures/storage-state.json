@@ -3,7 +3,7 @@
     {
       "name": "csrfToken",
       "value": "fixture-csrf",
-      "domain": "lingjing.jdcloud.com",
+      "domain": "fixture.invalid",
       "path": "/",
       "expires": -1,
       "httpOnly": false,
@@ -13,12 +13,52 @@
     {
       "name": "fixture_session",
       "value": "value",
-      "domain": "lingjing.jdcloud.com",
+      "domain": ".fixture.invalid",
       "path": "/",
       "expires": -1,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
+    },
+    {
+      "name": "remove-me",
+      "value": "fixture-value",
+      "domain": "fixture.invalid",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "api-cookie",
+      "value": "before",
+      "domain": "fixture.invalid",
+      "path": "/api",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "domain-cookie",
+      "value": "before-domain",
+      "domain": ".fixture.invalid",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "domain-cookie",
+      "value": "before-host",
+      "domain": "fixture.invalid",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
     }
   ],
   "origins": [

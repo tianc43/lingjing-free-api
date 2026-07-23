@@ -1,5 +1,5 @@
 import { parseConfig } from "../config.js";
-import { atomicWritePrivateJson } from "../session/atomic-write.js";
+import { atomicWritePrivateJsonPair } from "../session/atomic-write.js";
 import { chromium } from "playwright";
 
 const LOGIN_URL = "https://lingjing.jdcloud.com/";
@@ -7,6 +7,9 @@ const LOGIN_URL = "https://lingjing.jdcloud.com/";
 async function waitForAuthenticatedPage(page: import("playwright").Page): Promise<string> {
   for (;;) {
     try {
+      if (new URL(page.url()).origin !== new URL(LOGIN_URL).origin) {
+        throw new Error("Login cancelled before completion.");
+      }
       const authenticated = await page.evaluate(async () => {
         const response = await fetch("/api/user/describeBaseInfo");
         const envelope: unknown = await response.json();
@@ -45,13 +48,15 @@ async function main(): Promise<void> {
     console.log("请在打开的浏览器中完成灵境登录，登录成功后将自动保存会话。");
     const originPin = await waitForAuthenticatedPage(page);
     const storageState = await context.storageState();
-    await atomicWritePrivateJson(config.storageStatePath, storageState);
-    await atomicWritePrivateJson(config.sessionProfilePath, { originPin });
+    await atomicWritePrivateJsonPair([
+      { targetPath: config.storageStatePath, value: storageState },
+      { targetPath: config.sessionProfilePath, value: { originPin } }
+    ]);
     console.log(`会话已保存至: ${config.storageStatePath}`);
     console.log(`登录配置已保存至: ${config.sessionProfilePath}`);
   } finally {
-    await context.close();
-    await browser.close();
+    await context.close().catch(() => undefined);
+    await browser.close().catch(() => undefined);
   }
 }
 

@@ -33,10 +33,12 @@ export class CookieFileProvider implements SessionProvider {
   private jar: CookieJar | null = null;
   private sourceMtimeMs: number | null = null;
   private csrfToken: string | null = null;
+  private readonly origin: URL;
 
-  constructor(sourcePath: string | URL, profilePath: string | URL) {
+  constructor(sourcePath: string | URL, profilePath: string | URL, origin: URL = new URL(SESSION_ORIGIN)) {
     this.sourcePath = asPath(sourcePath);
     this.profilePath = asPath(profilePath);
+    this.origin = origin;
   }
 
   async load(): Promise<SessionSnapshot> {
@@ -76,7 +78,7 @@ export class CookieFileProvider implements SessionProvider {
   }
 
   private async updateCsrf(jar: CookieJar): Promise<void> {
-    const csrfCookie = (await jar.getCookies(SESSION_ORIGIN)).find((cookie) => cookie.key === "csrfToken");
+    const csrfCookie = (await jar.getCookies(this.origin.toString())).find((cookie) => cookie.key === "csrfToken");
     this.csrfToken = csrfCookie?.value ?? null;
   }
 
@@ -88,7 +90,7 @@ export class CookieFileProvider implements SessionProvider {
       for (const pair of header.split(";")) {
         const cookie = Cookie.parse(pair.trim());
         if (cookie !== undefined) {
-          await jar.setCookie(cookie, SESSION_ORIGIN);
+          await jar.setCookie(cookie, this.origin.toString());
         }
       }
       this.jar = jar;

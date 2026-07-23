@@ -56,13 +56,21 @@ function cookieToPlaywright(cookie: Cookie): PlaywrightCookie {
   return {
     name: cookie.key,
     value: cookie.value,
-    domain: cookie.domain ?? "lingjing.jdcloud.com",
+    domain: cookie.hostOnly ? (cookie.domain ?? "lingjing.jdcloud.com") : `.${cookie.domain ?? "lingjing.jdcloud.com"}`,
     path: cookie.path ?? "/",
     expires,
     httpOnly: cookie.httpOnly,
     secure: cookie.secure,
     sameSite: cookie.sameSite === "strict" ? "Strict" : cookie.sameSite === "lax" ? "Lax" : "None"
   };
+}
+
+function cookieKey(name: string, domain: string, path: string, hostOnly: boolean): string {
+  return `${name}\u0000${hostOnly ? domain : `.${domain.replace(/^\./u, "")}`}\u0000${path}`;
+}
+
+function isExpired(cookie: Cookie): boolean {
+  return (cookie.expiryTime() ?? Number.POSITIVE_INFINITY) <= Date.now();
 }
 
 export class StorageStateProvider implements SessionProvider {
@@ -73,11 +81,13 @@ export class StorageStateProvider implements SessionProvider {
   private jar: CookieJar | null = null;
   private sourceMtimeMs: number | null = null;
   private csrfToken: string | null = null;
-  private readonly changedCookies = new Set<string>();
+  private readonly changedCookies = new Map<string, Cookie | null>();
+  private readonly origin: URL;
 
-  constructor(sourcePath: string | URL, profilePath: string | URL, private readonly atomicWriter: AtomicWriter = atomicWritePrivateJson) {
+  constructor(sourcePath: string | URL, profilePath: string | URL, private readonly atomicWriter: AtomicWriter = atomicWritePrivateJson, origin: URL = new URL(SESSION_ORIGIN)) {
     this.sourcePath = asPath(sourcePath);
     this.profilePath = asPath(profilePath);
+    this.origin = origin;
   }
 
   async load(): Promise<SessionSnapshot> {
@@ -103,27 +113,25 @@ export class StorageStateProvider implements SessionProvider {
         }
         const stored = await snapshot.jar.setCookie(parsed, url.toString());
         if (stored !== undefined) {
-          this.changedCookies.add(`${stored.key}\u0000${stored.domain ?? ""}\u0000${stored.path ?? "/"}`);
+          const key = cookieKey(stored.key, stored.domain ?? url.hostname, stored.path ?? "/", stored.hostOnly ?? false);
+          this.changedCookies.set(key, isExpired(stored) ? null : stored);
         }
       }
       const state = storageStateFromJson(JSON.parse(await readFile(this.sourcePath, "utf8")) as unknown);
-      const jarCookies = await snapshot.jar.getCookies(SESSION_ORIGIN);
-      const byKey = new Map(jarCookies.map((cookie) => [`${cookie.key}\u0000${cookie.domain ?? ""}\u0000${cookie.path ?? "/"}`, cookie]));
       const written = new Set<string>();
-      const cookies = state.cookies.map((cookie) => {
-        const key = `${cookie.name}\u0000${cookie.domain}\u0000${cookie.path}`;
-        const jarCookie = byKey.get(key);
-        if (jarCookie !== undefined && this.changedCookies.has(key)) {
+      const cookies = state.cookies.flatMap((cookie) => {
+        const key = cookieKey(cookie.name, cookie.domain.replace(/^\./u, ""), cookie.path, !cookie.domain.startsWith("."));
+        const changed = this.changedCookies.get(key);
+        if (changed !== undefined || this.changedCookies.has(key)) {
           written.add(key);
-          return cookieToPlaywright(jarCookie);
+          return changed === null || changed === undefined ? [] : [cookieToPlaywright(changed)];
         }
-        return cookie;
+        return [cookie];
       });
-      for (const key of this.changedCookies) {
+      for (const [key, changed] of this.changedCookies) {
         if (!written.has(key)) {
-          const jarCookie = byKey.get(key);
-          if (jarCookie !== undefined) {
-            cookies.push(cookieToPlaywright(jarCookie));
+          if (changed !== null) {
+            cookies.push(cookieToPlaywright(changed));
           }
         }
       }
@@ -152,8 +160,10 @@ export class StorageStateProvider implements SessionProvider {
       const jar = new CookieJar();
       for (const cookie of state.cookies) {
         const expiry = cookie.expires > 0 ? `; Expires=${new Date(cookie.expires * 1000).toUTCString()}` : "";
-        const attributes = `${cookie.name}=${cookie.value}; Domain=${cookie.domain}; Path=${cookie.path}; ${cookie.secure ? "Secure; " : ""}${cookie.httpOnly ? "HttpOnly; " : ""}SameSite=${cookie.sameSite}${expiry}`;
-        await jar.setCookie(attributes, SESSION_ORIGIN);
+        const host = cookie.domain.replace(/^\./u, "");
+        const domain = cookie.domain.startsWith(".") ? `Domain=${host}; ` : "";
+        const attributes = `${cookie.name}=${cookie.value}; ${domain}Path=${cookie.path}; ${cookie.secure ? "Secure; " : ""}${cookie.httpOnly ? "HttpOnly; " : ""}SameSite=${cookie.sameSite}${expiry}`;
+        await jar.setCookie(attributes, `https://${host}${cookie.path}`);
       }
       this.jar = jar;
       this.sourceMtimeMs = currentMtimeMs;
@@ -163,7 +173,7 @@ export class StorageStateProvider implements SessionProvider {
   }
 
   private async updateCsrf(jar: CookieJar): Promise<void> {
-    const csrfCookie = (await jar.getCookies(SESSION_ORIGIN)).find((cookie) => cookie.key === "csrfToken");
+    const csrfCookie = (await jar.getCookies(this.origin.toString())).find((cookie) => cookie.key === "csrfToken");
     this.csrfToken = csrfCookie?.value ?? null;
   }
 }
