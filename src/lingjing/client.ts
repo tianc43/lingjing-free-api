@@ -32,7 +32,7 @@ export class LingjingClient implements LingjingTransport {
   private readonly baseUrl: URL;
   private readonly dispatcher: Dispatcher | undefined;
   private readonly sleep: (milliseconds: number) => Promise<void>;
-  private readonly signedUploadUrls = new Set<string>();
+  private readonly signedUploadUrls = new Map<string, string>();
 
   constructor(private readonly options: LingjingClientOptions) {
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
@@ -79,10 +79,22 @@ export class LingjingClient implements LingjingTransport {
   }
 
   async uploadApi<T>(path: string, init: UploadRequest): Promise<T> {
+    if (path === "/joycreator/upload/init") {
+      const result = await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
+      this.registerSignedUploadUrls(result);
+      return result;
+    }
+    if (path === "/joycreator/upload/complete" || path === "/joycreator/upload/cancel") {
+      const uploadId = this.uploadIdFromBody(init.body);
+      try {
+        return await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
+      } finally {
+        if (uploadId === undefined) this.signedUploadUrls.clear();
+        else this.removeSignedUploadUrls(uploadId);
+      }
+    }
     this.signedUploadUrls.clear();
-    const result = await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
-    if (path === "/joycreator/upload/init") this.registerSignedUploadUrls(result);
-    return result;
+    return this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
   }
 
   async putSigned(url: URL, init: UploadRequest): Promise<SignedUploadResponse> {
@@ -151,30 +163,68 @@ export class LingjingClient implements LingjingTransport {
 
   private registerSignedUploadUrls(value: unknown): void {
     if (!isPlainObject(value)) throw errors.upstream();
+    const hasSingle = "single" in value;
+    const hasMultipart = "multipart" in value;
+    if (!hasSingle && !hasMultipart) return;
+    if (hasSingle && hasMultipart) throw errors.upstream();
     const candidates: unknown[] = [];
-    if ("single" in value) {
+    let uploadId: unknown;
+    if (hasSingle) {
       if (!isPlainObject(value.single)) throw errors.upstream();
+      uploadId = value.single.uploadId;
       candidates.push(value.single.uploadUrl);
     }
-    if ("multipart" in value) {
+    if (hasMultipart) {
       if (!isPlainObject(value.multipart) || !Array.isArray(value.multipart.parts)) throw errors.upstream();
+      uploadId = value.multipart.uploadId;
       for (const part of value.multipart.parts) {
         if (!isPlainObject(part)) throw errors.upstream();
         candidates.push(part.uploadUrl);
       }
     }
+    if (typeof uploadId !== "string" || uploadId.trim().length === 0 || candidates.length === 0) throw errors.upstream();
     const validatedUrls = new Set<string>();
     for (const candidate of candidates) {
       if (typeof candidate !== "string") throw errors.upstream();
       try {
         const url = new URL(candidate);
-        if (url.protocol !== "https:" || url.origin === this.baseUrl.origin) throw errors.upstream();
+        if (
+          url.protocol !== "https:"
+          || url.origin === this.baseUrl.origin
+          || url.username !== ""
+          || url.password !== ""
+        ) throw errors.upstream();
         validatedUrls.add(url.toString());
       } catch (cause) {
         if (cause instanceof AppError) throw cause;
         throw errors.upstream();
       }
     }
-    for (const url of validatedUrls) this.signedUploadUrls.add(url);
+    if (validatedUrls.size !== candidates.length) throw errors.upstream();
+    for (const url of validatedUrls) {
+      const owner = this.signedUploadUrls.get(url);
+      if (owner !== undefined && owner !== uploadId) throw errors.upstream();
+    }
+    this.removeSignedUploadUrls(uploadId);
+    for (const url of validatedUrls) this.signedUploadUrls.set(url, uploadId);
+  }
+
+  private uploadIdFromBody(body: UploadRequest["body"]): string | undefined {
+    if (!(typeof body === "string" || Buffer.isBuffer(body) || body instanceof Uint8Array)) return undefined;
+    try {
+      const value: unknown = JSON.parse(Buffer.from(body).toString("utf8"));
+      if (!isPlainObject(value)) return undefined;
+      return typeof value.uploadId === "string" && value.uploadId.trim().length > 0
+        ? value.uploadId
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private removeSignedUploadUrls(uploadId: string): void {
+    for (const [url, owner] of this.signedUploadUrls) {
+      if (owner === uploadId) this.signedUploadUrls.delete(url);
+    }
   }
 }

@@ -56,7 +56,7 @@ describe("LingjingClient contract", () => {
 
   it("never sends Lingjing credentials to an external signed upload URL", async () => {
     const { client, mock } = await createClientWithSessionMode();
-    mock.respondWithResult({ single: { uploadUrl: "https://object-storage.example/signed-part" } });
+    mock.respondWithResult({ single: { uploadId: "upload-credentials", uploadUrl: "https://object-storage.example/signed-part" } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "leak", cookie: "leak", origin: "leak", referer: "leak", "x-csrf-token": "leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
     expect(mock.objectStorageHeaders.cookie).toBeUndefined();
@@ -70,17 +70,50 @@ describe("LingjingClient contract", () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/signed-part");
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
-    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    mock.respondWithResult({ single: { uploadId: "upload-once", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await expect(client.putSigned(signed, { method: "POST", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("PUT");
     await client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 });
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
   });
 
+  it("keeps signed URL capabilities isolated across interleaved uploads", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const first = new URL("https://object-storage.example/concurrent-first");
+    const second = new URL("https://object-storage.example/concurrent-second");
+    mock.respondWithResult({
+      single: { uploadId: "upload-first", uploadUrl: first.toString() }
+    });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("first"),
+      timeoutMs: 5_000
+    });
+    mock.respondWithResult({
+      single: { uploadId: "upload-second", uploadUrl: second.toString() }
+    });
+    await client.uploadApi("/joycreator/upload/init", {
+      method: "POST",
+      body: Buffer.from("second"),
+      timeoutMs: 5_000
+    });
+
+    await expect(client.putSigned(first, {
+      method: "PUT",
+      body: Buffer.from("first"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+    await expect(client.putSigned(second, {
+      method: "PUT",
+      body: Buffer.from("second"),
+      timeoutMs: 5_000
+    })).resolves.toMatchObject({ statusCode: 200 });
+  });
+
   it("invalidates signed URL trust after an unrelated logical request", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/signed-part");
-    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    mock.respondWithResult({ single: { uploadId: "upload-unrelated", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await client.read("/unrelated");
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
@@ -112,6 +145,12 @@ describe("LingjingClient contract", () => {
     { single: { uploadUrl: null } },
     { single: { uploadUrl: "not-a-url" } },
     { single: { uploadUrl: "http://object-storage.example/signed-part" } },
+    {
+      single: {
+        uploadId: "upload-credentials",
+        uploadUrl: "https://user:pass@object-storage.example/signed-part"
+      }
+    },
     { multipart: null },
     { multipart: [] },
     { multipart: {} },
@@ -145,6 +184,7 @@ describe("LingjingClient contract", () => {
     const second = new URL("https://object-storage.example/part-two");
     mock.respondWithResult({
       multipart: {
+        uploadId: "upload-multipart",
         parts: [
           { uploadUrl: first.toString() },
           { uploadUrl: second.toString() }
@@ -250,7 +290,7 @@ describe("LingjingClient contract", () => {
   it("times out a signed upload without retrying", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/timeout-part");
-    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    mock.respondWithResult({ single: { uploadId: "upload-timeout", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", {
       method: "POST",
       body: Buffer.from("init"),
@@ -275,7 +315,7 @@ describe("LingjingClient contract", () => {
       dispatcher: mock.recordingDispatcher
     });
     const signed = new URL("https://object-storage.example/redirect-part");
-    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    mock.respondWithResult({ single: { uploadId: "upload-redirect", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", {
       method: "POST",
       body: Buffer.from("init"),
@@ -295,7 +335,7 @@ describe("LingjingClient contract", () => {
   it("returns raw signed status and preserves duplicate response headers", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/raw-part");
-    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    mock.respondWithResult({ single: { uploadId: "upload-raw", uploadUrl: signed.toString() } });
     await client.uploadApi("/joycreator/upload/init", {
       method: "POST",
       body: Buffer.from("init"),
