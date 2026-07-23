@@ -36,7 +36,8 @@ describe("operator documentation", () => {
       "text/event-stream",
       "Idempotency-Key",
       "unknown",
-      "RUN_LIVE_TESTS",
+      "`LIVE_TEST=1`",
+      "`LIVE_VIDEO_TEST=1`",
       "单用户"
     ]) {
       expect(readme).toContain(phrase);

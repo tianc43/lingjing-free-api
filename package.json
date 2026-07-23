@@ -25,10 +25,10 @@
     "login": "node --env-file=.env --import tsx src/cli/login.ts",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude tests/live/**",
     "test:watch": "vitest",
-    "test:live": "vitest run tests/live",
-    "test:live:video": "vitest run tests/live/video.live.test.ts"
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:live:video": "vitest run --config vitest.live.config.ts tests/live/video.live.test.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.0",

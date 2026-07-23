@@ -254,7 +254,34 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 
 `tests/unit`、`tests/contract`、`tests/integration` 以及 Docker smoke 全部使用假 fixture，不应访问京东云。`docker-compose.test.yml` 使用 internal 网络，明确阻断外网。
 
-仓库当前不附带 `tests/live` 用例；`npm run test:live` 与 `npm run test:live:video` 是保留入口，不应作为普通验收命令。任何后来加入的真实测试必须显式检查 `RUN_LIVE_TESTS=1`；视频还必须同时检查 `RUN_LIVE_VIDEO_TESTS=1`，并在运行前确认账号、模型、预计点数与可接受成本。不要在 CI 默认设置这些标志。
+`tests/live` 是显式开启的真实账号验收。默认运行 `npm run test:live` 时四个 live 套件全部 skip，不创建运行时、不读取认证内容，也不访问京东云；不要在普通 CI 中设置 live 标志。
+
+真实验收前必须先由用户运行 `npm run login`，并确保本地忽略的 `data/auth/storage-state.json` 与 `data/auth/session-profile.json` 有效。测试只通过现有 SessionProvider 读取这些文件，不会打印 Cookie、账号标识或认证文件内容。
+
+Windows PowerShell 的执行顺序：
+
+```powershell
+$env:LIVE_TEST = "1"
+npm run test:live -- --run tests/live/session.live.test.ts tests/live/account-models.live.test.ts
+npm run test:live -- --run tests/live/image.live.test.ts
+
+$env:LIVE_VIDEO_TEST = "1"
+npm run test:live:video
+
+Remove-Item Env:LIVE_VIDEO_TEST
+Remove-Item Env:LIVE_TEST
+```
+
+图片测试只有在 `LIVE_TEST=1` 时运行；视频还必须同时满足 `LIVE_VIDEO_TEST=1`。每次生成前都会重新读取余额、当前模型元数据和报价，动态构造模型必填参数；若没有可确认报价、参数不兼容或余额不足，会在提交前安全失败，不会改用其他收费系统。图片和视频测试各自包装真实 transport，并断言计费提交 `submitOnce` 恰好发生一次。
+
+live 输出仅允许模型 display name、带引号的预计点数、本地 job ID、脱敏状态和数字余额变化。Prompt、生成 URL、上游 task ID、账号身份和 Cookie 都不会写入输出或验收记录。生成 URL 只做 HEAD 或最多 64 KiB 的 bounded GET 可达性验证。
+
+### 真实验收记录
+
+仅在对应真实流程完整成功后添加一行；不得根据 mock、历史页面操作或部分运行填写。当前表格保留结构，尚未记录本版本的真实账号证据。
+
+| 日期 | 能力 | 模型 display name | 脱敏状态 | 数字余额变化 |
+|---|---|---|---|---:|
 
 ## 安全、隐私与运维
 
