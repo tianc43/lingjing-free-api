@@ -71,7 +71,7 @@ describe("operator documentation", () => {
       "tests/fixtures/docker-auth/session-profile.json"
     );
 
-    expect(override).toContain("fake-docker-api-key-0024");
+    expect(override).toContain("fixture-docker-api-key-0024");
     expect(override).toContain("read_only: true");
     expect(override).toContain("source: lingjing-smoke-data");
     expect(override).toContain("target: /app/data");

@@ -44,16 +44,16 @@ describe("session providers", () => {
     const browserProvider = new StorageStateProvider(browserPath, profilePath, undefined, new URL(origin));
     await browserProvider.load();
     await browserProvider.applySetCookies(new URL(origin), [
-      "csrfToken=rotated-fixture-csrf; Path=/; Secure"
+      "csrfToken=fixture-rotated-csrf; Path=/; Secure"
     ]);
-    expect(await readFakeCsrfFromStorageState(browserPath)).toBe("rotated-fixture-csrf");
+    expect(await readFakeCsrfFromStorageState(browserPath)).toBe("fixture-rotated-csrf");
 
     const cookiePath = await copyFixtureToTemporaryFile("cookie.txt");
     const before = await readFile(cookiePath, "utf8");
     const cookieProvider = new CookieFileProvider(cookiePath, profilePath, new URL(origin));
     await cookieProvider.load();
     await cookieProvider.applySetCookies(new URL(origin), [
-      "csrfToken=memory-only-fixture; Path=/; Secure"
+      "csrfToken=fixture-memory-only; Path=/; Secure"
     ]);
     expect(await readFile(cookiePath, "utf8")).toBe(before);
   });

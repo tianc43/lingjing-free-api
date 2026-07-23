@@ -164,6 +164,7 @@ export function createGenerationHarness(options: {
   capacityActiveLimit?: number;
   capacityMaxQueuedRequests?: number;
   catalogFailure?: Error;
+  initialTaskStatuses?: number[];
 } = {}): GenerationHarness {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-generation-"));
   const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
@@ -295,7 +296,10 @@ export function createGenerationHarness(options: {
       for (let offset = 0; offset < assetsPerSubmit; offset += 1) {
         const sequence = submissions * 10 + offset + 1;
         const taskId = `fixture-task-${String(sequence)}`;
-        statuses.set(taskId, statuses.get(taskId) ?? [1]);
+        statuses.set(
+          taskId,
+          statuses.get(taskId) ?? [...(options.initialTaskStatuses ?? [1])]
+        );
         assets.push({
           id: `fixture-asset-${String(sequence)}`,
           scene: fixtureModel.expectedAssetScene,

@@ -6,7 +6,7 @@ describe("redactForLog", () => {
   it("removes credentials, prompts, media and URL queries", () => {
     const safe = redactForLog({
       authorization: "Bearer downstream",
-      cookie: "pt_key=secret",
+      cookie: "pt_key=fixture-secret",
       csrfToken: "csrf-secret",
       prompt: "private prompt",
       input_images: ["https://example.com/a.png?signature=secret"]

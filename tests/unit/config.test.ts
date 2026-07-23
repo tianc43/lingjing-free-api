@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig } from "../../src/config.js";
 
 const validEnv = {
-  LINGJING_API_KEY: "local-secret-with-sufficient-length",
+  LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
   LINGJING_STORAGE_STATE: "./fixtures/storage-state.json",
   LINGJING_SESSION_PROFILE: "./fixtures/session-profile.json"
 };
@@ -18,7 +18,7 @@ describe("parseConfig", () => {
   it("rejects the sample key and invalid concurrency", () => {
     expect(() => parseConfig({ LINGJING_API_KEY: "change-me" })).toThrow();
     expect(() => parseConfig({
-      LINGJING_API_KEY: "local-secret-with-sufficient-length",
+      LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       LINGJING_MAX_CONCURRENCY: "6"
     })).toThrow();
   });

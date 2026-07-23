@@ -223,7 +223,7 @@ describe("system API", () => {
       method: "GET",
       url: "/v1/account?signature=query-secret",
       headers: {
-        cookie: "csrfToken=cookie-secret"
+        cookie: "csrfToken=fixture-cookie-secret"
       }
     });
     await fixture.app.inject({
@@ -231,7 +231,7 @@ describe("system API", () => {
       url: "/v1/images/generations?signature=query-secret",
       headers: {
         authorization: "Bearer downstream-secret",
-        cookie: "csrfToken=cookie-secret"
+        cookie: "csrfToken=fixture-cookie-secret"
       },
       payload: {
         model: "707",

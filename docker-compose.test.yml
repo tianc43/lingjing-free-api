@@ -2,7 +2,7 @@ services:
   lingjing-free-api:
     restart: "no"
     environment:
-      LINGJING_API_KEY: fake-docker-api-key-0024
+      LINGJING_API_KEY: fixture-docker-api-key-0024
       SESSION_MODE: browser-state
       DB_PATH: /app/data/lingjing.db
     volumes:

@@ -144,8 +144,14 @@ describe("SseWriter", () => {
 
     await Promise.resolve();
     expect(settled).toBe(false);
+    expect(output.listenerCount("drain")).toBe(1);
+    expect(output.listenerCount("close")).toBe(1);
+    expect(output.listenerCount("error")).toBe(1);
     await pending;
     expect(writes).toBe(1);
+    expect(output.listenerCount("drain")).toBe(0);
+    expect(output.listenerCount("close")).toBe(0);
+    expect(output.listenerCount("error")).toBe(0);
   });
 });
 
@@ -261,11 +267,40 @@ describe("chat completions SSE", () => {
     expect(events.at(-1)?.rawData).toBe("[DONE]");
     expect(events.filter((event) => event.rawData === "[DONE]")).toHaveLength(1);
     const progress = events.find((event) => event.event === "progress")?.data;
-    expect(progress).toMatchObject({
-        job_id: "job_abcdef1234567890",
-        status: "processing"
-      });
-    expect(typeof progress?.elapsed_seconds).toBe("number");
+    expect(progress).toEqual({
+      job_id: "job_abcdef1234567890",
+      status: "processing",
+      elapsed_seconds: 15
+    });
+  });
+
+  it("does not emit progress before the exact 15 second boundary", async () => {
+    let now = Date.parse("2026-07-23T00:00:00.000Z");
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const waits = [
+      currentJob("processing"),
+      currentJob("completed")
+    ];
+    nextHandle = {
+      job: currentJob("processing"),
+      wait: vi.fn(() => {
+        now += waits.length === 2 ? 14_999 : 0;
+        return Promise.resolve(waits.shift() ?? currentJob("completed"));
+      })
+    };
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "fixture-image",
+        messages: [{ role: "user", content: "draw" }],
+        stream: true
+      }
+    });
+
+    expect(parseEvents(response.body)
+      .filter((event) => event.event === "progress")).toEqual([]);
   });
 
   it("returns a normal pre-header error but an event:error after headers", async () => {

@@ -64,11 +64,11 @@ describe("LingjingClient contract", () => {
 
   it.each(["browser-state", "cookie-file"] as const)("uses a rotated CSRF cookie on the next %s request", async (mode) => {
     const { client, mock } = await createClientWithSessionMode(mode);
-    mock.respondWithSetCookie("csrfToken=rotated-fixture-csrf; Path=/; Secure");
+    mock.respondWithSetCookie("csrfToken=fixture-rotated-csrf; Path=/; Secure");
     await client.read("/rotate-cookie");
     await client.read("/after-rotation");
-    expect(mock.lastHeaders.cookie).toContain("csrfToken=rotated-fixture-csrf");
-    expect(mock.lastHeaders["x-csrf-token"]).toBe("rotated-fixture-csrf");
+    expect(mock.lastHeaders.cookie).toContain("csrfToken=fixture-rotated-csrf");
+    expect(mock.lastHeaders["x-csrf-token"]).toBe("fixture-rotated-csrf");
   });
 
   it("never sends Lingjing credentials to an external signed upload URL", async () => {
@@ -348,7 +348,7 @@ describe("LingjingClient contract", () => {
     mocks.push(mock);
     const session = mock.createSession("browser-state");
     await session.seed();
-    session.refreshOnInvalidate("refreshed-csrf");
+    session.refreshOnInvalidate("fixture-refreshed-csrf");
     const refreshingClient = new LingjingClient({
       baseUrl: mock.baseUrl,
       session,
@@ -362,9 +362,9 @@ describe("LingjingClient contract", () => {
     expect(session.refreshCount).toBe(1);
     expect(session.loadCount).toBe(4);
     for (const retriedHeaders of mock.headersFor("/csrf-refresh").slice(1)) {
-      expect(retriedHeaders.cookie).toContain("csrfToken=refreshed-csrf");
+      expect(retriedHeaders.cookie).toContain("csrfToken=fixture-refreshed-csrf");
       expect(retriedHeaders.cookie).toContain("session=refreshed-session");
-      expect(retriedHeaders["x-csrf-token"]).toBe("refreshed-csrf");
+      expect(retriedHeaders["x-csrf-token"]).toBe("fixture-refreshed-csrf");
     }
   });
 
@@ -374,12 +374,12 @@ describe("LingjingClient contract", () => {
     const session = mock.createSession("browser-state");
     await session.seed();
     const malformedClient = new LingjingClient({ baseUrl: mock.baseUrl, session, dispatcher: mock.dispatcher });
-    mock.respondWithSetCookie("csrfToken=malformed-rotated; Path=/; Secure");
+    mock.respondWithSetCookie("csrfToken=fixture-malformed-rotated; Path=/; Secure");
     mock.respondWithMalformedJson();
     await expect(malformedClient.submitOnce("/submit-malformed-cookie", {}))
       .rejects.toMatchObject({ code: "lingjing_submit_ambiguous" });
     expect(session.applySetCookiesCount).toBe(1);
-    await expect(session.cookieString()).resolves.toContain("csrfToken=malformed-rotated");
+    await expect(session.cookieString()).resolves.toContain("csrfToken=fixture-malformed-rotated");
   });
 
   it("keeps a timed out submit single-shot and safely mapped", async () => {
@@ -529,10 +529,10 @@ describe("LingjingClient contract", () => {
       ], origins: [] }));
     } else await writeFile(join(directory, "cookies.txt"), "csrfToken=fixture-csrf; session=fixture-session");
     const client = new LingjingClient({ baseUrl: mock.baseUrl, session: provider, dispatcher: mock.dispatcher, sleep: () => Promise.resolve() });
-    mock.respondWithSetCookie("csrfToken=real-rotated; Path=/; Secure");
+    mock.respondWithSetCookie("csrfToken=fixture-realistic-rotated; Path=/; Secure");
     await client.read("/rotate-real");
     await client.read("/after-real");
-    expect(mock.lastHeaders["x-csrf-token"]).toBe("real-rotated");
-    expect(mock.lastHeaders.cookie).toContain("csrfToken=real-rotated");
+    expect(mock.lastHeaders["x-csrf-token"]).toBe("fixture-realistic-rotated");
+    expect(mock.lastHeaders.cookie).toContain("csrfToken=fixture-realistic-rotated");
   });
 });

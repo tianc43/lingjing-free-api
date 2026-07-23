@@ -4,6 +4,12 @@ import type { SessionProvider, SessionSnapshot } from "../../src/session/types.j
 
 type HeaderValue = string | string[] | undefined;
 
+export interface MockEnvelopeResponse {
+  statusCode?: number;
+  error?: { code?: unknown; message?: unknown } | null;
+  result?: unknown;
+}
+
 function asHeaders(headers: Record<string, HeaderValue>): Record<string, string> {
   return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(", ") : value ?? ""]));
 }
@@ -90,6 +96,7 @@ export class MockLingjing {
   private readonly requestMethods = new Map<string, string[]>();
   private readonly requestTargets = new Map<string, string[]>();
   private readonly resultsByPath = new Map<string, unknown>();
+  private readonly responseQueues = new Map<string, MockEnvelopeResponse[]>();
   private readFailures = 0;
   private csrfReadFailures = 0;
   private setCookie: string | null = null;
@@ -174,6 +181,12 @@ export class MockLingjing {
   respondToPath(path: string, value: unknown): void {
     this.resultsByPath.set(path, value);
   }
+  queueEnvelope(path: string, response: MockEnvelopeResponse): void {
+    this.responseQueues.set(path, [
+      ...(this.responseQueues.get(path) ?? []),
+      response
+    ]);
+  }
   respondToSignedUpload(statusCode: number, headers: Record<string, string | string[]> = {}): void {
     this.signedStatusCode = statusCode;
     this.signedHeaders = headers;
@@ -221,6 +234,20 @@ export class MockLingjing {
       return {
         statusCode: 400,
         data: JSON.stringify({ error: { code: "CSRF", message: "expired" }, result: null }),
+        ...(responseOptions === undefined ? {} : { responseOptions })
+      };
+    }
+    const responseQueue = this.responseQueues.get(url.pathname);
+    const queued = responseQueue?.shift();
+    if (responseQueue?.length === 0) this.responseQueues.delete(url.pathname);
+    if (queued !== undefined) {
+      return {
+        statusCode: queued.statusCode ?? 200,
+        data: JSON.stringify({
+          requestId: "fixture",
+          error: queued.error ?? null,
+          result: queued.result
+        }),
         ...(responseOptions === undefined ? {} : { responseOptions })
       };
     }
