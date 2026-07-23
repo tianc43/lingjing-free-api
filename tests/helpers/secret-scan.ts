@@ -29,24 +29,36 @@ function normalizeSecretName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/gu, "");
 }
 
-function isSafeToken(value: string): boolean {
+function isSafeAtomicToken(value: string): boolean {
   const normalized = value
     .trim()
     .replace(/^Bearer\s+/iu, "")
     .replace(/^["'`]|["'`,;]$/gu, "");
-  const directlySafe = normalized.length === 0
+  return normalized.length === 0
     || normalized.startsWith("fixture-")
     || normalized === "change-me"
     || normalized === "[REDACTED]"
     || /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-)?\}$/u.test(normalized)
     || /^\$env:[A-Z][A-Z0-9_]*$/u.test(normalized)
     || /^\$[A-Z][A-Z0-9_]*$/u.test(normalized);
-  if (directlySafe) return true;
+}
+
+function isSafeCookieHeader(value: string): boolean {
+  if (isSafeAtomicToken(value)) return true;
+  const normalized = value
+    .trim()
+    .replace(/^["'`]|["'`,;]$/gu, "");
   const cookieParts = normalized.split(";").map((part) => part.trim());
   return cookieParts.length > 0 && cookieParts.every((part) => {
     const separator = part.indexOf("=");
-    return separator > 0 && isSafeToken(part.slice(separator + 1));
+    return separator > 0 && isSafeAtomicToken(part.slice(separator + 1));
   });
+}
+
+function isSafeNamedValue(name: string, value: string): boolean {
+  return normalizeSecretName(name) === "cookie"
+    ? isSafeCookieHeader(value)
+    : isSafeAtomicToken(value);
 }
 
 function walkJson(
@@ -67,7 +79,10 @@ function walkJson(
     for (const [index, cookie] of record.cookies.entries()) {
       if (typeof cookie !== "object" || cookie === null) continue;
       const cookieValue = (cookie as Record<string, unknown>).value;
-      if (typeof cookieValue === "string" && !isSafeToken(cookieValue)) {
+      if (
+        typeof cookieValue === "string"
+        && !isSafeAtomicToken(cookieValue)
+      ) {
         violations.push(
           `${source}:${path}.cookies[${String(index)}].value contains non-fixture credential`
         );
@@ -80,7 +95,7 @@ function walkJson(
   if (
     SECRET_NAMES.has(cookieName)
     && typeof record.value === "string"
-    && !isSafeToken(record.value)
+    && !isSafeAtomicToken(record.value)
   ) {
     violations.push(`${source}:${path}.value contains non-fixture credential`);
   }
@@ -88,7 +103,7 @@ function walkJson(
     const normalizedKey = normalizeSecretName(key);
     if (SECRET_NAMES.has(normalizedKey) && (
       typeof item === "string" || typeof item === "number"
-    ) && !isSafeToken(String(item))) {
+    ) && !isSafeNamedValue(key, String(item))) {
       violations.push(`${source}:${path}.${key} contains non-fixture credential`);
     }
     walkJson(item, source, `${path}.${key}`, violations);
@@ -100,7 +115,7 @@ function scanText(input: SecurityInput, violations: string[]): void {
     /\b(?:pt[_-]?key|pt[_-]?pin|csrf[_-]?token)=([^;\s"'`]+)/giu;
   for (const match of input.content.matchAll(cookieAssignments)) {
     const value = match[1];
-    if (value !== undefined && !isSafeToken(value)) {
+    if (value !== undefined && !isSafeAtomicToken(value)) {
       violations.push(
         `${input.name} contains non-fixture cookie credential`
       );
@@ -109,17 +124,22 @@ function scanText(input: SecurityInput, violations: string[]): void {
   const bearer = /\bAuthorization:\s*Bearer\s+([^\s"'`]+)/giu;
   for (const match of input.content.matchAll(bearer)) {
     const value = match[1];
-    if (value !== undefined && !isSafeToken(value)) {
+    if (value !== undefined && !isSafeAtomicToken(value)) {
       violations.push(
         `${input.name} contains non-fixture bearer credential`
       );
     }
   }
   const quotedAssignments =
-    /\b(?:origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|authorization|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|`([^`\r\n]*)`)/giu;
+    /\b(origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|authorization|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|`([^`\r\n]*)`)/giu;
   for (const match of input.content.matchAll(quotedAssignments)) {
-    const value = match[1] ?? match[2] ?? match[3];
-    if (value !== undefined && !isSafeToken(value)) {
+    const name = match[1];
+    const value = match[2] ?? match[3] ?? match[4];
+    if (
+      name !== undefined
+      && value !== undefined
+      && !isSafeNamedValue(name, value)
+    ) {
       violations.push(
         `${input.name} contains non-fixture sensitive assignment`
       );
@@ -127,10 +147,15 @@ function scanText(input: SecurityInput, violations: string[]): void {
   }
   if (/\.(?:env|ya?ml|md|txt|log)$/iu.test(input.name)) {
     const bareAssignments =
-      /^\s*(?:-\s*)?(?:origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*([^\s#,\]]+)/gimu;
+      /^\s*(?:-\s*)?(origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*([^\s#,\]]+)/gimu;
     for (const match of input.content.matchAll(bareAssignments)) {
-      const value = match[1];
-      if (value !== undefined && !isSafeToken(value)) {
+      const name = match[1];
+      const value = match[2];
+      if (
+        name !== undefined
+        && value !== undefined
+        && !isSafeNamedValue(name, value)
+      ) {
         violations.push(
           `${input.name} contains non-fixture sensitive assignment`
         );
@@ -140,7 +165,7 @@ function scanText(input: SecurityInput, violations: string[]): void {
       /^\s*(?:-\s*)?authorization\s*[:=]\s*(?:Bearer\s+)?([^\s#,\]]+)/gimu;
     for (const match of input.content.matchAll(bareAuthorization)) {
       const value = match[1];
-      if (value !== undefined && !isSafeToken(value)) {
+      if (value !== undefined && !isSafeAtomicToken(value)) {
         violations.push(
           `${input.name} contains non-fixture sensitive assignment`
         );

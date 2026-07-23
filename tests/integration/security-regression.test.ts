@@ -127,6 +127,56 @@ describe("security regression", () => {
     }])).toEqual([]);
   });
 
+  it("rejects cookie-shaped text in atomic storage-state credential values", () => {
+    const cookieShapedAtomicValue = ["sid", "fixture-mask"].join("=");
+    const similarAtomicValue = ["token", "fixture-mask"].join("=");
+    const violations = scanSecrets([
+      {
+        name: "atomic-storage-state.json",
+        content: JSON.stringify({
+          cookies: [{
+            name: "sid",
+            value: cookieShapedAtomicValue
+          }],
+          origins: []
+        })
+      },
+      {
+        name: "atomic-named-record.log",
+        content: JSON.stringify({
+          name: "cookie",
+          value: similarAtomicValue
+        })
+      }
+    ]);
+
+    expect(violations).toEqual(expect.arrayContaining([
+      expect.stringContaining("atomic-storage-state.json"),
+      expect.stringContaining("atomic-named-record.log")
+    ]));
+  });
+
+  it("accepts atomic fixture cookies and fixture-only Cookie header fields", () => {
+    expect(scanSecrets([
+      {
+        name: "fixture-storage-state.json",
+        content: JSON.stringify({
+          cookies: [{ name: "sid", value: "fixture-cookie" }],
+          origins: []
+        })
+      },
+      {
+        name: "fixture-cookie-header.log",
+        content: JSON.stringify({
+          cookie: [
+            ["sid", "fixture-cookie"].join("="),
+            ["csrf", "fixture-csrf"].join("=")
+          ].join("; ")
+        })
+      }
+    ])).toEqual([]);
+  });
+
   it.each([
     [
       "env-prefix-escape.env",
