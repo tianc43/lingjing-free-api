@@ -279,6 +279,42 @@ describe("video generation API", () => {
     );
   });
 
+  it("uses the upstream default for a model parameter instead of the public alias", async () => {
+    const resolve = fixture.dependencies.catalog.resolve.bind(
+      fixture.dependencies.catalog
+    );
+    fixture.dependencies.catalog.resolve = async (value, sourceType) => {
+      const current = await resolve(value, sourceType);
+      return {
+        ...current,
+        parameters: current.parameters.map((parameter) => (
+          parameter.key === "model"
+            ? {
+                ...parameter,
+                defaultValue: "fixture-upstream-video-model",
+                options: ["fixture-upstream-video-model"]
+              }
+            : parameter
+        ))
+      };
+    };
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos/generations",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requests[0]?.values.model).toBe(
+      "fixture-upstream-video-model"
+    );
+  });
+
   it("requires mode and an input image for image-to-video", async () => {
     for (const payload of [
       {

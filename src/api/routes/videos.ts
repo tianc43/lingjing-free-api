@@ -23,6 +23,7 @@ import {
   noStore,
   pending,
   setIfSupported,
+  setModelIfSupported,
   throwFailed,
   validateDynamicValues,
   validateMediaCount,
@@ -98,7 +99,7 @@ export function registerVideoRoutes(
         ...(input.parameters ?? {})
       };
       setIfSupported(values, model, ["prompt"], input.prompt);
-      setIfSupported(values, model, ["model"], model.alias);
+      setModelIfSupported(values, model);
       setIfSupported(values, model, ["duration"], input.duration);
       setIfSupported(values, model, ["resolution"], input.resolution);
       setIfSupported(values, model, ["ratio"], input.ratio);

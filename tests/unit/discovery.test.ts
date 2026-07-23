@@ -99,6 +99,32 @@ describe("matchAsset", () => {
       .toBe("not-found");
   });
 
+  it("accepts the current asset modelCode when it equals the API id", () => {
+    const currentAsset = asset({ modelCode: "707" });
+
+    expect(matchAsset(jobFixture, [currentAsset])).toEqual({
+      kind: "unique",
+      asset: currentAsset,
+      candidates: 1
+    });
+  });
+
+  it("matches only the known full and short aliases for a current asset scene", () => {
+    const shortSceneJob = {
+      ...jobFixture,
+      expectedAssetScene: "ig"
+    };
+    expect(matchAsset(shortSceneJob, [
+      asset({ scene: "image-generation" })
+    ]).kind).toBe("unique");
+    expect(matchAsset(shortSceneJob, [
+      asset({ scene: "ig" })
+    ]).kind).toBe("unique");
+    expect(matchAsset(shortSceneJob, [
+      asset({ scene: "unrelated-scene" })
+    ])).toEqual({ kind: "not-found", candidates: 0 });
+  });
+
   it("conservatively rejects scene, fingerprint and model mismatches", () => {
     expect(matchAsset(jobFixture, [
       asset({ id: "scene", scene: "video-generation" }),

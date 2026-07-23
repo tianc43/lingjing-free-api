@@ -26,6 +26,7 @@ import {
   mediaFromStrings,
   noStore,
   setIfSupported,
+  setModelIfSupported,
   throwFailed,
   validateDynamicValues,
   validateMediaCount
@@ -147,7 +148,7 @@ function requestValues(
   );
   const values = { ...(input.parameters ?? {}) };
   setIfSupported(values, model, ["prompt"], prompt);
-  setIfSupported(values, model, ["model"], model.alias);
+  setModelIfSupported(values, model);
   validateDynamicValues(model, values);
   return values;
 }

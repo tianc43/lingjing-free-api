@@ -56,17 +56,36 @@ live("Lingjing live account and models", () => {
     }
 
     const modelQueries = [
-      "/v1/models?type=image&refresh=true",
-      "/v1/models?type=video&mode=text-to-video&refresh=true",
-      "/v1/models?type=video&mode=image-to-video&refresh=true"
+      {
+        capability: "image-generation",
+        url: "/v1/models?type=image&refresh=true"
+      },
+      {
+        capability: "text-to-video",
+        url: "/v1/models?type=video&mode=text-to-video&refresh=true"
+      },
+      {
+        capability: "image-to-video",
+        url: "/v1/models?type=video&mode=image-to-video&refresh=true"
+      }
     ];
-    for (const url of modelQueries) {
+    for (const { capability, url } of modelQueries) {
       const response = await acceptance.inject({ method: "GET", url });
+      const parsed = JSON.parse(response.body) as unknown;
       if (
         response.statusCode !== 200
-        || !nonEmptyModelList(JSON.parse(response.body) as unknown)
+        || !nonEmptyModelList(parsed)
       ) {
-        throw new Error("A current live model capability is unavailable");
+        const data = object(parsed).data;
+        const count = Array.isArray(data) ? data.length : -1;
+        const error = object(parsed).error;
+        const rawCode = object(error).code;
+        const code = typeof rawCode === "string"
+          ? rawCode
+          : "none";
+        throw new Error(
+          `Live model capability unavailable (${capability}; status=${String(response.statusCode)}; count=${String(count)}; code=${code})`
+        );
       }
     }
 
@@ -80,7 +99,9 @@ live("Lingjing live account and models", () => {
         sourceType
       );
       if (models.length === 0) {
-        throw new Error("A current live model capability is unavailable");
+        throw new Error(
+          `Live model capability unavailable (${sourceType}; direct count=0)`
+        );
       }
     }
   });

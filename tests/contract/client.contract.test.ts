@@ -45,12 +45,13 @@ function preparedMedia(): PreparedMedia & { disposeCount: () => number } {
 }
 
 describe("LingjingClient contract", () => {
-  it("sends Cookie, x-csrf-token and timestamp", async () => {
+  it("sends Cookie, x-csrf-token, same-origin Referer and timestamp", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const result = await client.read<{ ok: boolean }>("/read-endpoint");
     expect(result.ok).toBe(true);
     expect(mock.lastHeaders.cookie).toContain("csrfToken=fixture-csrf");
     expect(mock.lastHeaders["x-csrf-token"]).toBe("fixture-csrf");
+    expect(mock.lastHeaders.referer).toBe(`${mock.baseUrl.origin}/`);
     expect(mock.lastQuery._t).toMatch(/^\d+$/u);
   });
 

@@ -212,6 +212,18 @@ export function setIfSupported(
   if (parameter !== undefined) values[parameter.key] = value;
 }
 
+export function setModelIfSupported(
+  values: Record<string, unknown>,
+  model: NormalizedModel
+): void {
+  const parameter = model.parameters.find(
+    (item) => item.kind !== "image-list" && item.key === "model"
+  );
+  if (parameter !== undefined) {
+    values[parameter.key] = parameter.defaultValue ?? model.alias;
+  }
+}
+
 export async function disposeMedia(media: readonly MediaInput[]): Promise<void> {
   await Promise.allSettled(media.flatMap((input) =>
     input.source.type === "prepared"

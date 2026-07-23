@@ -80,6 +80,15 @@ function compareIdx(left: CanonicalParam, right: CanonicalParam): number {
   return left.idx.localeCompare(right.idx);
 }
 
+function emptyOptionalMedia(param: CanonicalParam): boolean {
+  return Array.isArray(param.values)
+    && param.values.length === 0
+    && (
+      param.filePath === undefined
+      || (Array.isArray(param.filePath) && param.filePath.length === 0)
+    );
+}
+
 function parseJson(value: unknown, label: string): unknown {
   if (typeof value !== "string") return value;
   try {
@@ -110,23 +119,25 @@ function canonicalPayload(value: unknown, label: string): CanonicalPayload {
   if (!Array.isArray(item.params)) {
     throw new TypeError("Upstream fingerprint requires params");
   }
-  const params = item.params.map((value): CanonicalParam => {
+  const params = item.params.flatMap((value): CanonicalParam[] => {
     const param = record(value);
     if (param === null) {
       throw new TypeError("Upstream fingerprint params must be objects");
     }
+    const idx = identifier(param.idx, "params.idx");
     if (param.values === undefined) {
+      if (param.filePath === undefined) return [];
       throw new TypeError("Upstream fingerprint params require values");
     }
     const output: CanonicalParam = {
-      idx: identifier(param.idx, "params.idx"),
+      idx,
       values: canonicalize(param.values)
     };
     if (param.filePath !== undefined) {
       output.filePath = canonicalize(param.filePath);
     }
-    return output;
-  }).sort(compareIdx);
+    return [output];
+  }).filter((param) => !emptyOptionalMedia(param)).sort(compareIdx);
 
   return {
     apiId: identifier(item.apiId, "apiId"),

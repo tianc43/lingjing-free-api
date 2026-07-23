@@ -298,6 +298,152 @@ describe("dynamic model normalization", () => {
       displayName: "提示词"
     });
   });
+
+  it("normalizes the current console detail metadata without guessing billing", () => {
+    const models = normalizeModels("image-generation", [{
+      apiId: "707",
+      aiModelName: "Seedream 5.0 Lite",
+      shortSenceCode: "ig",
+      price: "13.00",
+      enablePriceQuery: false,
+      parametersMeta: [
+        {
+          index: "1",
+          fieldName: "image",
+          required: "FALSE",
+          fieldType: "stringArray",
+          componentType: "multiPicFileUpload",
+          defaultValue: null,
+          style: { min: 0, max: 14 }
+        },
+        {
+          index: "2",
+          fieldName: "prompt",
+          required: "TRUE",
+          fieldType: "string",
+          componentType: "prompts",
+          defaultValue: ""
+        },
+        {
+          index: "0",
+          fieldName: "model",
+          fieldName4View: "模型",
+          required: "TRUE",
+          fieldType: "string",
+          componentType: "selector",
+          defaultValue: "fixture-model-code",
+          selectorValues: [
+            { key: "fixture-model-code", value: "Fixture model" }
+          ]
+        },
+        {
+          index: "3",
+          fieldName: "size",
+          fieldName4View: "尺寸",
+          required: "FALSE",
+          fieldType: "string",
+          componentType: "selector",
+          defaultValue: "2048x2048",
+          selectorValues: [
+            { key: "2048x2048", value: "1:1" },
+            { key: "2560x1440", value: "16:9" }
+          ]
+        },
+        {
+          index: "4",
+          fieldName: "type",
+          fieldName4View: "联网搜索",
+          required: "FALSE",
+          fieldType: "boolean",
+          componentType: "booleanSelector",
+          defaultValue: true
+        },
+        {
+          index: "5",
+          fieldName: "taskNum",
+          fieldName4View: "生成数量",
+          required: "TRUE",
+          fieldType: "int",
+          componentType: "selector",
+          defaultValue: 1,
+          selectorValues: [
+            { key: 1, value: "1张" },
+            { key: 4, value: "4张" }
+          ]
+        }
+      ]
+    }]);
+
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      apiId: "707",
+      alias: "seedream-5-0-lite",
+      displayName: "Seedream 5.0 Lite",
+      modelCode: "fixture-model-code",
+      sceneCode: "ig",
+      expectedAssetScene: "ig",
+      priceQuerySchema: null,
+      pricing: {
+        billingType: "fixed",
+        unit: "points",
+        points: 13
+      },
+      parameters: [
+        {
+          idx: "1",
+          key: "image",
+          displayName: "image",
+          required: false,
+          kind: "image-list",
+          maxFiles: 14
+        },
+        {
+          idx: "2",
+          key: "prompt",
+          displayName: "prompt",
+          required: true,
+          kind: "string",
+          defaultValue: ""
+        },
+        {
+          idx: "0",
+          key: "model",
+          displayName: "模型",
+          required: true,
+          kind: "enum",
+          defaultValue: "fixture-model-code",
+          options: ["fixture-model-code"]
+        },
+        {
+          idx: "3",
+          key: "size",
+          displayName: "尺寸",
+          required: false,
+          kind: "enum",
+          defaultValue: "2048x2048",
+          options: ["2048x2048", "2560x1440"]
+        },
+        {
+          idx: "4",
+          key: "type",
+          displayName: "联网搜索",
+          required: false,
+          kind: "boolean",
+          defaultValue: true
+        },
+        {
+          idx: "5",
+          key: "taskNum",
+          displayName: "生成数量",
+          required: true,
+          kind: "number",
+          defaultValue: 1,
+          minimum: 1,
+          maximum: 4
+        }
+      ]
+    });
+  });
 });
 
 describe("CatalogService", () => {
@@ -325,6 +471,102 @@ describe("CatalogService", () => {
       normalizeModels("image-generation", imageFixture),
       normalizeModels("image-generation", imageFixture)
     ]);
+  });
+
+  it("expands the live console summary wrapper through getByApiId", async () => {
+    const first = structuredClone(onlyRaw(imageFixture));
+    const second = {
+      ...structuredClone(first),
+      apiId: "fixture-second-api",
+      id: "fixture-second-api",
+      modelName: "fixture-second-model"
+    };
+    const calls: Array<{ path: string; init?: ReadRequest }> = [];
+    const service = new CatalogService({
+      read<T>(path: string, init?: ReadRequest): Promise<T> {
+        calls.push({ path, ...(init === undefined ? {} : { init }) });
+        if (path.endsWith("/getBySourceType")) {
+          return Promise.resolve({
+            result: {
+              apiList: [
+                { apiId: first.apiId },
+                { apiId: second.apiId }
+              ]
+            }
+          } as T);
+        }
+        const apiId = (init?.body as { apiId?: unknown } | undefined)?.apiId;
+        const selectedAIModel = apiId === second.apiId ? second : first;
+        return Promise.resolve({
+          result: { selectedAIModel }
+        } as T);
+      }
+    }, 60_000);
+
+    const models = await service.list("image-generation");
+
+    expect(models.map((model) => model.apiId)).toEqual([
+      String(first.apiId),
+      second.apiId
+    ]);
+    expect(models.map((model) => model.displayName)).toEqual([
+      "fixture-seedream-5-0-lite",
+      "fixture-second-model"
+    ]);
+    expect(calls).toEqual([
+      {
+        path: "/joycreator/AIModelApiConsole/getBySourceType",
+        init: {
+          method: "POST",
+          body: { sourceType: "image-generation" }
+        }
+      },
+      {
+        path: "/joycreator/AIModelApiConsole/getByApiId",
+        init: {
+          method: "POST",
+          body: { apiId: String(first.apiId) }
+        }
+      },
+      {
+        path: "/joycreator/AIModelApiConsole/getByApiId",
+        init: {
+          method: "POST",
+          body: { apiId: second.apiId }
+        }
+      }
+    ]);
+  });
+
+  it("accepts a charged refresh from the live console detail wrapper", async () => {
+    const raw = structuredClone(onlyRaw(imageFixture));
+    const service = new CatalogService({
+      read<T>(path: string): Promise<T> {
+        if (path.endsWith("/getBySourceType")) {
+          return Promise.resolve({
+            result: {
+              apiList: [{ apiId: raw.apiId }]
+            }
+          } as T);
+        }
+        return Promise.resolve({
+          result: { selectedAIModel: raw }
+        } as T);
+      }
+    }, 60_000);
+
+    await service.list("image-generation");
+
+    await expect(
+      service.resolve(
+        "fixture-seedream-5-0-lite",
+        "image-generation",
+        true
+      )
+    ).resolves.toMatchObject({
+      apiId: "707",
+      alias: "fixture-seedream-5-0-lite"
+    });
   });
 
   it("fetches again after the source cache TTL expires", async () => {

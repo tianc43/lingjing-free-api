@@ -35,6 +35,13 @@ function string(value: unknown): string | null {
     : null;
 }
 
+function identifier(value: unknown): string | null {
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return String(value);
+  }
+  return string(value);
+}
+
 function number(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (
@@ -47,11 +54,50 @@ function number(value: unknown): number | null {
   return null;
 }
 
+function timestamp(value: unknown): number | null {
+  const numeric = number(value);
+  if (numeric !== null) return numeric;
+  if (typeof value !== "string") return null;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/u
+      .exec(value.trim());
+  if (match === null) return null;
+  const parts = match.slice(1, 7).map(Number);
+  const [year, month, day, hour, minute, second] = parts;
+  if (
+    year === undefined
+    || month === undefined
+    || day === undefined
+    || hour === undefined
+    || minute === undefined
+    || second === undefined
+  ) return null;
+  const milliseconds = Number((match[7] ?? "").padEnd(3, "0"));
+  const parsed = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour - 8,
+    minute,
+    second,
+    milliseconds
+  );
+  const local = new Date(parsed + 8 * 60 * 60_000);
+  return local.getUTCFullYear() === year
+    && local.getUTCMonth() === month - 1
+    && local.getUTCDate() === day
+    && local.getUTCHours() === hour
+    && local.getUTCMinutes() === minute
+    && local.getUTCSeconds() === second
+    ? parsed
+    : null;
+}
+
 export function normalizeLingjingAsset(value: unknown): LingjingAsset | null {
   const item = record(value);
   if (item === null) return null;
-  const id = string(item.id ?? item.assetId ?? item.creationId);
-  const createTime = number(
+  const id = identifier(item.id ?? item.assetId ?? item.creationId);
+  const createTime = timestamp(
     item.createTime ?? item.createdAt ?? item.createTimestamp
   );
   if (id === null || createTime === null) return null;
@@ -102,7 +148,7 @@ function findArray(
       return (candidate as readonly unknown[]).slice();
     }
   }
-  for (const key of ["data", "result", "page", "pageInfo"]) {
+  for (const key of ["data", "result", "page", "pageInfo", "assetList"]) {
     const candidate = findArray(item[key], depth + 1, seen);
     if (candidate !== null) return candidate;
   }

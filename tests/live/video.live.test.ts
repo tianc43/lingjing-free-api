@@ -44,6 +44,22 @@ function completedVideo(value: unknown): {
   return { jobId: response.job_id, url: output.url };
 }
 
+function safeErrorCode(value: unknown): string {
+  if (
+    typeof value !== "object"
+    || value === null
+    || Array.isArray(value)
+  ) return "none";
+  const error = (value as { error?: unknown }).error;
+  if (
+    typeof error !== "object"
+    || error === null
+    || Array.isArray(error)
+  ) return "none";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : "none";
+}
+
 liveVideo("Lingjing live text-to-video generation", () => {
   let acceptance: LiveRuntime | undefined;
 
@@ -85,7 +101,10 @@ liveVideo("Lingjing live text-to-video generation", () => {
       payload: selection.request
     });
     if (response.statusCode !== 200) {
-      throw new Error("Live video generation did not complete");
+      const body = JSON.parse(response.body) as unknown;
+      throw new Error(
+        `Live video generation did not complete (status=${String(response.statusCode)}; code=${safeErrorCode(body)}; submits=${String(acceptance.submitCount())})`
+      );
     }
     const result = completedVideo(JSON.parse(response.body) as unknown);
     if (acceptance.submitCount() !== 1) {

@@ -71,6 +71,37 @@ describe("upstream payload fingerprints", () => {
       .toBe(fingerprintAssetReqParam(observedAssetReqParam));
   });
 
+  it("ignores an empty optional media parameter inserted into asset history", () => {
+    const observedWithEmptyMedia = {
+      ...observedAssetReqParam,
+      params: [
+        {
+          idx: "1",
+          name: "Optional image",
+          values: [],
+          filePath: []
+        },
+        ...observedAssetReqParam.params
+      ]
+    };
+
+    expect(fingerprintAssetReqParam(observedWithEmptyMedia))
+      .toBe(fingerprintUpstreamPayload(outboundPayload));
+  });
+
+  it("ignores an unused optional parameter placeholder without values", () => {
+    const observedWithPlaceholder = {
+      ...observedAssetReqParam,
+      params: [
+        ...observedAssetReqParam.params,
+        { idx: "11", name: "Optional seed" }
+      ]
+    };
+
+    expect(fingerprintAssetReqParam(observedWithPlaceholder))
+      .toBe(fingerprintUpstreamPayload(outboundPayload));
+  });
+
   it("rejects malformed asset reqParam instead of hashing an unrelated value", () => {
     expect(() => fingerprintAssetReqParam("{not-json"))
       .toThrowError(/reqParam/u);

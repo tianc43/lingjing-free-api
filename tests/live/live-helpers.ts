@@ -339,6 +339,10 @@ function compatibleImageRequest(
     ) {
       continue;
     }
+    if (parameter.key === "model") {
+      requiredValue(parameter);
+      continue;
+    }
     if (["n", "taskNum", "count"].includes(parameter.key)) {
       if (!validNumber(parameter, 1)) {
         throw new Error("Selected live image model cannot generate once");
@@ -380,12 +384,7 @@ function compatibleVideoRequest(
       continue;
     }
     if (parameter.key === "model") {
-      if (
-        parameter.kind === "enum"
-        && parameter.options?.includes(model.alias) !== true
-      ) {
-        throw new Error("Selected live model alias is incompatible");
-      }
+      requiredValue(parameter);
       continue;
     }
     if (["duration", "resolution", "ratio"].includes(parameter.key)) {
@@ -502,7 +501,7 @@ export function reportLiveJob(
   status: LiveStatus,
   write: LiveWrite = defaultWrite
 ): void {
-  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(jobId)) {
+  if (!/^job_[0-9a-f]{32}$/iu.test(jobId)) {
     throw new Error("Live response did not contain a local job ID");
   }
   if (!LIVE_STATUS.has(status)) {

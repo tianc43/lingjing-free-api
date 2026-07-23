@@ -278,6 +278,47 @@ describe("chat completions API", () => {
     }]);
   });
 
+  it("uses the upstream default for a chat model parameter instead of the public alias", async () => {
+    const resolve = fixture.dependencies.catalog.resolve.bind(
+      fixture.dependencies.catalog
+    );
+    fixture.dependencies.catalog.resolve = async (value, sourceType) => {
+      const current = await resolve(value, sourceType);
+      return {
+        ...current,
+        parameters: current.parameters.map((parameter) => (
+          parameter.key === "model"
+            ? {
+                ...parameter,
+                defaultValue: "fixture-upstream-video-model",
+                options: ["fixture-upstream-video-model"]
+              }
+            : parameter
+        ))
+      };
+    };
+    finalJob = job("video", [{
+      ...imageOutput,
+      url: "https://media.example/result.mp4",
+      duration: 5,
+      format: "mp4"
+    }]);
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "fixture-video",
+        messages: [{ role: "user", content: "make it move" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requests[0]?.values.model).toBe(
+      "fixture-upstream-video-model"
+    );
+  });
+
   it("selects text-to-video without images and validates dynamic values", async () => {
     finalJob = job("video", [{
       ...imageOutput,

@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { AddressResolver } from "../../src/media/address-policy.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
@@ -159,6 +158,15 @@ describe("live acceptance safety helpers", () => {
           kind: "string"
         },
         {
+          idx: "0",
+          key: "model",
+          displayName: "Model",
+          required: true,
+          kind: "enum",
+          defaultValue: "fixture-upstream-model",
+          options: ["fixture-upstream-model"]
+        },
+        {
           idx: "2",
           key: "size",
           displayName: "Size",
@@ -226,7 +234,8 @@ describe("live acceptance safety helpers", () => {
             displayName: "Model",
             required: true,
             kind: "enum",
-            options: ["fixture-video"]
+            defaultValue: "fixture-upstream-video-model",
+            options: ["fixture-upstream-video-model"]
           },
           {
             idx: "3",
@@ -345,7 +354,7 @@ describe("live acceptance safety helpers", () => {
     const write = (line: string): void => {
       output.push(line);
     };
-    const jobId = randomUUID();
+    const jobId = `job_${"a".repeat(32)}`;
 
     reportLiveSelection({
       model: model({

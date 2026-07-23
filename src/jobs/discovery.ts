@@ -10,6 +10,14 @@ import type { LingjingTransport } from "../lingjing/types.js";
 const MAX_ASSET_PAGES = 5;
 const ASSET_PAGE_SIZE = 20;
 const SUBMISSION_CLOCK_SKEW_MS = 2_000;
+const ASSET_SCENE_ALIASES: Record<
+JobRecord["sourceType"],
+readonly string[]
+> = {
+  "image-generation": ["ig"],
+  "text-to-video": ["t2v"],
+  "image-to-video": ["i2v"]
+};
 
 export interface DiscoveryResult {
   kind: "unique" | "ambiguous" | "not-found";
@@ -22,6 +30,24 @@ function conflicting(
   right: string | null
 ): boolean {
   return left !== null && right !== null && left !== right;
+}
+
+function matchesAssetScene(
+  job: JobRecord,
+  scene: string | null
+): boolean {
+  if (scene === job.expectedAssetScene) return true;
+  if (scene === null) return false;
+
+  const aliases = ASSET_SCENE_ALIASES[job.sourceType];
+  if (aliases === undefined) return false;
+  return (
+    job.expectedAssetScene === job.sourceType
+    && aliases.includes(scene)
+  ) || (
+    scene === job.sourceType
+    && aliases.includes(job.expectedAssetScene)
+  );
 }
 
 function mergeDuplicateAsset(
@@ -85,11 +111,12 @@ export function matchAsset(
   const earliest = job.submittedAt - SUBMISSION_CLOCK_SKEW_MS;
   const candidates = assets.filter((asset) => {
     if (baselineIds.has(asset.id) || asset.createTime < earliest) return false;
-    if (asset.scene !== job.expectedAssetScene) return false;
+    if (!matchesAssetScene(job, asset.scene)) return false;
     if (
       job.modelCode !== null
       && asset.modelCode !== null
       && asset.modelCode !== job.modelCode
+      && asset.modelCode !== job.apiId
     ) {
       return false;
     }

@@ -44,6 +44,37 @@ describe("login CLI", () => {
     vi.unstubAllGlobals();
   });
 
+  it("waits through the JD login origin until the page returns authenticated", async () => {
+    let evaluations = 0;
+    let fetches = 0;
+    const pin = await waitForAuthenticatedPage({
+      goto: () => Promise.resolve(undefined),
+      url: () => evaluations === 0
+        ? "https://passport.jd.com/new/login.aspx"
+        : "https://lingjing.jdcloud.com/",
+      evaluate: async <T>(callback: () => T | Promise<T>) => {
+        evaluations += 1;
+        vi.stubGlobal("location", {
+          origin: evaluations === 1
+            ? "https://passport.jd.com"
+            : "https://lingjing.jdcloud.com"
+        });
+        vi.stubGlobal("fetch", () => {
+          fetches += 1;
+          return Promise.resolve({ json: () => Promise.resolve({ result: { user: "fixture" } }) });
+        });
+        vi.stubGlobal("window", { JDCloud: { account: { originPin: "fixture-origin-pin" } } });
+        return callback();
+      },
+      isClosed: () => false,
+      waitForTimeout: () => Promise.resolve(undefined)
+    });
+    expect(pin).toBe("fixture-origin-pin");
+    expect(evaluations).toBe(2);
+    expect(fetches).toBe(1);
+    vi.unstubAllGlobals();
+  });
+
   it("returns non-zero with a concise cancellation and leaves no private artifacts", async () => {
     const marker = await copyFixtureToTemporaryFile("session-profile.json");
     const directory = dirname(marker);

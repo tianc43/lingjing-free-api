@@ -21,10 +21,32 @@ function asString(value: unknown): string | undefined {
     : undefined;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  const result = asString(value);
+  return result !== undefined && result.trim().length > 0
+    ? result
+    : undefined;
+}
+
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
+}
+
+function selectorKeys(raw: ObjectRecord): unknown[] {
+  if (!Array.isArray(raw.selectorValues)) return [];
+  return raw.selectorValues
+    .filter(isPlainObject)
+    .map((item) => item.key);
+}
+
+function required(value: unknown): boolean {
+  return value === true
+    || (
+      typeof value === "string"
+      && value.trim().toUpperCase() === "TRUE"
+    );
 }
 
 function stableJson(value: unknown): string {
@@ -51,21 +73,42 @@ function alias(value: string): string {
 function normalizeParameter(raw: ObjectRecord): NormalizedParameter {
   const style = isPlainObject(raw.style) ? raw.style : {};
   const key = asString(raw.fieldName) ?? String(raw.index);
-  const displayName = asString(raw.fieldName4View)
-    ?? asString(style.name)
+  const displayName = nonEmptyString(raw.fieldName4View)
+    ?? nonEmptyString(style.name)
     ?? key;
-  const type = asString(style.type)?.toLowerCase();
-  const options = Array.isArray(style.options)
+  const styleOptions = Array.isArray(style.options)
     ? style.options.filter((item): item is string => typeof item === "string")
     : undefined;
-  const kind: NormalizedParameter["kind"] = type === "image-list"
-    || type === "image"
+  const keys = selectorKeys(raw);
+  const selectorOptions = keys.length > 0
+    && keys.every((item): item is string => typeof item === "string")
+    ? keys
+    : undefined;
+  const options = styleOptions ?? selectorOptions;
+  const type = [
+    asString(style.type),
+    asString(raw.fieldType),
+    asString(raw.componentType)
+  ].filter((value): value is string => value !== undefined)
+    .join(" ")
+    .toLowerCase();
+  const numericKeys = keys.filter(
+    (item): item is number => typeof item === "number" && Number.isFinite(item)
+  );
+  const kind: NormalizedParameter["kind"] = type.includes("image")
+    || type.includes("picfileupload")
+    || type.includes("image-list")
     ? "image-list"
-    : type === "switch" || type === "boolean"
+    : type.includes("boolean") || type.includes("switch")
       ? "boolean"
       : options !== undefined
         ? "enum"
-        : type === "number"
+        : type.includes("number")
+          || type.includes("int")
+          || type.includes("long")
+          || type.includes("double")
+          || type.includes("float")
+          || numericKeys.length > 0
           || optionalNumber(raw.minimum) !== undefined
           || optionalNumber(raw.maximum) !== undefined
           ? "number"
@@ -74,20 +117,56 @@ function normalizeParameter(raw: ObjectRecord): NormalizedParameter {
     idx: String(raw.index),
     key,
     displayName,
-    required: raw.required === true,
+    required: required(raw.required),
     kind
   };
 
-  if ("defaultValue" in raw) result.defaultValue = raw.defaultValue;
-  const minimum = optionalNumber(raw.minimum);
+  if (
+    "defaultValue" in raw
+    && raw.defaultValue !== null
+    && raw.defaultValue !== undefined
+  ) {
+    result.defaultValue = raw.defaultValue;
+  }
+  const minimum = optionalNumber(raw.minimum)
+    ?? optionalNumber(style.min)
+    ?? (
+      numericKeys.length > 0 ? Math.min(...numericKeys) : undefined
+    );
   if (minimum !== undefined) result.minimum = minimum;
-  const maximum = optionalNumber(raw.maximum);
+  const maximum = optionalNumber(raw.maximum)
+    ?? optionalNumber(style.max)
+    ?? (
+      numericKeys.length > 0 ? Math.max(...numericKeys) : undefined
+    );
   if (maximum !== undefined) result.maximum = maximum;
   if (options !== undefined) result.options = options;
-  const maxFiles = optionalNumber(style.maxFiles);
+  const maxFiles = optionalNumber(style.maxFiles)
+    ?? (kind === "image-list" ? optionalNumber(style.max) : undefined);
   if (maxFiles !== undefined) result.maxFiles = maxFiles;
 
   return result;
+}
+
+function fixedPricing(raw: ObjectRecord): unknown {
+  if (raw.pricing !== undefined) return raw.pricing;
+  const explicitlyFixed = raw.enablePriceQuery === false
+    || (
+      typeof raw.enablePriceQuery === "string"
+      && raw.enablePriceQuery.trim().toLowerCase() === "false"
+    );
+  const points = typeof raw.price === "number"
+    ? raw.price
+    : typeof raw.price === "string" && raw.price.trim().length > 0
+      ? Number(raw.price)
+      : Number.NaN;
+  return explicitlyFixed && Number.isFinite(points) && points >= 0
+    ? {
+        billingType: "fixed",
+        unit: "points",
+        points
+      }
+    : null;
 }
 
 function modelRows(response: unknown): unknown[] {
@@ -106,12 +185,32 @@ export function normalizeModels(
     const apiId = asString(raw.apiId);
     if (apiId === undefined) throw new Error("Model lacks apiId");
 
-    const displayName = asString(raw.modelName)
-      ?? asString(raw.name)
+    const displayName = nonEmptyString(raw.modelName)
+      ?? nonEmptyString(raw.aiModelName)
+      ?? nonEmptyString(raw.apiName)
+      ?? nonEmptyString(raw.name)
       ?? apiId;
-    const parameters = Array.isArray(raw.parameters)
-      ? raw.parameters.filter(isPlainObject).map(normalizeParameter)
-      : [];
+    const parameterRows = Array.isArray(raw.parameters)
+      ? raw.parameters
+      : Array.isArray(raw.parametersMeta)
+        ? raw.parametersMeta
+        : [];
+    const parameters = parameterRows
+      .filter(isPlainObject)
+      .map(normalizeParameter);
+    const modelParameter = parameters.find(
+      (parameter) => parameter.key === "model"
+    );
+    const modelCode = nonEmptyString(raw.modelCode)
+      ?? nonEmptyString(modelParameter?.defaultValue);
+    const sceneCode = nonEmptyString(raw.sceneCode)
+      ?? nonEmptyString(raw.scene)
+      ?? nonEmptyString(raw.shortSenceCode)
+      ?? sourceType;
+    const expectedAssetScene = nonEmptyString(raw.assetScene)
+      ?? nonEmptyString(raw.scene)
+      ?? nonEmptyString(raw.shortSenceCode)
+      ?? sourceType;
     const priceQuerySchema = isPlainObject(raw.priceQuerySchema)
       ? raw.priceQuerySchema
       : null;
@@ -122,19 +221,17 @@ export function normalizeModels(
       alias: alias(displayName),
       displayName,
       sourceType,
-      modelCode: asString(raw.modelCode) ?? null,
+      modelCode: modelCode ?? null,
       refId: asString(raw.refId) ?? apiId,
-      sceneCode: asString(raw.sceneCode) ?? asString(raw.scene) ?? sourceType,
-      expectedAssetScene: asString(raw.assetScene)
-        ?? asString(raw.scene)
-        ?? sourceType,
+      sceneCode,
+      expectedAssetScene,
       uploadStrategy: raw.uploadStrategy === "materials"
         || raw.materialUpload === true
         ? "materials"
         : "general",
       priceQuerySchema,
       parameters,
-      pricing: raw.pricing ?? null,
+      pricing: fixedPricing(raw),
       rawRevision: createHash("sha256")
         .update(stableJson(raw))
         .digest("hex")

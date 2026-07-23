@@ -139,7 +139,11 @@ export class LingjingClient implements LingjingTransport {
     const url = this.trustedUrl(path, init.query, init.timestamp);
     const snapshot = await this.options.session.load();
     const cookie = await snapshot.jar.getCookieString(url.toString());
-    const headers: Record<string, string> = { Accept: "application/json", ...(init.headers ?? {}) };
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      ...(init.headers ?? {}),
+      Referer: `${this.baseUrl.origin}/`
+    };
     if (cookie.length > 0) headers.Cookie = cookie;
     if (snapshot.csrfToken !== null) headers["x-csrf-token"] = snapshot.csrfToken;
     const jsonBody = init.body !== undefined && !(typeof init.body === "string" || Buffer.isBuffer(init.body) || init.body instanceof Uint8Array || init.body instanceof FormData || init.body instanceof Readable);

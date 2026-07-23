@@ -24,8 +24,34 @@ function rawModels(response: unknown): RawModel[] {
   if (Array.isArray(response.result)) {
     return response.result.filter(isPlainObject);
   }
+  if (
+    isPlainObject(response.result)
+    && isPlainObject(response.result.selectedAIModel)
+  ) {
+    return [response.result.selectedAIModel];
+  }
   if (isPlainObject(response.result)) return [response.result];
   return [response];
+}
+
+function sourceApiIds(response: unknown): string[] | null {
+  if (
+    !isPlainObject(response)
+    || !isPlainObject(response.result)
+    || !Array.isArray(response.result.apiList)
+  ) {
+    return null;
+  }
+  const identifiers = response.result.apiList.map((item) => (
+    isPlainObject(item) ? asIdentifier(item.apiId) : undefined
+  ));
+  if (
+    identifiers.some((identifier) => identifier === undefined)
+    || new Set(identifiers).size !== identifiers.length
+  ) {
+    throw new Error("Model summary list is malformed");
+  }
+  return identifiers as string[];
 }
 
 function asIdentifier(value: unknown): string | undefined {
@@ -90,8 +116,11 @@ export class CatalogService {
         method: "POST",
         body: { sourceType }
       }
-    ).then((raw) => {
-      const models = normalizeModels(sourceType, raw);
+    ).then(async (raw) => {
+      const models = normalizeModels(
+        sourceType,
+        await this.expandSourceModels(raw)
+      );
       this.cache.set(sourceType, {
         models,
         expiresAt: Date.now() + this.ttlMs
@@ -103,6 +132,27 @@ export class CatalogService {
 
     this.inFlight.set(sourceType, request);
     return request;
+  }
+
+  private async expandSourceModels(response: unknown): Promise<unknown> {
+    const apiIds = sourceApiIds(response);
+    if (apiIds === null) return response;
+    return Promise.all(apiIds.map(async (apiId) => {
+      const detail = await this.transport.read<unknown>(
+        "/joycreator/AIModelApiConsole/getByApiId",
+        {
+          method: "POST",
+          body: { apiId }
+        }
+      );
+      const model = rawModels(detail).find(
+        (candidate) => asIdentifier(candidate.apiId) === apiId
+      );
+      if (model === undefined) {
+        throw new Error("Model detail does not match its summary");
+      }
+      return model;
+    }));
   }
 
   async resolve(
@@ -141,7 +191,7 @@ export class CatalogService {
     const raw = rawModels(refreshed).find(
       (candidate) => asIdentifier(candidate.apiId) === model.apiId
     );
-    const next = normalizeModels(sourceType, refreshed).find(
+    const next = normalizeModels(sourceType, raw ?? []).find(
       (candidate) => candidate.apiId === model.apiId
     );
     if (raw === undefined || next === undefined) {
