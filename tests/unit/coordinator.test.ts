@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
+import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import {
   createGenerationHarness,
   fixtureRequest,
@@ -59,6 +60,31 @@ describe("LingjingGenerationCoordinator", () => {
     await first.wait(5_000);
   });
 
+  it("rejects duplicate prepared media identity without double disposal", async () => {
+    const app = createGenerationHarness({ mediaMaxFiles: 2 });
+    harnesses.push(app);
+    const media = trackedMedia();
+
+    await expect(app.coordinator.create(fixtureRequest({
+      media: [
+        {
+          source: { type: "prepared", media },
+          kind: "image"
+        },
+        {
+          source: { type: "prepared", media },
+          kind: "image"
+        }
+      ]
+    }))).rejects.toMatchObject({ code: "invalid_request" });
+
+    expect(media.disposeCount()).toBe(1);
+    expect(app.uploadCount()).toBe(0);
+    expect(app.submitCount()).toBe(0);
+    expect(app.repository.list({ limit: 10 })).toEqual([]);
+    expect(app.capacity.counts().admitted).toBe(0);
+  });
+
   it("starts only one runner for concurrent requests with the same key", async () => {
     const app = harness();
     const firstMedia = trackedMedia(Buffer.from("same concurrent input"));
@@ -83,7 +109,8 @@ describe("LingjingGenerationCoordinator", () => {
     expect(second.job.id).toBe(first.job.id);
     expect(app.registry.startCountFor(first.job.id)).toBe(1);
     expect(app.submitCount()).toBe(1);
-    expect(firstMedia.disposeCount() + secondMedia.disposeCount()).toBe(2);
+    expect(firstMedia.disposeCount()).toBe(1);
+    expect(secondMedia.disposeCount()).toBe(1);
     await first.wait(5_000);
   });
 
@@ -218,21 +245,25 @@ describe("LingjingGenerationCoordinator", () => {
     expect(app.submitCount()).toBe(0);
   });
 
-  it("resumes discovery after a read failure without a second submit", async () => {
+  it("persists unknown and recovers in the same worker after the first discovery read fails", async () => {
     const app = harness();
     app.failNextPostSubmitAssetRead();
 
-    const first = await app.coordinator.create(fixtureRequest());
+    const handle = await app.coordinator.create(fixtureRequest());
     await app.registry.waitUntilIdle();
-    expect(app.repository.findById(first.job.id)?.status).toBe("discovering");
-    expect(app.capacity.activeJobIds()).toContain(first.job.id);
 
-    const resumed = await app.coordinator.resume(first.job.id);
-    const final = await resumed.wait(5_000);
-
-    expect(final.status).toBe("completed");
+    expect(app.repository.history(handle.job.id)).toEqual([
+      "queued",
+      "submitting",
+      "discovering",
+      "unknown",
+      "processing",
+      "completed"
+    ]);
+    expect(app.repository.findById(handle.job.id)?.status).toBe("completed");
     expect(app.submitCount()).toBe(1);
-    expect(app.capacity.activeJobIds()).not.toContain(final.id);
+    expect(app.registry.startCountFor(handle.job.id)).toBe(1);
+    expect(app.capacity.activeJobIds()).not.toContain(handle.job.id);
   });
 
   it("continues background recovery while an unknown job holds capacity", async () => {
@@ -251,7 +282,8 @@ describe("LingjingGenerationCoordinator", () => {
   });
 
   it("keeps the unknown hold durable across a background discovery read failure", async () => {
-    const app = harness();
+    const app = createGenerationHarness({ unknownCapacityHoldMs: 1_000 });
+    harnesses.push(app);
     app.addAssetsPerSubmit(2);
 
     const handle = await app.coordinator.create(fixtureRequest());
@@ -263,6 +295,248 @@ describe("LingjingGenerationCoordinator", () => {
     expect(app.repository.findById(handle.job.id)?.status).toBe("completed");
     expect(app.submitCount()).toBe(1);
     expect(app.capacity.activeJobIds()).not.toContain(handle.job.id);
+  });
+
+  it("retries a transient polling read failure without losing the worker or lease", async () => {
+    const app = harness();
+    app.failNextTaskRead();
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.repository.findById(handle.job.id)?.status).toBe("completed");
+    expect(app.repository.history(handle.job.id)).toEqual([
+      "queued",
+      "submitting",
+      "discovering",
+      "processing",
+      "completed"
+    ]);
+    expect(app.submitCount()).toBe(1);
+    expect(app.capacity.activeJobIds()).not.toContain(handle.job.id);
+  });
+
+  it("does not accept unknown discovery after its fixed capacity hold expires", async () => {
+    let now = 0;
+    const app = createGenerationHarness({
+      now: () => now,
+      unknownCapacityHoldMs: 100
+    });
+    harnesses.push(app);
+    const payload = {
+      apiId: "707",
+      refId: "fixture-ref",
+      params: [{ idx: "1", values: "deadline fixture" }]
+    };
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "c".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt: 0,
+      upstreamFingerprint: fingerprintUpstreamPayload(payload)
+    });
+    const unknown = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      {
+        status: "unknown",
+        unknownHoldUntil: 100,
+        errorCode: "generation_discovery_timeout"
+      }
+    );
+    app.addPersistedAsset({
+      payload,
+      submittedAt: 0,
+      taskId: "deadline-task",
+      creationCode: "deadline-creation"
+    });
+    const gate = app.blockNextAssetRead();
+
+    await app.coordinator.resume(unknown.id);
+    await gate.started;
+    now = 101;
+    app.capacity.expireUnknown(now);
+    gate.release();
+    await app.registry.waitUntilIdle();
+
+    expect(app.repository.findById(unknown.id)).toMatchObject({
+      status: "unknown",
+      unknownHoldUntil: 100
+    });
+    expect(app.capacity.activeJobIds()).not.toContain(unknown.id);
+    expect(app.submitCount()).toBe(0);
+  });
+
+  it("keeps a timed-out discovery lock owner registered until its read settles", async () => {
+    const app = harness();
+    const submittedAt = Date.now();
+    const holdUntil = Date.now() + 30;
+    const payload = {
+      apiId: "707",
+      refId: "fixture-ref",
+      params: [{ idx: "1", values: "bounded lock fixture" }]
+    };
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "e".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt,
+      upstreamFingerprint: fingerprintUpstreamPayload(payload)
+    });
+    const unknown = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      {
+        status: "unknown",
+        unknownHoldUntil: holdUntil,
+        errorCode: "generation_discovery_timeout"
+      }
+    );
+    app.addPersistedAsset({
+      payload,
+      submittedAt,
+      taskId: "bounded-lock-task",
+      creationCode: "bounded-lock-creation"
+    });
+    const gate = app.blockNextAssetRead();
+
+    await app.coordinator.resume(unknown.id);
+    await gate.started;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(app.repository.findById(unknown.id)?.status).toBe("unknown");
+    expect(app.capacity.activeJobIds()).not.toContain(unknown.id);
+    expect(app.registry.has(unknown.id)).toBe(true);
+    gate.release();
+    await app.registry.waitUntilIdle();
+    expect(app.registry.has(unknown.id)).toBe(false);
+    expect(app.submitCount()).toBe(0);
+  });
+
+  it("clears the unknown lease deadline before polling a discovered task", async () => {
+    let now = 0;
+    const app = createGenerationHarness({ now: () => now });
+    harnesses.push(app);
+    const payload = {
+      apiId: "707",
+      refId: "fixture-ref",
+      params: [{ idx: "1", values: "processing lease fixture" }]
+    };
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "f".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt: 0,
+      upstreamFingerprint: fingerprintUpstreamPayload(payload)
+    });
+    const unknown = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      {
+        status: "unknown",
+        unknownHoldUntil: 100,
+        errorCode: "generation_discovery_timeout"
+      }
+    );
+    app.addPersistedAsset({
+      payload,
+      submittedAt: 0,
+      taskId: "processing-lease-task",
+      creationCode: "processing-lease-creation"
+    });
+    app.setTaskStatuses("processing-lease-task", [0]);
+
+    await app.coordinator.resume(unknown.id);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (app.repository.findById(unknown.id)?.status === "processing") break;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(app.repository.findById(unknown.id)?.status).toBe("processing");
+    now = 101;
+    app.capacity.expireUnknown(now);
+
+    const remainedActive = app.capacity.activeJobIds().includes(unknown.id);
+    app.setTaskStatuses("processing-lease-task", [1]);
+    await app.registry.waitUntilIdle();
+    expect(remainedActive).toBe(true);
+    expect(app.repository.findById(unknown.id)?.status).toBe("completed");
+    expect(app.submitCount()).toBe(0);
+  });
+
+  it("claims processing capacity before polling an unknown job with a task id", async () => {
+    let now = 0;
+    const app = createGenerationHarness({ now: () => now });
+    harnesses.push(app);
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "1".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt: 0,
+      upstreamFingerprint: "2".repeat(64)
+    });
+    const unknown = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      {
+        status: "unknown",
+        creationCode: "known-creation",
+        upstreamTaskId: "known-task",
+        unknownHoldUntil: 100,
+        errorCode: "generation_poll_read_failed"
+      }
+    );
+    app.setTaskStatuses("known-task", [0, 1]);
+    const gate = app.blockNextTaskRead();
+
+    await app.coordinator.resume(unknown.id);
+    await gate.started;
+    now = 101;
+    app.capacity.expireUnknown(now);
+
+    const statusWhileBlocked = app.repository.findById(unknown.id)?.status;
+    const activeWhileBlocked = app.capacity.activeJobIds().includes(unknown.id);
+    gate.release();
+    await app.registry.waitUntilIdle();
+    expect(statusWhileBlocked).toBe("processing");
+    expect(activeWhileBlocked).toBe(true);
+    expect(app.repository.findById(unknown.id)?.status).toBe("completed");
+    expect(app.submitCount()).toBe(0);
   });
 
   it("drains a submit reservation held by a worker still uploading", async () => {

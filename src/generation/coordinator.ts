@@ -211,6 +211,12 @@ implements GenerationCoordinator {
       for (const input of request.media) {
         prepared.push(await this.options.prepareMedia(input));
       }
+      if (new Set(prepared).size !== prepared.length) {
+        throw errors.invalidRequest(
+          "Duplicate prepared media input",
+          "media"
+        );
+      }
       const inputContentHashes: string[] = [];
       for (const media of prepared) {
         inputContentHashes.push(await hashMedia(media));
@@ -378,37 +384,56 @@ implements GenerationCoordinator {
       const payload = buildPayload({ model, spaceId, values });
       const upstreamFingerprint = fingerprintUpstreamPayload(payload);
 
-      const discovery = await submitReservation.run(
-        () => this.options.discoveryLock.runExclusive(async () => {
-          const baselineIds = await this.snapshotAssetIds(spaceId);
-          const submitting = this.transition(job.id, ["queued"], {
-            status: "submitting",
-            submittedAt: this.now(),
-            upstreamFingerprint
-          });
-          try {
-            await this.options.transport.submitOnce(
-              GENERATION_ENDPOINT,
-              payload
-            );
-          } catch (cause) {
-            if (!(cause instanceof SubmitAmbiguousError)) {
-              this.transition(submitting.id, ["submitting"], jobErrorTransition(
-                "failed",
-                this.now(),
-                "generation_submit_rejected"
-              ));
-              throw cause;
+      let discovery: DiscoveryResult;
+      try {
+        discovery = await submitReservation.run(
+          () => this.options.discoveryLock.runExclusive(async () => {
+            const baselineIds = await this.snapshotAssetIds(spaceId);
+            const submitting = this.transition(job.id, ["queued"], {
+              status: "submitting",
+              submittedAt: this.now(),
+              upstreamFingerprint
+            });
+            try {
+              await this.options.transport.submitOnce(
+                GENERATION_ENDPOINT,
+                payload
+              );
+            } catch (cause) {
+              if (!(cause instanceof SubmitAmbiguousError)) {
+                this.transition(
+                  submitting.id,
+                  ["submitting"],
+                  jobErrorTransition(
+                    "failed",
+                    this.now(),
+                    "generation_submit_rejected"
+                  )
+                );
+                throw cause;
+              }
             }
-          }
-          const discovering = this.transition(
-            submitting.id,
-            ["submitting"],
-            { status: "discovering" }
-          );
-          return this.discoverer.discover(discovering, baselineIds);
-        })
-      );
+            const discovering = this.transition(
+              submitting.id,
+              ["submitting"],
+              { status: "discovering" }
+            );
+            return this.discoverer.discover(discovering, baselineIds);
+          })
+        );
+      } catch (cause) {
+        const current = this.options.repository.findById(job.id);
+        if (current?.status !== "discovering") throw cause;
+        const holdUntil = this.now() + this.options.unknownCapacityHoldMs;
+        const unknown = this.persistUnknown(
+          current.id,
+          ["discovering"],
+          "generation_discovery_read_failed",
+          holdUntil
+        );
+        await this.recoverUnknown(unknown, lease, holdUntil);
+        return;
+      }
 
       await this.persistDiscoveryAndPoll(job.id, discovery, lease);
     } catch {
@@ -439,27 +464,54 @@ implements GenerationCoordinator {
 
     if (current.upstreamTaskId === null) {
       if (current.status === "unknown") {
-        current = this.transition(current.id, ["unknown"], {
-          status: "discovering"
-        });
+        const holdUntil = current.unknownHoldUntil;
+        if (holdUntil === null || holdUntil <= this.now()) {
+          this.options.capacity.expireUnknown(this.now());
+          return;
+        }
+        await this.recoverUnknown(current, lease, holdUntil);
+        return;
       }
       if (current.status !== "discovering") return;
-      const discovery = await this.options.discoveryLock.runExclusive(
-        () => this.discoverer.discover(current)
-      );
+      let discovery: DiscoveryResult;
+      try {
+        discovery = await this.options.discoveryLock.runExclusive(
+          () => this.discoverer.discover(current)
+        );
+      } catch {
+        const holdUntil = this.now() + this.options.unknownCapacityHoldMs;
+        const unknown = this.persistUnknown(
+          current.id,
+          ["discovering"],
+          "generation_discovery_read_failed",
+          holdUntil
+        );
+        await this.recoverUnknown(unknown, lease, holdUntil);
+        return;
+      }
       await this.persistDiscoveryAndPoll(current.id, discovery, lease);
       return;
     }
 
-    if (current.status === "unknown") {
-      current = this.transition(current.id, ["unknown"], {
-        status: "processing"
-      });
-    }
     if (current.status === "discovering") {
       current = this.transition(current.id, ["discovering"], {
         status: "processing"
       });
+      this.refreshProcessingLease(current);
+    }
+    if (current.status === "unknown") {
+      const holdUntil = current.unknownHoldUntil;
+      if (
+        holdUntil === null
+        || !this.ownsUnknownCapacity(current.id, holdUntil)
+      ) {
+        this.options.capacity.expireUnknown(this.now());
+        return;
+      }
+      current = this.transition(current.id, ["unknown"], {
+        status: "processing"
+      });
+      this.refreshProcessingLease(current);
     }
     if (current.status === "processing") {
       await this.pollUntilSettled(current, lease);
@@ -487,22 +539,13 @@ implements GenerationCoordinator {
       }
       const holdUntil = existingHoldUntil
         ?? this.now() + this.options.unknownCapacityHoldMs;
-      const unknown = this.transition(
+      const unknown = this.persistUnknown(
         jobId,
         ["discovering", "processing"],
-        {
-          status: "unknown",
-          unknownHoldUntil: holdUntil,
-          errorCode: result.kind === "ambiguous"
-            ? "generation_discovery_ambiguous"
-            : "generation_discovery_timeout"
-        }
-      );
-      this.options.capacity.restore(
-        unknown.id,
-        unknown.status,
-        unknown.unknownHoldUntil,
-        this.now()
+        result.kind === "ambiguous"
+          ? "generation_discovery_ambiguous"
+          : "generation_discovery_timeout",
+        holdUntil
       );
       if (existingHoldUntil === undefined) {
         await this.recoverUnknown(unknown, lease, holdUntil);
@@ -510,6 +553,13 @@ implements GenerationCoordinator {
       return;
     }
 
+    if (
+      existingHoldUntil !== undefined
+      && !this.ownsUnknownCapacity(jobId, existingHoldUntil)
+    ) {
+      this.options.capacity.expireUnknown(this.now());
+      return;
+    }
     const processing = this.transition(
       jobId,
       ["discovering", "unknown"],
@@ -520,6 +570,7 @@ implements GenerationCoordinator {
         discoveredAt: this.now()
       }
     );
+    this.refreshProcessingLease(processing);
     await this.pollUntilSettled(processing, lease);
   }
 
@@ -533,9 +584,11 @@ implements GenerationCoordinator {
       await this.sleep(this.options.taskPollIntervalMs);
       if (this.now() >= holdUntil) break;
       try {
-        const discovery = await this.options.discoveryLock.runExclusive(
-          () => this.discoverer.discover(current)
+        const discovery = await this.discoverUnknownWithinHold(
+          current,
+          holdUntil
         );
+        if (discovery === null) break;
         await this.persistDiscoveryAndPoll(
           current.id,
           discovery,
@@ -564,8 +617,15 @@ implements GenerationCoordinator {
           this.notifier.notify(next.id);
         }
         current = next;
+        this.refreshProcessingLease(current);
       } catch {
-        return;
+        await this.sleep(this.options.taskPollIntervalMs);
+        current = this.requireJob(current.id);
+        if (isTerminal(current)) {
+          lease.release();
+          return;
+        }
+        continue;
       }
       if (isTerminal(current)) {
         lease.release();
@@ -574,6 +634,74 @@ implements GenerationCoordinator {
       await this.sleep(this.options.taskPollIntervalMs);
       current = this.requireJob(current.id);
     }
+  }
+
+  private persistUnknown(
+    jobId: string,
+    expectedStatuses: readonly JobStatus[],
+    errorCode: string,
+    holdUntil: number
+  ): JobRecord {
+    const unknown = this.transition(jobId, expectedStatuses, {
+      status: "unknown",
+      unknownHoldUntil: holdUntil,
+      errorCode
+    });
+    this.options.capacity.restore(
+      unknown.id,
+      unknown.status,
+      unknown.unknownHoldUntil,
+      this.now()
+    );
+    return unknown;
+  }
+
+  private ownsUnknownCapacity(jobId: string, holdUntil: number): boolean {
+    return this.now() < holdUntil
+      && this.options.capacity.activeJobIds().includes(jobId);
+  }
+
+  private refreshProcessingLease(job: JobRecord): void {
+    if (
+      job.status === "processing"
+      && this.options.capacity.activeJobIds().includes(job.id)
+    ) {
+      this.options.capacity.restore(
+        job.id,
+        job.status,
+        job.unknownHoldUntil,
+        this.now()
+      );
+    }
+  }
+
+  private async discoverUnknownWithinHold(
+    job: JobRecord,
+    holdUntil: number
+  ): Promise<DiscoveryResult | null> {
+    if (!this.ownsUnknownCapacity(job.id, holdUntil)) return null;
+    const remaining = Math.max(0, holdUntil - this.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<null>((resolve) => {
+      timer = setTimeout(resolve, Math.min(remaining, 2_147_483_647), null);
+      timer.unref();
+    });
+    const discovery = this.options.discoveryLock.runExclusive(
+      () => this.discoverer.discover(job)
+    );
+    const result = await Promise.race([discovery, expired]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (result === null) {
+      this.options.capacity.expireUnknown(this.now());
+      await discovery.catch(() => undefined);
+      return null;
+    }
+    if (
+      !this.ownsUnknownCapacity(job.id, holdUntil)
+    ) {
+      return null;
+    }
+    return result;
   }
 
   private async snapshotAssetIds(spaceId: number): Promise<Set<string>> {

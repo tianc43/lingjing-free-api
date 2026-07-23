@@ -135,6 +135,15 @@ export interface GenerationHarness {
   resolveAmbiguity(): void;
   disconnectNextSubmit(): void;
   failNextPostSubmitAssetRead(): void;
+  failNextTaskRead(): void;
+  blockNextAssetRead(): {
+    started: Promise<void>;
+    release(): void;
+  };
+  blockNextTaskRead(): {
+    started: Promise<void>;
+    release(): void;
+  };
   addPersistedAsset(input: {
     payload: unknown;
     submittedAt: number;
@@ -148,7 +157,11 @@ export interface GenerationHarness {
   close(): Promise<void>;
 }
 
-export function createGenerationHarness(): GenerationHarness {
+export function createGenerationHarness(options: {
+  now?: () => number;
+  unknownCapacityHoldMs?: number;
+  mediaMaxFiles?: number;
+} = {}): GenerationHarness {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-generation-"));
   const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
   const capacity = new CapacityManager(5, 10);
@@ -161,10 +174,31 @@ export function createGenerationHarness(): GenerationHarness {
   let assetsPerSubmit: 1 | 2 = 1;
   let disconnect = false;
   let failPostSubmitAssetRead = false;
+  let failTaskRead = false;
+  let assetReadGate: {
+    started: Promise<void>;
+    markStarted(): void;
+    wait: Promise<void>;
+    release(): void;
+  } | null = null;
+  let taskReadGate: {
+    started: Promise<void>;
+    markStarted(): void;
+    wait: Promise<void>;
+    release(): void;
+  } | null = null;
   let uploadFailure: Error | null = null;
   let criticalConcurrency = 0;
   let maxCriticalConcurrency = 0;
   const criticalEvents: string[] = [];
+  const resolvedModel: NormalizedModel = {
+    ...fixtureModel,
+    parameters: fixtureModel.parameters.map((parameter) =>
+      parameter.kind === "image-list" && options.mediaMaxFiles !== undefined
+        ? { ...parameter, maxFiles: options.mediaMaxFiles }
+        : parameter
+    )
+  };
 
   const critical = async <T>(work: () => T | Promise<T>): Promise<T> => {
     criticalConcurrency += 1;
@@ -185,7 +219,13 @@ export function createGenerationHarness(): GenerationHarness {
     body?: unknown;
   }) => {
     if (path === "/joycreator/space/asset/list") {
-      return critical(() => {
+      return critical(async () => {
+        if (assetReadGate !== null) {
+          const gate = assetReadGate;
+          assetReadGate = null;
+          gate.markStarted();
+          await gate.wait;
+        }
         if (failPostSubmitAssetRead && submissions > 0) {
           failPostSubmitAssetRead = false;
           throw new Error("injected post-submit asset read failure");
@@ -200,6 +240,16 @@ export function createGenerationHarness(): GenerationHarness {
       });
     }
     if (path === "/openApi/modelmarket/describeUserTask") {
+      if (taskReadGate !== null) {
+        const gate = taskReadGate;
+        taskReadGate = null;
+        gate.markStarted();
+        await gate.wait;
+      }
+      if (failTaskRead) {
+        failTaskRead = false;
+        throw new Error("injected task read failure");
+      }
       const body = init?.body as {
         params?: { taskId?: string };
       } | undefined;
@@ -305,7 +355,7 @@ export function createGenerationHarness(): GenerationHarness {
     catalog: {
       resolve: (model, sourceType, charged) => {
         events.push(`catalog:${model}:${sourceType}:${String(charged)}`);
-        return Promise.resolve(fixtureModel);
+        return Promise.resolve(resolvedModel);
       }
     },
     transport,
@@ -320,9 +370,10 @@ export function createGenerationHarness(): GenerationHarness {
     discoveryLock: new DiscoveryLock(),
     registry,
     assetDiscoveryTimeoutMs: 30,
-    unknownCapacityHoldMs: 100,
+    unknownCapacityHoldMs: options.unknownCapacityHoldMs ?? 100,
     taskPollIntervalMs: 1,
-    sleep: () => new Promise((resolve) => setTimeout(resolve, 1))
+    sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
+    ...(options.now === undefined ? {} : { now: options.now })
   });
 
   return {
@@ -345,6 +396,49 @@ export function createGenerationHarness(): GenerationHarness {
     },
     failNextPostSubmitAssetRead: () => {
       failPostSubmitAssetRead = true;
+    },
+    failNextTaskRead: () => {
+      failTaskRead = true;
+    },
+    blockNextAssetRead: () => {
+      let markStarted: (() => void) | undefined;
+      let release: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (markStarted === undefined || release === undefined) {
+        throw new Error("Asset read gate could not be initialized");
+      }
+      assetReadGate = {
+        started,
+        markStarted,
+        wait,
+        release
+      };
+      return { started, release };
+    },
+    blockNextTaskRead: () => {
+      let markStarted: (() => void) | undefined;
+      let release: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (markStarted === undefined || release === undefined) {
+        throw new Error("Task read gate could not be initialized");
+      }
+      taskReadGate = {
+        started,
+        markStarted,
+        wait,
+        release
+      };
+      return { started, release };
     },
     addPersistedAsset: (input) => {
       assets.push({

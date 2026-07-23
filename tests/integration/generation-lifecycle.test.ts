@@ -102,4 +102,73 @@ describe("generation lifecycle", () => {
       recovery.close();
     }
   });
+
+  it("preserves an unknown job's exact hold deadline across startup recovery", async () => {
+    const app = createGenerationHarness({ unknownCapacityHoldMs: 100 });
+    harnesses.push(app);
+    const submittedAt = Date.now() - 10;
+    const originalHoldUntil = Date.now() + 50;
+    const payload = {
+      apiId: "707",
+      refId: "fixture-ref",
+      params: [{ idx: "1", values: "ambiguous restart" }]
+    };
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "d".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt,
+      upstreamFingerprint: fingerprintUpstreamPayload(payload)
+    });
+    const unknown = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      {
+        status: "unknown",
+        unknownHoldUntil: originalHoldUntil,
+        errorCode: "generation_discovery_ambiguous"
+      }
+    );
+    app.addPersistedAsset({
+      payload,
+      submittedAt,
+      taskId: "ambiguous-restart-a",
+      creationCode: "ambiguous-restart-a"
+    });
+    app.addPersistedAsset({
+      payload,
+      submittedAt,
+      taskId: "ambiguous-restart-b",
+      creationCode: "ambiguous-restart-b"
+    });
+    const recovery = new StartupRecovery({
+      repository: app.repository,
+      capacity: app.capacity,
+      registry: app.registry,
+      resumeJob: app.coordinator.recoveryResumeRunner,
+      unknownCapacityHoldMs: 100
+    });
+
+    try {
+      await recovery.start();
+      await recovery.waitUntilIdle();
+
+      expect(app.repository.findById(unknown.id)).toMatchObject({
+        status: "unknown",
+        unknownHoldUntil: originalHoldUntil
+      });
+      expect(app.submitCount()).toBe(0);
+    } finally {
+      recovery.close();
+    }
+  });
 });

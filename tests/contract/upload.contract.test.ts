@@ -12,6 +12,7 @@ import {
   LingjingUploadService,
   type UploadTransport
 } from "../../src/uploads/upload-service.js";
+import { UPLOAD_SERVICE_OWNS_PREPARED_MEDIA } from "../../src/uploads/types.js";
 
 const MEBIBYTE = 1024 * 1024;
 const context = {
@@ -19,6 +20,10 @@ const context = {
   modelCode: "fixture-model",
   spaceId: 42
 };
+
+it("declares that upload transfers PreparedMedia disposal ownership", () => {
+  expect(UPLOAD_SERVICE_OWNS_PREPARED_MEDIA).toBe(true);
+});
 
 interface CapturedCall {
   operation: string;

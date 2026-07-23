@@ -1,5 +1,13 @@
 import type { PreparedMedia, UploadedMaterial } from "../media/types.js";
 
+/**
+ * Calling `UploadService.upload` transfers ownership of `PreparedMedia`.
+ * Every implementation must call `media.dispose()` exactly once from a
+ * `finally` path before the returned promise settles, on success or failure.
+ * Callers must dispose only media that was never passed to `upload`.
+ */
+export const UPLOAD_SERVICE_OWNS_PREPARED_MEDIA = true as const;
+
 export interface UploadService {
   upload(
     media: PreparedMedia,
