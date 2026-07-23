@@ -69,7 +69,13 @@ export class CatalogService {
     private readonly ttlMs: number
   ) {}
 
-  async list(sourceType: SourceType): Promise<NormalizedModel[]> {
+  async list(
+    sourceType: SourceType,
+    refresh = false
+  ): Promise<NormalizedModel[]> {
+    if (refresh) {
+      this.cache.delete(sourceType);
+    }
     const cached = this.cache.get(sourceType);
     if (cached !== undefined && cached.expiresAt > Date.now()) {
       return cached.models;
