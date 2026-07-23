@@ -30,6 +30,7 @@ export function routeSchema(input: {
   security: typeof publicSecurity | typeof bearerSecurity;
   body?: z.ZodType;
   bodyContent?: Record<string, z.ZodType>;
+  multipartBody?: z.ZodType;
   headers?: z.ZodType;
   params?: z.ZodType;
   querystring?: z.ZodType;
@@ -56,6 +57,9 @@ export function routeSchema(input: {
   }
   return {
     security: input.security,
+    ...(input.multipartBody === undefined
+      ? {}
+      : { "x-multipart-body": jsonSchema(input.multipartBody, "input") }),
     ...(input.bodyContent === undefined
       ? input.body === undefined
         ? {}

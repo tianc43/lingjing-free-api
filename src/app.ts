@@ -7,7 +7,8 @@ import Fastify, {
   LogController,
   type FastifyBaseLogger,
   type FastifyInstance,
-  type FastifyRequest
+  type FastifyRequest,
+  type FastifySchema
 } from "fastify";
 import { isAuthorized } from "./api/auth.js";
 import { registerErrorHandler } from "./api/error-handler.js";
@@ -91,6 +92,30 @@ export async function buildApp(
             }
           }
         }
+      },
+      transform: ({ schema, url }) => {
+        const documented = schema as FastifySchema & {
+          "x-multipart-body"?: Record<string, unknown>;
+        };
+        const multipartBody = documented["x-multipart-body"];
+        if (multipartBody === undefined) return { schema, url };
+        const transformed = { ...documented };
+        delete transformed["x-multipart-body"];
+        const body = transformed.body as {
+          content?: Record<string, unknown>;
+        } | undefined;
+        return {
+          schema: {
+            ...transformed,
+            body: {
+              content: {
+                ...(body?.content ?? {}),
+                "multipart/form-data": { schema: multipartBody }
+              }
+            }
+          },
+          url
+        };
       }
     });
   }

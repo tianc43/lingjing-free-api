@@ -22,7 +22,7 @@
     "check": "npm run lint && npm run typecheck && npm test",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "login": "tsx src/cli/login.ts",
+    "login": "node --env-file=.env --import tsx src/cli/login.ts",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

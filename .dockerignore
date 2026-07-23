@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.superpowers
+data
+dist
+node_modules
+tests
+coverage
+npm-debug.log*

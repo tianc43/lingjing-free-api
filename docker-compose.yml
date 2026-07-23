@@ -1,0 +1,25 @@
+services:
+  lingjing-free-api:
+    build:
+      context: .
+    image: lingjing-free-api:local
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      LINGJING_API_KEY: ${LINGJING_API_KEY:-}
+      SESSION_MODE: ${SESSION_MODE:-browser-state}
+      LINGJING_STORAGE_STATE: /app/data/auth/storage-state.json
+      LINGJING_COOKIE_FILE: /app/data/auth/cookie.txt
+      LINGJING_SESSION_PROFILE: /app/data/auth/session-profile.json
+      DB_PATH: /app/data/lingjing.db
+      LINGJING_MAX_CONCURRENCY: ${LINGJING_MAX_CONCURRENCY:-5}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - "./data:/app/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

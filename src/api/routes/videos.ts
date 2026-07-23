@@ -6,7 +6,8 @@ import { taskResponseSchema } from "../presenters.js";
 import {
   generationHeadersSchema,
   videoApiRequestSchema,
-  videoGenerationResponseSchema
+  videoGenerationResponseSchema,
+  videoMultipartRequestSchema
 } from "../schemas/generation.js";
 import {
   bearerSecurity,
@@ -40,6 +41,7 @@ export function registerVideoRoutes(
       bodyContent: {
         "application/json": videoApiRequestSchema
       },
+      multipartBody: videoMultipartRequestSchema,
       response: {
         200: videoGenerationResponseSchema,
         202: taskResponseSchema,

@@ -2,6 +2,10 @@ import { z } from "zod";
 
 const parametersSchema = z.record(z.string(), z.unknown());
 const inputImagesSchema = z.array(z.string().min(1)).max(14);
+const binaryImageSchema = z.string().meta({ format: "binary" });
+const multipartImagesSchema = z.array(
+  z.union([z.string().min(1), binaryImageSchema])
+).max(14);
 
 export const idempotencyKeySchema = z.string().min(8).max(200);
 
@@ -28,6 +32,33 @@ export const videoApiRequestSchema = z.object({
   resolution: z.string().min(1).optional(),
   ratio: z.string().min(1).optional(),
   input_images: inputImagesSchema.optional(),
+  response_mode: z.enum(["wait", "async"]).default("wait"),
+  parameters: parametersSchema.optional()
+}).strict();
+
+export const imageMultipartRequestSchema = z.object({
+  model: z.string().min(1),
+  prompt: z.string().min(1),
+  image: binaryImageSchema.optional(),
+  input_images: multipartImagesSchema.optional(),
+  "input_images[]": z.array(binaryImageSchema).max(14).optional(),
+  n: z.number().int().min(1).max(14).optional(),
+  size: z.string().min(1).optional(),
+  response_format: z.enum(["url", "b64_json"]).default("url"),
+  response_mode: z.enum(["wait", "async"]).default("wait"),
+  parameters: parametersSchema.optional()
+}).strict();
+
+export const videoMultipartRequestSchema = z.object({
+  model: z.string().min(1),
+  prompt: z.string().min(1),
+  mode: z.enum(["text-to-video", "image-to-video"]),
+  image: binaryImageSchema.optional(),
+  input_images: multipartImagesSchema.optional(),
+  "input_images[]": z.array(binaryImageSchema).max(14).optional(),
+  duration: z.number().optional(),
+  resolution: z.string().min(1).optional(),
+  ratio: z.string().min(1).optional(),
   response_mode: z.enum(["wait", "async"]).default("wait"),
   parameters: parametersSchema.optional()
 }).strict();

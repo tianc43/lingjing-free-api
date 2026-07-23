@@ -6,7 +6,8 @@ import { parseGenerationMultipart } from "../multipart.js";
 import {
   generationHeadersSchema,
   imageApiRequestSchema,
-  imageGenerationResponseSchema
+  imageGenerationResponseSchema,
+  imageMultipartRequestSchema
 } from "../schemas/generation.js";
 import {
   bearerSecurity,
@@ -47,6 +48,7 @@ export function registerImageRoutes(
       bodyContent: {
         "application/json": imageApiRequestSchema
       },
+      multipartBody: imageMultipartRequestSchema,
       response: {
         200: imageGenerationResponseSchema,
         202: taskResponseSchema,

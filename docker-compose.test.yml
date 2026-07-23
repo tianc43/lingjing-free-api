@@ -1,0 +1,24 @@
+services:
+  lingjing-free-api:
+    restart: "no"
+    environment:
+      LINGJING_API_KEY: fake-docker-api-key-0024
+      SESSION_MODE: browser-state
+      DB_PATH: /app/data/lingjing.db
+    volumes:
+      - type: volume
+        source: lingjing-smoke-data
+        target: /app/data
+      - type: bind
+        source: ./tests/fixtures/docker-auth
+        target: /app/data/auth
+        read_only: true
+    networks:
+      - smoke-no-egress
+
+volumes:
+  lingjing-smoke-data:
+
+networks:
+  smoke-no-egress:
+    internal: true

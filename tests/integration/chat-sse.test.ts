@@ -335,6 +335,7 @@ describe("chat completions SSE", () => {
     });
     expect(timeoutEvents.at(-1)?.rawData).toBe("[DONE]");
 
+    fixture.dependencies.config.imageWaitTimeoutMs = 300_000;
     nextHandle = {
       job: currentJob("processing"),
       wait: () => Promise.reject(

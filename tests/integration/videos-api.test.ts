@@ -582,6 +582,8 @@ describe("video generation API", () => {
                 additionalProperties?: boolean;
                 properties?: Record<string, {
                   enum?: string[];
+                  format?: string;
+                  items?: Record<string, unknown>;
                 }>;
               };
             }>;
@@ -600,6 +602,19 @@ describe("video generation API", () => {
       expect(
         specification.paths[path]?.post?.requestBody
       ).toBeDefined();
+      const multipartSchema = specification.paths[path]?.post
+        ?.requestBody?.content?.["multipart/form-data"]?.schema;
+      expect(multipartSchema?.type).toBe("object");
+      expect(multipartSchema?.required).toEqual(path.includes("images")
+        ? ["model", "prompt"]
+        : ["model", "prompt", "mode"]);
+      expect(multipartSchema?.properties?.image).toMatchObject({
+        type: "string",
+        format: "binary"
+      });
+      expect(multipartSchema?.properties?.input_images).toMatchObject({
+        type: "array"
+      });
       const jsonSchema = specification.paths[path]?.post
         ?.requestBody?.content?.["application/json"]?.schema;
       expect(jsonSchema?.anyOf).toBeUndefined();
