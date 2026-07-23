@@ -1,10 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { SourceType } from "../../models/types.js";
-import { presentModel } from "../presenters.js";
+import { modelResponseSchema, presentModel } from "../presenters.js";
+import {
+  bearerSecurity,
+  errorResponseSchema,
+  routeSchema
+} from "../schema.js";
 import type { AppDependencies } from "../types.js";
 
-const modelQuerySchema = z.object({
+export const modelQuerySchema = z.object({
   type: z.enum(["image", "video"]),
   mode: z.enum(["text-to-video", "image-to-video"]).optional(),
   refresh: z.enum(["true", "false"]).optional().transform(
@@ -19,6 +24,10 @@ const modelQuerySchema = z.object({
     });
   }
 });
+const modelListResponseSchema = z.object({
+  object: z.literal("list"),
+  data: z.array(modelResponseSchema)
+});
 
 function sourceTypes(query: z.infer<typeof modelQuerySchema>): SourceType[] {
   if (query.type === "image") return ["image-generation"];
@@ -30,7 +39,18 @@ export function registerModelRoutes(
   app: FastifyInstance,
   dependencies: AppDependencies
 ): void {
-  app.get("/v1/models", async (request) => {
+  app.get("/v1/models", {
+    schema: routeSchema({
+      security: bearerSecurity,
+      querystring: modelQuerySchema,
+      response: {
+        200: modelListResponseSchema,
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        502: errorResponseSchema
+      }
+    })
+  }, async (request) => {
     const query = modelQuerySchema.parse(request.query);
     const sources = sourceTypes(query);
     const groups = await Promise.all(

@@ -2,6 +2,7 @@ import {
   assetsFromResponse,
   type LingjingAsset
 } from "./assets.js";
+import { abortable } from "./abort.js";
 import { fingerprintAssetReqParam } from "./upstream-fingerprint.js";
 import type { JobRecord } from "./types.js";
 import type { LingjingTransport } from "../lingjing/types.js";
@@ -128,7 +129,8 @@ export function matchAsset(
 
 export async function listRecentAssets(
   transport: LingjingTransport,
-  job: JobRecord
+  job: JobRecord,
+  signal?: AbortSignal
 ): Promise<LingjingAsset[]> {
   if (job.submittedAt === null) return [];
   const earliest = job.submittedAt - SUBMISSION_CLOCK_SKEW_MS;
@@ -136,17 +138,23 @@ export async function listRecentAssets(
   const conflictingIds = new Set<string>();
 
   for (let currentPage = 1; currentPage <= MAX_ASSET_PAGES; currentPage += 1) {
-    const response = await transport.read<unknown>(
-      "/joycreator/space/asset/list",
-      {
-        query: {
-          assetType: 1,
-          spaceId: job.spaceId,
-          currentPage,
-          pageSize: ASSET_PAGE_SIZE
+    signal?.throwIfAborted();
+    const response = await abortable(
+      transport.read<unknown>(
+        "/joycreator/space/asset/list",
+        {
+          query: {
+            assetType: 1,
+            spaceId: job.spaceId,
+            currentPage,
+            pageSize: ASSET_PAGE_SIZE
+          }
         }
-      }
+      ),
+      signal,
+      "Asset discovery aborted"
     );
+    signal?.throwIfAborted();
     const page = assetsFromResponse(response);
     let reachedOldRecord = false;
     for (const asset of page) {
@@ -175,9 +183,14 @@ export async function listRecentAssets(
 export async function discoverAsset(
   transport: LingjingTransport,
   job: JobRecord,
-  baselineIds: ReadonlySet<string> = new Set()
+  baselineIds: ReadonlySet<string> = new Set(),
+  signal?: AbortSignal
 ): Promise<DiscoveryResult> {
-  return matchAsset(job, await listRecentAssets(transport, job), baselineIds);
+  return matchAsset(
+    job,
+    await listRecentAssets(transport, job, signal),
+    baselineIds
+  );
 }
 
 export interface AssetDiscoveryOptions {
@@ -239,8 +252,10 @@ export class LingjingAssetDiscovery {
       lastResult = await discoverAsset(
         this.options.transport,
         job,
-        baselineIds
+        baselineIds,
+        signal
       );
+      signal?.throwIfAborted();
       if (lastResult.kind !== "not-found") return lastResult;
       if (this.now() >= deadline) return lastResult;
       await this.sleep(this.options.pollIntervalMs, signal);

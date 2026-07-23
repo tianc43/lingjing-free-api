@@ -113,6 +113,16 @@ describe("account, model, and task API", () => {
         display_name: "Fixture Image"
       }]
     });
+    expect(response.json<{
+      data: Array<{ pricing: unknown }>;
+    }>().data[0]?.pricing).toEqual({
+      points: 2,
+      currency: "CNY",
+      price: {
+        amount: 2,
+        unit: "image"
+      }
+    });
     for (const forbidden of [
       "707",
       "upstream-image-id",
@@ -123,6 +133,16 @@ describe("account, model, and task API", () => {
       "private-revision",
       "private-index",
       "private-pricing-api-id",
+      "private-pricing-asset-id",
+      "private-pricing-user-id",
+      "private-pricing-scene-code",
+      "private-pricing-token",
+      "private-adversarial-price-key",
+      "private-price-signature",
+      "private-raw-payload",
+      "private-pricing-mystery",
+      "\"nested\"",
+      "\"mystery\"",
       "91001"
     ]) {
       expect(response.body).not.toContain(forbidden);
@@ -267,10 +287,51 @@ describe("account, model, and task API", () => {
       url: "/openapi.json"
     });
     expect(specification.statusCode).toBe(200);
-    expect(specification.json<{ openapi: string }>().openapi).toMatch(/^3\./u);
+    const document = specification.json<{
+      openapi: string;
+      paths: Record<string, Record<string, {
+        security?: unknown[];
+        parameters?: Array<{ name?: string }>;
+        requestBody?: unknown;
+        responses?: Record<string, { content?: unknown }>;
+      }>>;
+    }>();
+    expect(document.openapi).toMatch(/^3\./u);
+    expect(document.paths["/healthz"]?.get?.security).toEqual([]);
+    expect(document.paths["/ping"]?.get?.security).toEqual([]);
+    expect(document.paths["/v1/models"]?.get?.security).toEqual([
+      { bearerAuth: [] }
+    ]);
+    expect(
+      document.paths["/v1/models"]?.get?.parameters?.map(
+        (parameter) => parameter.name
+      )
+    ).toEqual(expect.arrayContaining(["type", "mode", "refresh"]));
+    expect(
+      document.paths["/v1/models"]?.get?.responses?.["200"]?.content
+    ).toBeDefined();
+    expect(
+      document.paths["/v1/tasks/{id}"]?.get?.parameters?.map(
+        (parameter) => parameter.name
+      )
+    ).toContain("id");
+    expect(
+      document.paths["/token/check"]?.post?.requestBody
+    ).toBeDefined();
     expect((await authorizedInject(fixture.app, {
       method: "GET",
       url: "/docs/"
     })).statusCode).toBe(200);
+  });
+
+  it("keeps root not-found handling outside the protected plugin", async () => {
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/not-an-api-route"
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      error: { code: "route_not_found" }
+    });
   });
 });

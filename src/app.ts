@@ -14,16 +14,16 @@ import { registerAccountRoutes } from "./api/routes/account.js";
 import { registerModelRoutes } from "./api/routes/models.js";
 import { registerSystemRoutes } from "./api/routes/system.js";
 import { registerTaskRoutes } from "./api/routes/tasks.js";
+import {
+  bearerSecurity,
+  emptyQuerySchema,
+  routeSchema
+} from "./api/schema.js";
 import type { AppDependencies } from "./api/types.js";
 import { AppError, errors } from "./errors.js";
+import { z } from "zod";
 
 export type { AppDependencies } from "./api/types.js";
-
-const PUBLIC_PATHS = new Set(["/healthz", "/ping"]);
-
-function pathname(request: FastifyRequest): string {
-  return new URL(request.raw.url ?? "/", "http://localhost").pathname;
-}
 
 function bearerToken(request: FastifyRequest): string {
   const authorization = request.headers.authorization;
@@ -58,28 +58,6 @@ export async function buildApp(
       "Route not found"
     );
   });
-  app.addHook("onRequest", (request): Promise<void> => {
-    if (PUBLIC_PATHS.has(pathname(request))) return Promise.resolve();
-    if (
-      !isAuthorized(
-        request.headers.authorization,
-        dependencies.config.apiKey
-      )
-    ) {
-      return Promise.reject(errors.authentication());
-    }
-    return Promise.resolve();
-  });
-
-  await app.register(rateLimit, {
-    global: true,
-    max: 100,
-    timeWindow: "1 minute",
-    allowList: (request) => PUBLIC_PATHS.has(pathname(request)),
-    keyGenerator: rateLimitKey,
-    errorResponseBuilder: () => errors.rateLimited()
-  });
-
   if (dependencies.config.docsEnabled) {
     await app.register(swagger, {
       openapi: {
@@ -95,23 +73,55 @@ export async function buildApp(
               scheme: "bearer"
             }
           }
-        },
-        security: [{ bearerAuth: [] }]
+        }
       }
-    });
-    await app.register(swaggerUi, {
-      routePrefix: "/docs"
     });
   }
 
   registerSystemRoutes(app, dependencies);
-  registerAccountRoutes(app, dependencies);
-  registerModelRoutes(app, dependencies);
-  registerTaskRoutes(app, dependencies);
+  await app.register(async function protectedApi(protectedApp) {
+    protectedApp.addHook("onRequest", (request): Promise<void> => {
+      if (
+        !isAuthorized(
+          request.headers.authorization,
+          dependencies.config.apiKey
+        )
+      ) {
+        return Promise.reject(errors.authentication());
+      }
+      return Promise.resolve();
+    });
 
-  if (dependencies.config.docsEnabled) {
-    app.get("/openapi.json", () => app.swagger());
-  }
+    await protectedApp.register(rateLimit, {
+      global: true,
+      max: 100,
+      timeWindow: "1 minute",
+      keyGenerator: rateLimitKey,
+      errorResponseBuilder: () => errors.rateLimited()
+    });
+
+    if (dependencies.config.docsEnabled) {
+      await protectedApp.register(swaggerUi, {
+        routePrefix: "/docs"
+      });
+    }
+
+    registerAccountRoutes(protectedApp, dependencies);
+    registerModelRoutes(protectedApp, dependencies);
+    registerTaskRoutes(protectedApp, dependencies);
+
+    if (dependencies.config.docsEnabled) {
+      protectedApp.get("/openapi.json", {
+        schema: routeSchema({
+          security: bearerSecurity,
+          querystring: emptyQuerySchema,
+          response: {
+            200: z.record(z.string(), z.unknown())
+          }
+        })
+      }, () => app.swagger());
+    }
+  });
 
   return app;
 }

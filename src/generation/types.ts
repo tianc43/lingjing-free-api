@@ -25,6 +25,7 @@ export interface GenerationHandle {
 export interface GenerationCoordinator {
   create(request: GenerationRequest): Promise<GenerationHandle>;
   resume(jobId: string): Promise<GenerationHandle>;
+  stopPollers(): void;
 }
 
 export interface JobRunnerRegistry {

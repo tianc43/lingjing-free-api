@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { errors } from "../errors.js";
+import { abortable } from "../jobs/abort.js";
 import { assetsFromResponse } from "../jobs/assets.js";
 import type { CapacityManager } from "../jobs/capacity.js";
 import { DiscoveryLock } from "../jobs/discovery-lock.js";
@@ -57,7 +58,10 @@ const DURABLE_CREATE_STATUSES = new Set<JobStatus>([
 ]);
 const TERMINAL_STATUSES = new Set<JobStatus>(["completed", "failed"]);
 
-type Sleep = (milliseconds: number) => Promise<void>;
+type Sleep = (
+  milliseconds: number,
+  signal?: AbortSignal
+) => Promise<void>;
 
 interface CatalogResolver {
   resolve(
@@ -85,11 +89,15 @@ export interface LingjingGenerationCoordinatorOptions {
   notifier?: JobUpdateNotifier;
 }
 
-function defaultSleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
+function defaultSleep(
+  milliseconds: number,
+  signal?: AbortSignal
+): Promise<void> {
+  const operation = new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, milliseconds);
     timer.unref();
   });
+  return abortable(operation, signal, "Generation polling stopped");
 }
 
 function isTerminal(job: JobRecord): boolean {
@@ -173,6 +181,7 @@ implements GenerationCoordinator {
   private readonly notifier: JobUpdateNotifier;
   private readonly discoverer: LingjingAssetDiscovery;
   private readonly poller: LingjingTaskPoller;
+  private readonly pollerAbort = new AbortController();
 
   constructor(private readonly options: LingjingGenerationCoordinatorOptions) {
     this.now = options.now ?? Date.now;
@@ -182,7 +191,7 @@ implements GenerationCoordinator {
       transport: options.transport,
       timeoutMs: options.assetDiscoveryTimeoutMs,
       pollIntervalMs: options.taskPollIntervalMs,
-      sleep: (milliseconds) => this.sleep(milliseconds),
+      sleep: (milliseconds, signal) => this.sleep(milliseconds, signal),
       now: this.now
     });
     this.poller = new LingjingTaskPoller({
@@ -190,6 +199,12 @@ implements GenerationCoordinator {
       transport: options.transport,
       now: this.now
     });
+  }
+
+  stopPollers(): void {
+    if (!this.pollerAbort.signal.aborted) {
+      this.pollerAbort.abort(new Error("Generation polling stopped"));
+    }
   }
 
   async create(request: GenerationRequest): Promise<GenerationHandle> {
@@ -335,6 +350,7 @@ implements GenerationCoordinator {
   ): Promise<void> {
     let current = this.requireJob(snapshot.id);
     try {
+      this.pollerAbort.signal.throwIfAborted();
       if (current.status === "submitting") {
         current = this.transition(current.id, ["submitting"], {
           status: "discovering"
@@ -342,6 +358,10 @@ implements GenerationCoordinator {
       }
       await this.runPostSubmit(current, lease);
     } catch {
+      if (this.pollerAbort.signal.aborted) {
+        lease.release();
+        return;
+      }
       this.releaseIfTerminalOrRefreshUnknown(current.id, lease);
     }
   }
@@ -438,6 +458,10 @@ implements GenerationCoordinator {
       await this.persistDiscoveryAndPoll(job.id, discovery, lease);
     } catch {
       const current = this.options.repository.findById(job.id);
+      if (this.pollerAbort.signal.aborted) {
+        lease.release();
+        return;
+      }
       if (current?.status === "queued") {
         this.transition(current.id, ["queued"], jobErrorTransition(
           "failed",
@@ -456,6 +480,7 @@ implements GenerationCoordinator {
     snapshot: JobRecord,
     lease: CapacityLease
   ): Promise<void> {
+    this.pollerAbort.signal.throwIfAborted();
     let current = this.requireJob(snapshot.id);
     if (isTerminal(current)) {
       lease.release();
@@ -476,9 +501,14 @@ implements GenerationCoordinator {
       let discovery: DiscoveryResult;
       try {
         discovery = await this.options.discoveryLock.runExclusive(
-          () => this.discoverer.discover(current)
+          () => this.discoverer.discover(
+            current,
+            new Set(),
+            this.pollerAbort.signal
+          )
         );
       } catch {
+        this.pollerAbort.signal.throwIfAborted();
         const holdUntil = this.now() + this.options.unknownCapacityHoldMs;
         const unknown = this.persistUnknown(
           current.id,
@@ -524,6 +554,7 @@ implements GenerationCoordinator {
     lease: CapacityLease,
     existingHoldUntil?: number
   ): Promise<void> {
+    this.pollerAbort.signal.throwIfAborted();
     const asset = result.kind === "unique" ? result.asset : undefined;
     if (
       asset === undefined
@@ -581,7 +612,7 @@ implements GenerationCoordinator {
   ): Promise<void> {
     let current = initial;
     while (this.now() < holdUntil) {
-      await this.sleep(this.options.taskPollIntervalMs);
+      await this.waitForPollInterval();
       if (this.now() >= holdUntil) break;
       try {
         const discovery = await this.discoverUnknownWithinHold(
@@ -598,6 +629,7 @@ implements GenerationCoordinator {
         current = this.requireJob(current.id);
         if (current.status !== "unknown") return;
       } catch {
+        this.pollerAbort.signal.throwIfAborted();
         current = this.requireJob(current.id);
         if (current.status !== "unknown") return;
       }
@@ -612,14 +644,18 @@ implements GenerationCoordinator {
     let current = initial;
     for (;;) {
       try {
-        const next = await this.poller.poll(current);
+        const next = await this.poller.poll(
+          current,
+          this.pollerAbort.signal
+        );
         if (next.updatedAt !== current.updatedAt || next.status !== current.status) {
           this.notifier.notify(next.id);
         }
         current = next;
         this.refreshProcessingLease(current);
       } catch {
-        await this.sleep(this.options.taskPollIntervalMs);
+        this.pollerAbort.signal.throwIfAborted();
+        await this.waitForPollInterval();
         current = this.requireJob(current.id);
         if (isTerminal(current)) {
           lease.release();
@@ -631,7 +667,7 @@ implements GenerationCoordinator {
         lease.release();
         return;
       }
-      await this.sleep(this.options.taskPollIntervalMs);
+      await this.waitForPollInterval();
       current = this.requireJob(current.id);
     }
   }
@@ -687,10 +723,18 @@ implements GenerationCoordinator {
       timer.unref();
     });
     const discovery = this.options.discoveryLock.runExclusive(
-      () => this.discoverer.discover(job)
+      () => this.discoverer.discover(
+        job,
+        new Set(),
+        this.pollerAbort.signal
+      )
     );
-    const result = await Promise.race([discovery, expired]);
-    if (timer !== undefined) clearTimeout(timer);
+    let result: DiscoveryResult | null;
+    try {
+      result = await Promise.race([discovery, expired]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     if (result === null) {
       this.options.capacity.expireUnknown(this.now());
       await discovery.catch(() => undefined);
@@ -702,6 +746,13 @@ implements GenerationCoordinator {
       return null;
     }
     return result;
+  }
+
+  private waitForPollInterval(): Promise<void> {
+    return this.sleep(
+      this.options.taskPollIntervalMs,
+      this.pollerAbort.signal
+    );
   }
 
   private async snapshotAssetIds(spaceId: number): Promise<Set<string>> {

@@ -36,8 +36,22 @@ export const imageModel: NormalizedModel = {
   }],
   pricing: {
     points: 2,
+    currency: "CNY",
+    price: {
+      amount: 2,
+      unit: "image",
+      cost: 2,
+      signature: "private-price-signature",
+      rawPayload: "private-raw-payload"
+    },
     apiId: "private-pricing-api-id",
-    nested: { spaceId: 91_001 }
+    assetId: "private-pricing-asset-id",
+    userId: "private-pricing-user-id",
+    sceneCode: "private-pricing-scene-code",
+    token: "private-pricing-token",
+    "p-r_i.c e": "private-adversarial-price-key",
+    nested: { spaceId: 91_001 },
+    mystery: "private-pricing-mystery"
   },
   rawRevision: "private-revision"
 };
@@ -166,7 +180,8 @@ export async function createTestApp(
     repository,
     coordinator: {
       create: vi.fn(),
-      resume: vi.fn()
+      resume: vi.fn(),
+      stopPollers: vi.fn()
     },
     capacity: new CapacityManager(5, 20),
     recovery: {

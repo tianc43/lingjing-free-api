@@ -539,6 +539,63 @@ describe("LingjingGenerationCoordinator", () => {
     expect(app.submitCount()).toBe(0);
   });
 
+  it("stops a blocked recovered poller without mutating its durable job", async () => {
+    const app = harness();
+    const queued = app.repository.createOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "707",
+      apiId: "707",
+      modelCode: "model-v1",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "3".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0
+    }).job;
+    const submitting = app.repository.transition(queued.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now(),
+      upstreamFingerprint: "4".repeat(64)
+    });
+    const discovering = app.repository.transition(
+      submitting.id,
+      ["submitting"],
+      { status: "discovering" }
+    );
+    const processing = app.repository.transition(
+      discovering.id,
+      ["discovering"],
+      {
+        status: "processing",
+        creationCode: "shutdown-creation",
+        upstreamTaskId: "shutdown-task"
+      }
+    );
+    app.setTaskStatuses("shutdown-task", [1]);
+    const gate = app.blockNextTaskRead();
+
+    await app.coordinator.resume(processing.id);
+    await gate.started;
+    try {
+      app.coordinator.stopPollers();
+      await expect(Promise.race([
+        app.registry.waitUntilIdle(),
+        new Promise((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("poller did not stop"));
+          }, 100);
+        })
+      ])).resolves.toBeUndefined();
+
+      expect(app.repository.findById(processing.id)?.status).toBe("processing");
+      expect(app.capacity.activeJobIds()).not.toContain(processing.id);
+    } finally {
+      gate.release();
+    }
+    await Promise.resolve();
+    expect(app.repository.findById(processing.id)?.status).toBe("processing");
+  });
+
   it("drains a submit reservation held by a worker still uploading", async () => {
     const registry = new JobRunnerRegistry();
     const reservation = registry.reserveSubmitCriticalSection();

@@ -33,7 +33,7 @@ export const taskResponseSchema = z.object({
   outputs: z.array(outputSchema)
 });
 
-const accountResponseSchema = z.object({
+export const accountResponseSchema = z.object({
   object: z.literal("lingjing.account"),
   subject: z.string(),
   membership: z.string().nullable(),
@@ -60,7 +60,32 @@ const parameterResponseSchema = z.object({
   max_files: z.number().optional()
 });
 
-const modelResponseSchema = z.object({
+const pricingDetailsSchema = z.object({
+  amount: z.number().optional(),
+  billingType: z.string().optional(),
+  credits: z.number().optional(),
+  currency: z.string().optional(),
+  discount: z.number().optional(),
+  maximum: z.number().optional(),
+  max: z.number().optional(),
+  minimum: z.number().optional(),
+  min: z.number().optional(),
+  points: z.number().optional(),
+  unit: z.string().optional()
+}).strict();
+
+const pricingContainerSchema = z.union([
+  z.number(),
+  pricingDetailsSchema
+]);
+
+export const publicPricingSchema = pricingDetailsSchema.extend({
+  cost: pricingContainerSchema.optional(),
+  price: pricingContainerSchema.optional(),
+  rate: pricingContainerSchema.optional()
+}).strict().nullable();
+
+export const modelResponseSchema = z.object({
   id: z.string(),
   object: z.literal("model"),
   owned_by: z.literal("lingjing"),
@@ -72,39 +97,78 @@ const modelResponseSchema = z.object({
     input_images: z.boolean()
   }),
   parameters: z.array(parameterResponseSchema),
-  pricing: z.unknown()
+  pricing: publicPricingSchema
 });
 
 export type AccountResponse = z.infer<typeof accountResponseSchema>;
 export type ModelResponse = z.infer<typeof modelResponseSchema>;
 
-const PRIVATE_PRICING_KEYS = new Set([
-  "id",
-  "apiid",
-  "spaceid",
-  "creationcode",
-  "taskid",
-  "modelcode",
-  "refid",
-  "rawrevision",
-  "revision",
-  "fingerprint",
-  "hash",
-  "upstreamid"
+const NUMERIC_PRICING_KEYS = new Set([
+  "amount",
+  "credits",
+  "discount",
+  "maximum",
+  "max",
+  "minimum",
+  "min",
+  "points"
 ]);
 
+const PUBLIC_PRICING_CONTAINERS = new Set([
+  "cost",
+  "price",
+  "rate"
+]);
+
+const STRING_PRICING_KEYS = new Set([
+  "billingType",
+  "currency",
+  "unit"
+]);
+
+function safePricingObject(
+  value: Record<string, unknown>,
+  depth = 0
+): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      NUMERIC_PRICING_KEYS.has(key)
+      && typeof entry === "number"
+      && Number.isFinite(entry)
+    ) {
+      safe[key] = entry;
+      continue;
+    }
+    if (STRING_PRICING_KEYS.has(key) && typeof entry === "string") {
+      safe[key] = entry;
+      continue;
+    }
+    if (depth !== 0 || !PUBLIC_PRICING_CONTAINERS.has(key)) continue;
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      safe[key] = entry;
+      continue;
+    }
+    if (
+      typeof entry === "object"
+      && entry !== null
+      && !Array.isArray(entry)
+    ) {
+      const nested = safePricingObject(
+        entry as Record<string, unknown>,
+        depth + 1
+      );
+      if (Object.keys(nested).length > 0) safe[key] = nested;
+    }
+  }
+  return safe;
+}
+
 function safePricing(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(safePricing);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(
-    Object.entries(value).flatMap(([key, entry]) => {
-      const normalized = key.toLowerCase().replace(/[^a-z0-9]/gu, "");
-      return PRIVATE_PRICING_KEYS.has(normalized)
-        || normalized.includes("upstream")
-        ? []
-        : [[key, safePricing(entry)]];
-    })
-  );
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return safePricingObject(value as Record<string, unknown>);
 }
 
 export function presentTask(job: JobRecord): TaskResponse {

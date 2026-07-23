@@ -2,6 +2,7 @@ import {
   listRecentAssets,
   matchAsset
 } from "./discovery.js";
+import { abortable } from "./abort.js";
 import { normalizeJobResult } from "./output-normalizer.js";
 import type { LingjingAsset } from "./assets.js";
 import type {
@@ -87,12 +88,16 @@ export class LingjingTaskPoller implements TaskPoller {
       throw new Error(`Job ${job.id} has no upstream task id`);
     }
     signal?.throwIfAborted();
-    const response = await this.options.transport.read<unknown>(
-      "/openApi/modelmarket/describeUserTask",
-      {
-        method: "POST",
-        body: { params: { taskId: job.upstreamTaskId } }
-      }
+    const response = await abortable(
+      this.options.transport.read<unknown>(
+        "/openApi/modelmarket/describeUserTask",
+        {
+          method: "POST",
+          body: { params: { taskId: job.upstreamTaskId } }
+        }
+      ),
+      signal,
+      "Task polling aborted"
     );
     signal?.throwIfAborted();
     const task = findTask(response);
@@ -123,7 +128,12 @@ export class LingjingTaskPoller implements TaskPoller {
 
     let result = normalizeJobResult(taskAsAsset(task, job));
     if (result === null) {
-      const assets = await listRecentAssets(this.options.transport, job);
+      const assets = await listRecentAssets(
+        this.options.transport,
+        job,
+        signal
+      );
+      signal?.throwIfAborted();
       const taskAsset = assets.find((asset) => (
         asset.taskId !== null && asset.taskId === job.upstreamTaskId
       ));
