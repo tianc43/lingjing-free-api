@@ -1,4 +1,4 @@
-import { fetch, request, type Dispatcher } from "undici";
+import { request, type Dispatcher } from "undici";
 import { Readable } from "node:stream";
 import { AppError } from "../errors.js";
 import { type Envelope, unwrapEnvelope } from "./envelope.js";
@@ -75,7 +75,7 @@ export class LingjingClient implements LingjingTransport {
   async uploadApi<T>(path: string, init: UploadRequest): Promise<T> {
     this.signedUploadUrls.clear();
     const result = await this.perform<T>(path, { method: init.method, body: init.body, ...(init.headers === undefined ? {} : { headers: init.headers }), timeoutMs: init.timeoutMs });
-    this.registerSignedUploadUrls(result);
+    if (path === "/joycreator/upload/init") this.registerSignedUploadUrls(result);
     return result;
   }
 
@@ -84,16 +84,21 @@ export class LingjingClient implements LingjingTransport {
     if (url.protocol !== "https:") throw new Error("Signed upload URL must use HTTPS");
     if (!this.signedUploadUrls.delete(url.toString())) throw new Error("Signed upload URL is not trusted or has already been consumed");
     const headers = Object.fromEntries(Object.entries(init.headers ?? {}).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
-    const response = await fetch(url, {
-      method: init.method,
-      headers,
-      body: init.body as never,
-      duplex: "half",
-      redirect: "manual",
-      ...(this.dispatcher === undefined ? {} : { dispatcher: this.dispatcher }),
-    });
-    await response.arrayBuffer();
-    return { statusCode: response.status, headers: headerRecord(Object.fromEntries(response.headers.entries())) };
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, init.timeoutMs);
+    try {
+      const response = await request(url, {
+        method: init.method,
+        headers,
+        body: init.body as never,
+        signal: controller.signal,
+        ...(this.dispatcher === undefined ? {} : { dispatcher: this.dispatcher }),
+        headersTimeout: init.timeoutMs,
+        bodyTimeout: init.timeoutMs
+      });
+      await response.body.dump();
+      return { statusCode: response.statusCode, headers: headerRecord(response.headers) };
+    } finally { clearTimeout(timer); }
   }
 
   private async perform<T>(path: string, init: { method: "GET" | "POST" | "PUT"; body?: unknown; query?: ReadRequest["query"]; headers?: Record<string, string>; timeoutMs?: number; timestamp?: boolean }): Promise<T> {
@@ -137,17 +142,19 @@ export class LingjingClient implements LingjingTransport {
   }
 
   private registerSignedUploadUrls(value: unknown): void {
-    const collect = (candidate: unknown): void => {
-      if (typeof candidate === "string") {
-        try {
-          const url = new URL(candidate);
-          if (url.protocol === "https:" && url.origin !== this.baseUrl.origin) this.signedUploadUrls.add(url.toString());
-        } catch { /* non-URL values are not upload URLs */ }
-        return;
-      }
-      if (Array.isArray(candidate)) { for (const item of candidate) collect(item); return; }
-      if (typeof candidate === "object" && candidate !== null) for (const item of Object.values(candidate)) collect(item);
-    };
-    collect(value);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return;
+    const result = value as { single?: { uploadUrl?: unknown }; multipart?: { parts?: unknown } };
+    const urls: unknown[] = [];
+    if (result.single !== undefined) urls.push(result.single.uploadUrl);
+    if (result.multipart !== undefined && Array.isArray(result.multipart.parts)) {
+      for (const part of result.multipart.parts) if (typeof part === "object" && part !== null) urls.push((part as { uploadUrl?: unknown }).uploadUrl);
+    }
+    for (const candidate of urls) {
+      if (typeof candidate !== "string") continue;
+      try {
+        const url = new URL(candidate);
+        if (url.protocol === "https:" && url.origin !== this.baseUrl.origin) this.signedUploadUrls.add(url.toString());
+      } catch { /* schema URL is invalid */ }
+    }
   }
 }

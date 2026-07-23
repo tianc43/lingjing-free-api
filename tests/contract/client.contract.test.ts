@@ -56,8 +56,8 @@ describe("LingjingClient contract", () => {
 
   it("never sends Lingjing credentials to an external signed upload URL", async () => {
     const { client, mock } = await createClientWithSessionMode();
-    mock.respondWithResult({ uploadUrl: "https://object-storage.example/signed-part" });
-    await client.uploadApi("/upload-init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
+    mock.respondWithResult({ single: { uploadUrl: "https://object-storage.example/signed-part" } });
+    await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "leak", cookie: "leak", origin: "leak", referer: "leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
     expect(mock.objectStorageHeaders.cookie).toBeUndefined();
     expect(mock.objectStorageHeaders["x-csrf-token"]).toBeUndefined();
@@ -70,8 +70,8 @@ describe("LingjingClient contract", () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/signed-part");
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
-    mock.respondWithResult({ signedUrl: signed.toString() });
-    await client.uploadApi("/upload-init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
+    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await expect(client.putSigned(signed, { method: "POST", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("PUT");
     await client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 });
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
@@ -80,8 +80,8 @@ describe("LingjingClient contract", () => {
   it("invalidates signed URL trust after an unrelated logical request", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const signed = new URL("https://object-storage.example/signed-part");
-    mock.respondWithResult({ signedUrl: signed.toString() });
-    await client.uploadApi("/upload-init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
+    mock.respondWithResult({ single: { uploadUrl: signed.toString() } });
+    await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
     await client.read("/unrelated");
     await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
   });
@@ -90,6 +90,17 @@ describe("LingjingClient contract", () => {
     const { client, mock } = await createClientWithSessionMode();
     await client.uploadApi("/stream-upload", { method: "POST", body: Readable.from("stream-body"), timeoutMs: 5_000 });
     expect(mock.lastHeaders["content-type"]).toBeUndefined();
+  });
+
+  it("does not trust URLs in unknown fields or non-init upload responses", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const signed = new URL("https://object-storage.example/signed-part");
+    mock.respondWithResult({ echoedUrl: signed.toString() });
+    await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
+    await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
+    mock.respondWithResult({ uploadUrl: signed.toString() });
+    await client.uploadApi("/some-other-upload", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
+    await expect(client.putSigned(signed, { method: "PUT", body: Buffer.from("x"), timeoutMs: 5_000 })).rejects.toThrow("trusted");
   });
 
   it("rejects absolute, scheme-relative, and cross-origin logical paths", async () => {
