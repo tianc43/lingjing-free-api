@@ -1,0 +1,1 @@
+fixture_session=value; csrfToken=fixture-csrf

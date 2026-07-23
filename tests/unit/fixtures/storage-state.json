@@ -1,0 +1,30 @@
+{
+  "cookies": [
+    {
+      "name": "csrfToken",
+      "value": "fixture-csrf",
+      "domain": "lingjing.jdcloud.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "fixture_session",
+      "value": "value",
+      "domain": "lingjing.jdcloud.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://lingjing.jdcloud.com",
+      "localStorage": []
+    }
+  ]
+}
