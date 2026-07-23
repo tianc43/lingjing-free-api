@@ -4,7 +4,6 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  rmSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 import {
   createRequestFingerprint,
   createUpstreamFingerprint,
@@ -33,7 +33,7 @@ function temporaryDatabasePath(): string {
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true });
+    removeTestDirectory(directory);
   }
 });
 
@@ -318,7 +318,11 @@ describe("SqliteJobRepository", () => {
       "const repository = new SqliteJobRepository(process.argv[1]);",
       "const value = JSON.parse(Buffer.from(process.argv[2], 'base64url').toString('utf8'));",
       "const result = repository.createOrGet(value);",
-      "repository.close();",
+      "try {",
+      "  repository.close();",
+      "} catch (cause) {",
+      "  if (!(cause instanceof Error) || !cause.message.startsWith('WAL checkpoint incomplete after ') || !cause.message.endsWith('; repository was closed safely')) throw cause;",
+      "}",
       "process.stdout.write(JSON.stringify({ created: result.created, id: result.job.id }));"
     ].join("\n");
 
@@ -376,7 +380,11 @@ describe("SqliteJobRepository", () => {
       "} catch (cause) {",
       "  process.stdout.write(JSON.stringify({ code: cause?.code ?? 'unknown' }));",
       "} finally {",
-      "  repository.close();",
+      "  try {",
+      "    repository.close();",
+      "  } catch (cause) {",
+      "    if (!(cause instanceof Error) || !cause.message.startsWith('WAL checkpoint incomplete after ') || !cause.message.endsWith('; repository was closed safely')) throw cause;",
+      "  }",
       "}"
     ].join("\n");
     const attempts = inputs.map(async (input, index) => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -28,6 +28,7 @@ import {
   imageModel,
   type TestApp
 } from "../helpers/test-app.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const fixturePng = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
@@ -293,7 +294,7 @@ describe("image generation API", () => {
   afterEach(async () => {
     await fixture.close();
     for (const directory of temporaryDirectories.splice(0)) {
-      rmSync(directory, { recursive: true, force: true });
+      removeTestDirectory(directory);
     }
   });
 

@@ -5,9 +5,9 @@ import { createLogger, redactForLog } from "../../src/logging.js";
 describe("redactForLog", () => {
   it("removes credentials, prompts, media and URL queries", () => {
     const safe = redactForLog({
-      authorization: "Bearer downstream",
+      authorization: "Bearer fixture-downstream",
       cookie: "pt_key=fixture-secret",
-      csrfToken: "csrf-secret",
+      csrfToken: "fixture-csrf-secret",
       prompt: "private prompt",
       input_images: ["https://example.com/a.png?signature=secret"]
     });
@@ -65,33 +65,33 @@ describe("redactForLog", () => {
     const testLogger = createLogger("info", stream);
 
     testLogger.info({
-      authorization: "Bearer top-level-secret",
-      cookie: "top-level-cookie-secret",
-      csrfToken: "csrf-secret",
-      originPin: "origin-pin-secret",
+      authorization: "Bearer fixture-top-level-secret",
+      cookie: "fixture-top-level-cookie-secret",
+      csrfToken: "fixture-csrf-secret",
+      originPin: "fixture-origin-pin-secret",
       prompt: "private prompt",
       input_images: ["https://example.com/image.png?media-secret=yes#fragment-secret"],
       callbackUrl: "https://example.com/callback?query-secret=yes#fragment-secret",
       req: {
         method: "POST",
         url: "/v1/images?request-secret=yes#fragment-secret",
-        headers: { authorization: "Bearer request-secret", cookie: "request-cookie-secret" },
+        headers: { authorization: "Bearer fixture-request-secret", cookie: "fixture-request-cookie-secret" },
         body: { prompt: "body-secret" }
       },
       res: {
         statusCode: 201,
-        headers: { "set-cookie": "response-cookie-secret" },
+        headers: { "set-cookie": "fixture-response-cookie-secret" },
         body: { output: "body-secret" }
       },
       err: { code: "safe_error_code", stack: "private-stack" },
-      nested: { cause: { cookie: "nested-cookie-secret" } }
+      nested: { cause: { cookie: "fixture-nested-cookie-secret" } }
     }, "safe log");
 
     const serialized = output.join("");
     for (const secret of [
-      "top-level-secret", "top-level-cookie-secret", "csrf-secret", "origin-pin-secret",
+      "fixture-top-level-secret", "fixture-top-level-cookie-secret", "fixture-csrf-secret", "fixture-origin-pin-secret",
       "private prompt", "media-secret", "query-secret", "fragment-secret", "request-secret",
-      "request-cookie-secret", "body-secret", "response-cookie-secret", "private-stack", "nested-cookie-secret"
+      "fixture-request-cookie-secret", "body-secret", "fixture-response-cookie-secret", "private-stack", "fixture-nested-cookie-secret"
     ]) {
       expect(serialized).not.toContain(secret);
     }
@@ -124,7 +124,7 @@ describe("redactForLog", () => {
       createLogger("info", stream).info({
         err: {
           code: "safe_error_code",
-          stack: "Error: Bearer stack-secret Cookie cookie-stack-secret prompt stack-prompt-secret\n    at safeFrame (app.ts:1:1)"
+          stack: "Error: Bearer fixture-stack-secret Cookie fixture-cookie-stack-secret prompt fixture-stack-prompt-secret\n    at safeFrame (app.ts:1:1)"
         }
       }, "safe log");
     } finally {
@@ -136,7 +136,7 @@ describe("redactForLog", () => {
     }
 
     const serialized = output.join("");
-    for (const secret of ["stack-secret", "cookie-stack-secret", "stack-prompt-secret"]) {
+    for (const secret of ["fixture-stack-secret", "fixture-cookie-stack-secret", "fixture-stack-prompt-secret"]) {
       expect(serialized).not.toContain(secret);
     }
     expect(JSON.parse(serialized)).toMatchObject({

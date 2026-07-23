@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LingjingClient } from "../../src/lingjing/client.js";
@@ -9,13 +9,16 @@ import { CookieFileProvider } from "../../src/session/cookie-file-provider.js";
 import { StorageStateProvider } from "../../src/session/storage-state-provider.js";
 import { LingjingUploadService } from "../../src/uploads/upload-service.js";
 import { MockLingjing } from "../helpers/mock-lingjing.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const mocks: MockLingjing[] = [];
 const directories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(mocks.splice(0).map((mock) => mock.dispatcher.close()));
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  for (const directory of directories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 async function createClientWithSessionMode(mode: "browser-state" | "cookie-file" = "browser-state") {
@@ -75,7 +78,7 @@ describe("LingjingClient contract", () => {
     const { client, mock } = await createClientWithSessionMode();
     mock.respondWithResult({ single: { uploadId: "upload-credentials", uploadUrl: "https://object-storage.example/signed-part" } });
     await client.uploadApi("/joycreator/upload/init", { method: "POST", body: Buffer.from("init"), timeoutMs: 5_000 });
-    await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "leak", cookie: "leak", origin: "leak", referer: "leak", "x-csrf-token": "leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
+    await client.putSigned(new URL("https://object-storage.example/signed-part"), { method: "PUT", headers: { "content-type": "image/png", authorization: "fixture-leak", cookie: "fixture-leak", origin: "fixture-leak", referer: "fixture-leak", "x-csrf-token": "fixture-leak" }, body: Buffer.from("fixture"), timeoutMs: 5_000 });
     expect(mock.objectStorageHeaders.cookie).toBeUndefined();
     expect(mock.objectStorageHeaders["x-csrf-token"]).toBeUndefined();
     expect(mock.objectStorageHeaders.authorization).toBeUndefined();

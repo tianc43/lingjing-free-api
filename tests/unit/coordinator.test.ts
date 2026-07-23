@@ -403,7 +403,7 @@ describe("LingjingGenerationCoordinator", () => {
     app.addPersistedAsset({
       payload,
       submittedAt: 0,
-      taskId: "deadline-task",
+      taskId: "fixture-deadline-task",
       creationCode: "deadline-creation"
     });
     const gate = app.blockNextAssetRead();
@@ -460,7 +460,7 @@ describe("LingjingGenerationCoordinator", () => {
     app.addPersistedAsset({
       payload,
       submittedAt,
-      taskId: "bounded-lock-task",
+      taskId: "fixture-bounded-lock-task",
       creationCode: "bounded-lock-creation"
     });
     const gate = app.blockNextAssetRead();
@@ -515,10 +515,10 @@ describe("LingjingGenerationCoordinator", () => {
     app.addPersistedAsset({
       payload,
       submittedAt: 0,
-      taskId: "processing-lease-task",
+      taskId: "fixture-processing-lease-task",
       creationCode: "processing-lease-creation"
     });
-    app.setTaskStatuses("processing-lease-task", [0]);
+    app.setTaskStatuses("fixture-processing-lease-task", [0]);
 
     await app.coordinator.resume(unknown.id);
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -530,7 +530,7 @@ describe("LingjingGenerationCoordinator", () => {
     app.capacity.expireUnknown(now);
 
     const remainedActive = app.capacity.activeJobIds().includes(unknown.id);
-    app.setTaskStatuses("processing-lease-task", [1]);
+    app.setTaskStatuses("fixture-processing-lease-task", [1]);
     await app.registry.waitUntilIdle();
     expect(remainedActive).toBe(true);
     expect(app.repository.findById(unknown.id)?.status).toBe("completed");

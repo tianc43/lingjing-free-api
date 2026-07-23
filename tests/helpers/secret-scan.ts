@@ -12,30 +12,41 @@ export interface SecurityInput {
   content: string;
 }
 
-const SAFE_TOKEN_PREFIXES = [
-  "fixture-",
-  "change-me",
-  "${",
-  "$env:",
-  "$LINGJING_"
-];
 const SECRET_NAMES = new Set([
   "authorization",
+  "apikey",
   "cookie",
   "csrftoken",
-  "pt_key",
-  "pt_pin",
-  "lingjing_api_key",
+  "ptkey",
+  "ptpin",
+  "lingjingapikey",
   "originpin",
+  "storagestate",
   "taskid"
 ]);
 
+function normalizeSecretName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/gu, "");
+}
+
 function isSafeToken(value: string): boolean {
-  const normalized = value.trim().replace(/^Bearer\s+/iu, "");
-  return normalized.length === 0
-    || SAFE_TOKEN_PREFIXES.some((prefix) =>
-      normalized.toLowerCase().startsWith(prefix.toLowerCase())
-    );
+  const normalized = value
+    .trim()
+    .replace(/^Bearer\s+/iu, "")
+    .replace(/^["'`]|["'`,;]$/gu, "");
+  const directlySafe = normalized.length === 0
+    || normalized.startsWith("fixture-")
+    || normalized === "change-me"
+    || normalized === "[REDACTED]"
+    || /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/u.test(normalized)
+    || /^\$env:[A-Z][A-Z0-9_]*$/u.test(normalized)
+    || /^\$[A-Z][A-Z0-9_]*$/u.test(normalized);
+  if (directlySafe) return true;
+  const cookieParts = normalized.split(";").map((part) => part.trim());
+  return cookieParts.length > 0 && cookieParts.every((part) => {
+    const separator = part.indexOf("=");
+    return separator > 0 && isSafeToken(part.slice(separator + 1));
+  });
 }
 
 function walkJson(
@@ -53,7 +64,7 @@ function walkJson(
   if (typeof value !== "object" || value === null) return;
   const record = value as Record<string, unknown>;
   const cookieName = typeof record.name === "string"
-    ? record.name.toLowerCase()
+    ? normalizeSecretName(record.name)
     : "";
   if (
     SECRET_NAMES.has(cookieName)
@@ -63,12 +74,10 @@ function walkJson(
     violations.push(`${source}:${path}.value contains non-fixture credential`);
   }
   for (const [key, item] of Object.entries(record)) {
-    const normalizedKey = key.toLowerCase();
-    if (
-      SECRET_NAMES.has(normalizedKey)
-      && typeof item === "string"
-      && !isSafeToken(item)
-    ) {
+    const normalizedKey = normalizeSecretName(key);
+    if (SECRET_NAMES.has(normalizedKey) && (
+      typeof item === "string" || typeof item === "number"
+    ) && !isSafeToken(String(item))) {
       violations.push(`${source}:${path}.${key} contains non-fixture credential`);
     }
     walkJson(item, source, `${path}.${key}`, violations);
@@ -77,7 +86,7 @@ function walkJson(
 
 function scanText(input: SecurityInput, violations: string[]): void {
   const cookieAssignments =
-    /\b(?:pt_key|pt_pin|csrfToken)=([^;\s"'`]+)/giu;
+    /\b(?:pt[_-]?key|pt[_-]?pin|csrf[_-]?token)=([^;\s"'`]+)/giu;
   for (const match of input.content.matchAll(cookieAssignments)) {
     const value = match[1];
     if (value !== undefined && !isSafeToken(value)) {
@@ -95,15 +104,42 @@ function scanText(input: SecurityInput, violations: string[]): void {
       );
     }
   }
-  const downstreamKey =
-    /\bLINGJING_API_KEY\s*[:=]\s*["']?([A-Za-z0-9_-]{16,})/gu;
-  for (const match of input.content.matchAll(downstreamKey)) {
-    const value = match[1];
+  const quotedAssignments =
+    /\b(?:origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|authorization|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|`([^`\r\n]*)`)/giu;
+  for (const match of input.content.matchAll(quotedAssignments)) {
+    const value = match[1] ?? match[2] ?? match[3];
     if (value !== undefined && !isSafeToken(value)) {
       violations.push(
-        `${input.name} contains non-fixture downstream API key`
+        `${input.name} contains non-fixture sensitive assignment`
       );
     }
+  }
+  if (/\.(?:env|ya?ml|md|txt|log)$/iu.test(input.name)) {
+    const bareAssignments =
+      /^\s*(?:-\s*)?(?:origin[_-]?pin|task[_-]?id|cookie|csrf[_-]?token|pt[_-]?key|pt[_-]?pin|(?:lingjing[_-]?)?api[_-]?key|storage[_-]?state)\s*[:=]\s*([^\s#,\]]+)/gimu;
+    for (const match of input.content.matchAll(bareAssignments)) {
+      const value = match[1];
+      if (value !== undefined && !isSafeToken(value)) {
+        violations.push(
+          `${input.name} contains non-fixture sensitive assignment`
+        );
+      }
+    }
+    const bareAuthorization =
+      /^\s*(?:-\s*)?authorization\s*[:=]\s*(?:Bearer\s+)?([^\s#,\]]+)/gimu;
+    for (const match of input.content.matchAll(bareAuthorization)) {
+      const value = match[1];
+      if (value !== undefined && !isSafeToken(value)) {
+        violations.push(
+          `${input.name} contains non-fixture sensitive assignment`
+        );
+      }
+    }
+  }
+  const jdMediaUrl =
+    /\bhttps?:\/\/(?:[a-z0-9-]+\.)?(?:360buyimg\.com|jcloudcs\.com|jdcdn\.com|jdcloud-oss\.com)\/[^\s"'<>)]*/giu;
+  if (jdMediaUrl.test(input.content)) {
+    violations.push(`${input.name} contains a JD media URL`);
   }
   try {
     const parsed = JSON.parse(input.content) as unknown;
@@ -188,6 +224,12 @@ export function collectProjectSecurityInputs(
   projectRoot: string,
   captured: readonly SecurityInput[] = []
 ): SecurityInput[] {
+  const npm = npmCommand();
+  execFileSync(
+    npm.executable,
+    [...npm.prefix, "run", "build", "--silent"],
+    { cwd: projectRoot, encoding: "utf8" }
+  );
   const tracked = execFileSync(
     "git",
     ["ls-files", "-z", "--", "."],
@@ -203,7 +245,6 @@ export function collectProjectSecurityInputs(
       content: readFileSync(path, "utf8")
     });
   }
-  const npm = npmCommand();
   const packageDryRun = execFileSync(
     npm.executable,
     [...npm.prefix, "pack", "--dry-run", "--json"],

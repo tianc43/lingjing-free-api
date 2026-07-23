@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,13 +8,14 @@ import {
   shutdownServer
 } from "../../src/index.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 describe("shutdownServer", () => {
   const directories: string[] = [];
 
   afterEach(() => {
     for (const directory of directories.splice(0)) {
-      rmSync(directory, { recursive: true, force: true });
+      removeTestDirectory(directory);
     }
   });
 

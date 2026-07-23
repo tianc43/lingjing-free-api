@@ -1,8 +1,9 @@
 import { Readable } from "node:stream";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { removeTestDirectory } from "./cleanup.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
@@ -476,7 +477,7 @@ export function createGenerationHarness(options: {
     close: async () => {
       await registry.waitUntilIdle();
       repository.close();
-      rmSync(directory, { recursive: true, force: true });
+      removeTestDirectory(directory);
     }
   };
 }

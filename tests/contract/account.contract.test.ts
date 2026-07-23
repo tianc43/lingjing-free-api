@@ -16,15 +16,15 @@ afterEach(async () => {
 
 describe("account aggregation", () => {
   it("uses four exact GET calls and keeps the private profile PIN out of responses and logs", async () => {
-    const originPin = "fixture pin/&?=中";
-    const encodedPin = "fixture+pin%2F%26%3F%3D%E4%B8%AD";
+    const originPin = "fixture- pin/&?=中";
+    const encodedPin = "fixture-+pin%2F%26%3F%3D%E4%B8%AD";
     const mock = new MockLingjing();
     mocks.push(mock);
     const session = mock.createSession("browser-state");
     session.setProfileOriginPin(originPin);
     await session.seed();
     mock.respondToPath("/api/user/describeBaseInfo", {
-      originPin: "malicious-base-info-pin",
+      originPin: "fixture-malicious-base-info-pin",
       selectedSpaceId: 999
     });
     mock.respondToPath("/joycreator/team/space/menu/list", [

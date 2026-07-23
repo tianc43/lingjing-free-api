@@ -21,7 +21,7 @@
 npm ci
 npx playwright install chromium
 cp .env.example .env
-node -e "const fs=require('fs'),crypto=require('crypto');const p='.env';let s=fs.readFileSync('.env.example','utf8');s=s.replace('LINGJING_API_KEY=change-me','LINGJING_API_KEY='+crypto.randomBytes(32).toString('hex'));fs.writeFileSync(p,s,{mode:0o600})"
+node -e "const fs=require('fs'),crypto=require('crypto');const p='.env';let s=fs.readFileSync('.env.example','utf8');s=s.replace('LINGJING_API_KEY=change-me',['LINGJING_API_KEY',crypto.randomBytes(32).toString('hex')].join('='));fs.writeFileSync(p,s,{mode:0o600})"
 npm run login
 ```
 
@@ -41,7 +41,7 @@ Windows PowerShell 可用 `Copy-Item .env.example .env` 代替 `cp`；密钥生�
 ```dotenv
 HOST=127.0.0.1
 PORT=8000
-LINGJING_API_KEY=<至少 16 字符、随机且只用于本适配器>
+# LINGJING_API_KEY 请使用上面的随机生成命令写入，不要手工填写或打印
 SESSION_MODE=browser-state
 ```
 

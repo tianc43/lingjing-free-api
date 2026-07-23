@@ -1,13 +1,16 @@
 import { afterEach } from "vitest";
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { removeTestDirectory } from "./cleanup.js";
 
 const temporaryDirectories: string[] = [];
 const fixturesDirectory = new URL("../unit/fixtures/", import.meta.url);
 
-afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })));
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 export async function copyFixtureToTemporaryFile(name: string): Promise<string> {

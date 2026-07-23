@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -9,12 +9,13 @@ import { buildApp, type AppDependencies } from "../../src/app.js";
 import type { AppConfig } from "../../src/config.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
+import { removeTestDirectory } from "./cleanup.js";
 import type { AccountSnapshot } from "../../src/lingjing/account.js";
 import type { NormalizedModel, SourceType } from "../../src/models/types.js";
 import { createLogger } from "../../src/logging.js";
 import { createTempBudget } from "../../src/media/temp-budget.js";
 
-const API_KEY = "downstream-secret";
+const API_KEY = "fixture-downstream-secret";
 
 export const imageModel: NormalizedModel = {
   id: "upstream-image-id",
@@ -147,7 +148,7 @@ export async function createTestApp(
       mode: "browser-state",
       load: vi.fn(),
       loadProfile: vi.fn(() => Promise.resolve({
-        originPin: "private-pin"
+        originPin: "fixture-private-pin"
       })),
       applySetCookies: vi.fn(),
       describe: () => ({
@@ -213,12 +214,7 @@ export async function createTestApp(
     close: async () => {
       await app.close();
       repository.close();
-      rmSync(directory, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 20
-      });
+      removeTestDirectory(directory);
     }
   };
 }

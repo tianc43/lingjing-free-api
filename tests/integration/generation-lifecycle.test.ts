@@ -141,13 +141,13 @@ describe("generation lifecycle", () => {
     app.addPersistedAsset({
       payload,
       submittedAt,
-      taskId: "ambiguous-restart-a",
+      taskId: "fixture-ambiguous-restart-a",
       creationCode: "ambiguous-restart-a"
     });
     app.addPersistedAsset({
       payload,
       submittedAt,
-      taskId: "ambiguous-restart-b",
+      taskId: "fixture-ambiguous-restart-b",
       creationCode: "ambiguous-restart-b"
     });
     const recovery = new StartupRecovery({

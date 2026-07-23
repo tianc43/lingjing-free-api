@@ -413,7 +413,7 @@ describe("chat completions SSE", () => {
     const request = httpRequest(`${address}/v1/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: "Bearer downstream-secret",
+        authorization: "Bearer fixture-downstream-secret",
         "content-type": "application/json"
       }
     }, (response) => {
@@ -465,7 +465,7 @@ describe("chat completions SSE", () => {
     const request = httpRequest(`${address}/v1/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: "Bearer downstream-secret",
+        authorization: "Bearer fixture-downstream-secret",
         "content-type": "application/json"
       }
     }, (response) => {

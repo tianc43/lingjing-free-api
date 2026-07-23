@@ -448,17 +448,23 @@ implements GenerationCoordinator {
                 throw cause;
               }
             }
+            this.pollerAbort.signal.throwIfAborted();
             const discovering = this.transition(
               submitting.id,
               ["submitting"],
               { status: "discovering" }
             );
-            return this.discoverer.discover(discovering, baselineIds);
+            return this.discoverer.discover(
+              discovering,
+              baselineIds,
+              this.pollerAbort.signal
+            );
           })
         );
       } catch (cause) {
         const current = this.options.repository.findById(job.id);
         if (current?.status !== "discovering") throw cause;
+        this.pollerAbort.signal.throwIfAborted();
         const holdUntil = this.now() + this.options.unknownCapacityHoldMs;
         const unknown = this.persistUnknown(
           current.id,

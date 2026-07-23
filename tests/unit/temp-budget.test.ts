@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,15 +8,14 @@ import {
   createPreparedTempFileFromBuffer,
   createPreparedTempFileFromStream
 } from "../../src/media/temp-files.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true })
-    )
-  );
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 async function testDirectory(): Promise<string> {

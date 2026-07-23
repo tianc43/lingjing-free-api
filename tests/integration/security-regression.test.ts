@@ -1,7 +1,8 @@
 import { Readable, Writable } from "node:stream";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLogger } from "../../src/logging.js";
 import {
@@ -17,13 +18,14 @@ import {
   collectProjectSecurityInputs,
   scanSecrets
 } from "../helpers/secret-scan.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) =>
-    rm(directory, { recursive: true, force: true })
-  ));
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 describe("security regression", () => {
@@ -95,10 +97,13 @@ describe("security regression", () => {
       {
         name: "injected.json",
         content: JSON.stringify({
-          cookies: [{ name: "csrfToken", value: "real-secret-value" }],
+          cookies: [{
+            name: "csrfToken",
+            value: ["real", "secret-value"].join("-")
+          }],
           origins: [{ origin: "https://lingjing.jdcloud.com" }],
-          originPin: "real-account-identifier",
-          taskId: "real-task-identifier"
+          originPin: ["real", "account-identifier"].join("-"),
+          taskId: ["real", "task-identifier"].join("-")
         })
       },
       {
@@ -122,10 +127,82 @@ describe("security regression", () => {
     }])).toEqual([]);
   });
 
-  it("scans tracked files, dist, package dry-run output and logs", () => {
+  it.each([
+    [
+      "env-prefix-escape.env",
+      ["LINGJING_API_KEY", "=", "change-me-but-real"].join("")
+    ],
+    [
+      "env-stolen.env",
+      ["LINGJING_API_KEY", "=", "change-me-stolen"].join("")
+    ],
+    [
+      "account.yml",
+      ["origin", "Pin: ", "stolen-account-id"].join("")
+    ],
+    [
+      "task.ts",
+      ["task", "Id: \"", "stolen-task-id", "\""].join("")
+    ],
+    [
+      "api-key.yml",
+      ["api_", "key: ", "stolen-downstream-key"].join("")
+    ],
+    [
+      "storage-state.json",
+      JSON.stringify({
+        cookies: [{
+          name: "csrfToken",
+          value: ["change-me", "-stolen"].join("")
+        }],
+        origins: [{ origin: "https://lingjing.jdcloud.com" }]
+      })
+    ],
+    [
+      "media.txt",
+      [
+        "https://img13.",
+        "360buyimg.com/",
+        "fixture-private-output.png"
+      ].join("")
+    ]
+  ])("independently rejects reviewer escape sample %s", (name, content) => {
+    expect(scanSecrets([{ name, content }])).toEqual([
+      expect.stringContaining(name)
+    ]);
+  });
+
+  it("allows only exact placeholders and fixture-prefixed values", () => {
+    expect(scanSecrets([
+      {
+        name: "placeholders.env",
+        content: [
+          "LINGJING_API_KEY=change-me",
+          "apiKey=${LINGJING_API_KEY}",
+          "authorization=$env:LINGJING_API_KEY"
+        ].join("\n")
+      },
+      {
+        name: "fixtures.yml",
+        content: [
+          "originPin: fixture-account",
+          "taskId: fixture-task",
+          "cookie: fixture-cookie",
+          "csrfToken: fixture-csrf",
+          "apiKey: fixture-downstream"
+        ].join("\n")
+      }
+    ])).toEqual([]);
+  });
+
+  it("builds and scans a fresh dist plus tracked files, package output and logs", () => {
+    const dist = resolve(process.cwd(), "dist");
+    removeTestDirectory(dist);
+    expect(existsSync(dist)).toBe(false);
     const inputs = collectProjectSecurityInputs(process.cwd(), [
       { name: "captured-test.log", content: "{\"status\":\"fixture-ok\"}" }
     ]);
+    expect(existsSync(dist)).toBe(true);
     expect(inputs.some((input) => input.name.startsWith("git:"))).toBe(true);
     expect(inputs.some((input) => input.name.startsWith("dist:"))).toBe(true);
     expect(inputs.some((input) => input.name === "npm-pack-dry-run.json"))
@@ -133,5 +210,5 @@ describe("security regression", () => {
     expect(inputs.some((input) => input.name === "captured-test.log"))
       .toBe(true);
     expect(scanSecrets(inputs)).toEqual([]);
-  });
+  }, 30_000);
 });

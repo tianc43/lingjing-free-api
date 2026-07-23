@@ -99,7 +99,7 @@ describe("system API", () => {
       Array.from({ length: 105 }, () => fixture.app.inject({
         method: "GET",
         url: "/v1/account",
-        headers: { authorization: "Bearer invalid-secret" }
+        headers: { authorization: "Bearer fixture-invalid-secret" }
       }))
     );
     for (const response of responses) {
@@ -164,7 +164,7 @@ describe("system API", () => {
       method: "POST",
       url: "/token/check",
       headers: {
-        authorization: "Bearer downstream-secret",
+        authorization: "Bearer fixture-downstream-secret",
         "content-type": "application/json"
       },
       payload: "{"
@@ -181,7 +181,7 @@ describe("system API", () => {
       method: "POST",
       url: "/token/check",
       headers: {
-        authorization: "Bearer downstream-secret",
+        authorization: "Bearer fixture-downstream-secret",
         "content-type": "application/json"
       },
       payload: JSON.stringify({ value: "x".repeat(20_000) })
@@ -230,7 +230,7 @@ describe("system API", () => {
       method: "POST",
       url: "/v1/images/generations?signature=query-secret",
       headers: {
-        authorization: "Bearer downstream-secret",
+        authorization: "Bearer fixture-downstream-secret",
         cookie: "csrfToken=fixture-cookie-secret"
       },
       payload: {

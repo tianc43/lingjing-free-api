@@ -1,18 +1,17 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareDataUri } from "../../src/media/data-uri.js";
 import { createTempBudget } from "../../src/media/temp-budget.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true })
-    )
-  );
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 async function testDirectory(): Promise<string> {

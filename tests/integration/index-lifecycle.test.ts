@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { startServer, type RunningServer } from "../../src/index.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -34,7 +35,7 @@ describe("server lifecycle", () => {
   afterEach(async () => {
     await runtime?.stop();
     if (directory !== undefined) {
-      rmSync(directory, { recursive: true, force: true });
+      removeTestDirectory(directory);
     }
   });
 
@@ -152,7 +153,7 @@ describe("server lifecycle", () => {
         resolve({
           data: {
             task: {
-              taskId: "seeded-task",
+              taskId: "fixture-seeded-task",
               status: 1,
               taskResults: [{
                 url: "https://example.invalid/late.png"

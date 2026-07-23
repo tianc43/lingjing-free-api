@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,29 +11,15 @@ import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
 import { StartupRecovery } from "../../src/jobs/recovery.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
-import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
-import type { JobStatus, NewJob } from "../../src/jobs/types.js";
+import type { JobRecord } from "../../src/jobs/types.js";
+import { SubmitAmbiguousError } from "../../src/lingjing/error-map.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import type { NormalizedModel } from "../../src/models/types.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
+
+type Boundary = "submitting" | "discovering" | "processing";
 
 const directories: string[] = [];
-const payload = {
-  apiId: "fixture-api",
-  refId: "fixture-ref",
-  params: [{ idx: "1", values: "fixture restart prompt" }]
-};
-const upstreamFingerprint = fingerprintUpstreamPayload(payload);
-const fixtureJob: NewJob = {
-  kind: "image",
-  sourceType: "image-generation",
-  model: "fixture-model",
-  apiId: "fixture-api",
-  modelCode: "fixture-model-code",
-  expectedAssetScene: "image-generation",
-  requestFingerprint: "a".repeat(64),
-  idempotencyKeyHash: null,
-  spaceId: 0
-};
 const fixtureModel: NormalizedModel = {
   id: "fixture-api",
   apiId: "fixture-api",
@@ -59,60 +45,215 @@ const fixtureModel: NormalizedModel = {
 
 afterEach(() => {
   for (const directory of directories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+    removeTestDirectory(directory);
   }
 });
 
-function createDatabasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "lingjing-restart-full-"));
+function deferred(): {
+  promise: Promise<void>;
+  resolve(): void;
+} {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  if (resolvePromise === undefined) {
+    throw new Error("Deferred promise could not be initialized");
+  }
+  return { promise, resolve: resolvePromise };
+}
+
+function databasePath(): string {
+  const directory = mkdtempSync(join(tmpdir(), "lingjing-runtime-restart-"));
   directories.push(directory);
   return join(directory, "jobs.sqlite");
 }
 
-function persistedAt(
-  repository: SqliteJobRepository,
-  status: Extract<JobStatus, "submitting" | "discovering" | "processing">
-): string {
-  const created = repository.createOrGet(fixtureJob).job;
-  repository.transition(created.id, ["queued"], {
-    status: "submitting",
-    submittedAt: 10_000,
-    upstreamFingerprint
-  });
-  if (status !== "submitting") {
-    repository.transition(created.id, ["submitting"], {
-      status: "discovering"
-    });
-  }
-  if (status === "processing") {
-    repository.transition(created.id, ["discovering"], {
-      status: "processing",
-      upstreamTaskId: "fixture-task-restart",
-      creationCode: "fixture-creation-restart",
-      discoveredAt: 10_100
-    });
-  }
-  return created.id;
+function account(): {
+  describe(): Promise<{
+    subject: string;
+    spaceId: number;
+    membership: null;
+    maxConcurrency: number;
+    pointsBalance: number;
+    couponBalance: number;
+    availableAmount: number;
+    totalBalance: number;
+    resourcePackages: never[];
+  }>;
+} {
+  return {
+    describe: () => Promise.resolve({
+      subject: "fixture-subject",
+      spaceId: 0,
+      membership: null,
+      maxConcurrency: 5,
+      pointsBalance: 100,
+      couponBalance: 0,
+      availableAmount: 100,
+      totalBalance: 100,
+      resourcePackages: []
+    })
+  };
 }
 
-function recoveryTransport(submitCount: { value: number }): LingjingTransport {
+function coordinatorFor(
+  repository: SqliteJobRepository,
+  registry: JobRunnerRegistry,
+  transport: LingjingTransport
+): LingjingGenerationCoordinator {
+  return new LingjingGenerationCoordinator({
+    repository,
+    capacity: new CapacityManager(5),
+    registry,
+    transport,
+    account: account(),
+    catalog: { resolve: () => Promise.resolve(fixtureModel) },
+    prepareMedia: () => Promise.reject(new Error("No media expected")),
+    discoveryLock: new DiscoveryLock(),
+    assetDiscoveryTimeoutMs: 30,
+    unknownCapacityHoldMs: 100,
+    taskPollIntervalMs: 1,
+    sleep: () => Promise.resolve()
+  });
+}
+
+function asset(payload: unknown, submittedAt: number): Record<string, unknown> {
   return {
-    read: vi.fn((path: string) => {
-      if (path === "/joycreator/space/asset/list") {
+    id: "fixture-asset-restart",
+    scene: "image-generation",
+    modelCode: "fixture-model-code",
+    createTime: submittedAt + 1,
+    creationCode: "fixture-creation-restart",
+    taskId: "fixture-task-restart",
+    reqParam: payload,
+    status: 0
+  };
+}
+
+interface FirstRuntime {
+  repository: SqliteJobRepository;
+  coordinator: LingjingGenerationCoordinator;
+  registry: JobRunnerRegistry;
+  reached: Promise<void>;
+  release(): void;
+  submitCount(): number;
+  payload(): unknown;
+}
+
+function startFirstRuntime(
+  path: string,
+  boundary: Boundary
+): FirstRuntime {
+  const repository = new SqliteJobRepository(path);
+  const registry = new JobRunnerRegistry();
+  const gate = deferred();
+  const boundaryReached = deferred();
+  let assetReads = 0;
+  let submits = 0;
+  let submittedPayload: unknown;
+  let submittedAt = Date.now();
+  const transport = {
+    read: vi.fn(async (requestPath: string) => {
+      if (requestPath === "/joycreator/space/asset/list") {
+        assetReads += 1;
+        if (assetReads === 1) return { records: [] };
+        if (boundary === "discovering" && assetReads === 2) {
+          boundaryReached.resolve();
+          await gate.promise;
+          return { records: [] };
+        }
+        return { records: [asset(submittedPayload, submittedAt)] };
+      }
+      if (requestPath === "/openApi/modelmarket/describeUserTask") {
+        if (boundary === "processing") {
+          boundaryReached.resolve();
+          await gate.promise;
+        }
+        return {
+          data: {
+            task: {
+              taskId: "fixture-task-restart",
+              status: 1,
+              taskResults: [{
+                imageUrl: "https://media.example/fixture-restart.png",
+                width: 1024,
+                height: 1024
+              }]
+            }
+          }
+        };
+      }
+      throw new Error(`Unexpected first-runtime read ${requestPath}`);
+    }),
+    submitOnce: vi.fn(async (_requestPath: string, payload: unknown) => {
+      submits += 1;
+      submittedPayload = payload;
+      submittedAt = Date.now();
+      if (boundary === "submitting") {
+        boundaryReached.resolve();
+        await gate.promise;
+        throw new SubmitAmbiguousError();
+      }
+      return {};
+    }),
+    uploadApi: vi.fn(),
+    putSigned: vi.fn()
+  } as unknown as LingjingTransport;
+  const coordinator = coordinatorFor(repository, registry, transport);
+  void coordinator.create({
+    kind: "image",
+    sourceType: "image-generation",
+    model: "fixture-api",
+    values: { prompt: "fixture restart prompt" },
+    media: [],
+    idempotencyKey: `fixture-${boundary}-restart`
+  }).catch(() => undefined);
+  return {
+    repository,
+    coordinator,
+    registry,
+    reached: boundaryReached.promise,
+    release: () => {
+      gate.resolve();
+    },
+    submitCount: () => submits,
+    payload: () => submittedPayload
+  };
+}
+
+interface RecoveryEvidence {
+  job: JobRecord;
+  assetReads: number;
+  taskPolls: number;
+  submitCount: number;
+}
+
+async function recoverSecondRuntime(
+  path: string,
+  jobId: string,
+  payload: unknown
+): Promise<RecoveryEvidence> {
+  const repository = new SqliteJobRepository(path);
+  const registry = new JobRunnerRegistry();
+  let assetReads = 0;
+  let taskPolls = 0;
+  let submitCount = 0;
+  const persisted = repository.findById(jobId);
+  if (persisted?.submittedAt === null || persisted === null) {
+    repository.close();
+    throw new Error("Persisted runtime job has no submission time");
+  }
+  const transport = {
+    read: vi.fn((requestPath: string) => {
+      if (requestPath === "/joycreator/space/asset/list") {
+        assetReads += 1;
         return Promise.resolve({
-          records: [{
-            id: "fixture-asset-restart",
-            scene: "image-generation",
-            modelCode: "fixture-model-code",
-            createTime: 10_100,
-            creationCode: "fixture-creation-restart",
-            taskId: "fixture-task-restart",
-            reqParam: payload,
-            status: 0
-          }]
+          records: [asset(payload, persisted.submittedAt ?? 0)]
         });
       }
-      if (path === "/openApi/modelmarket/describeUserTask") {
+      if (requestPath === "/openApi/modelmarket/describeUserTask") {
+        taskPolls += 1;
         return Promise.resolve({
           data: {
             task: {
@@ -127,84 +268,29 @@ function recoveryTransport(submitCount: { value: number }): LingjingTransport {
           }
         });
       }
-      throw new Error(`Unexpected recovery path ${path}`);
+      throw new Error(`Unexpected second-runtime read ${requestPath}`);
     }),
     submitOnce: vi.fn(() => {
-      submitCount.value += 1;
+      submitCount += 1;
       return Promise.resolve({});
     }),
     uploadApi: vi.fn(),
     putSigned: vi.fn()
   } as unknown as LingjingTransport;
-}
-
-function coordinatorFor(
-  repository: SqliteJobRepository,
-  capacity: CapacityManager,
-  registry: JobRunnerRegistry,
-  transport: LingjingTransport
-): LingjingGenerationCoordinator {
-  return new LingjingGenerationCoordinator({
-    repository,
-    capacity,
-    registry,
-    transport,
-    account: {
-      describe: () => Promise.resolve({
-        subject: "fixture-subject",
-        spaceId: 0,
-        membership: null,
-        maxConcurrency: 5,
-        pointsBalance: 100,
-        couponBalance: 0,
-        availableAmount: 100,
-        totalBalance: 100,
-        resourcePackages: []
-      })
-    },
-    catalog: { resolve: () => Promise.resolve(fixtureModel) },
-    prepareMedia: () => Promise.reject(new Error("No media expected")),
-    discoveryLock: new DiscoveryLock(),
-    assetDiscoveryTimeoutMs: 50,
-    unknownCapacityHoldMs: 500,
-    taskPollIntervalMs: 1,
-    sleep: () => Promise.resolve()
-  });
-}
-
-async function restartAndRecover(
-  databasePath: string,
-  jobId: string,
-  submitCount: { value: number }
-): Promise<void> {
-  const repository = new SqliteJobRepository(databasePath);
-  const capacity = new CapacityManager(5);
-  const registry = new JobRunnerRegistry();
-  const transport = recoveryTransport(submitCount);
-  const coordinator = coordinatorFor(
-    repository,
-    capacity,
-    registry,
-    transport
-  );
+  const coordinator = coordinatorFor(repository, registry, transport);
   const recovery = new StartupRecovery({
     repository,
-    capacity,
+    capacity: new CapacityManager(5),
     registry,
     resumeJob: coordinator.recoveryResumeRunner,
-    unknownCapacityHoldMs: 500
+    unknownCapacityHoldMs: 100
   });
   try {
     await recovery.start();
     await recovery.waitUntilIdle();
-    expect(repository.findById(jobId)).toMatchObject({
-      status: "completed",
-      result: {
-        outputs: [{
-          url: "https://media.example/fixture-restart.png"
-        }]
-      }
-    });
+    const job = repository.findById(jobId);
+    if (job === null) throw new Error("Recovered job was not found");
+    return { job, assetReads, taskPolls, submitCount };
   } finally {
     recovery.close();
     coordinator.stopPollers();
@@ -212,132 +298,110 @@ async function restartAndRecover(
   }
 }
 
+function onlyJob(repository: SqliteJobRepository): JobRecord {
+  const job = repository.list({ limit: 2 })[0];
+  if (job === undefined) throw new Error("Runtime did not persist a job");
+  return job;
+}
+
 describe("durable restart recovery", () => {
-  it.each(["submitting", "discovering", "processing"] as const)(
-    "recovers from %s to the same result without another submit",
-    async (status) => {
-      const databasePath = createDatabasePath();
-      const first = new SqliteJobRepository(databasePath);
-      const jobId = persistedAt(first, status);
-      first.close();
-      const submits = { value: 0 };
+  it.each(["discovering", "processing"] as const)(
+    "uses a real first coordinator to stop at %s and a second runtime to finish without submit",
+    async (boundary) => {
+      const path = databasePath();
+      const first = startFirstRuntime(path, boundary);
+      await first.reached;
+      expect(onlyJob(first.repository).status).toBe(boundary);
+      first.coordinator.stopPollers();
+      first.release();
+      await first.registry.waitUntilIdle();
+      const stopped = onlyJob(first.repository);
+      const payload = first.payload();
+      expect(first.submitCount()).toBe(1);
+      first.repository.close();
 
-      await restartAndRecover(databasePath, jobId, submits);
-
-      expect(submits.value).toBe(0);
+      expect(stopped.status).toBe(boundary);
+      const recovered = await recoverSecondRuntime(
+        path,
+        stopped.id,
+        payload
+      );
+      expect(recovered.submitCount).toBe(0);
+      expect(recovered.taskPolls).toBeGreaterThan(0);
+      if (boundary === "discovering") {
+        expect(recovered.assetReads).toBeGreaterThan(0);
+      } else {
+        expect(recovered.assetReads).toBe(0);
+      }
+      expect(recovered.job).toMatchObject({
+        status: "completed",
+        result: {
+          outputs: [{
+            url: "https://media.example/fixture-restart.png"
+          }]
+        }
+      });
     }
   );
 
-  it("drains a submit written to the wire before closing SQLite and recovers without resubmit", async () => {
-    const databasePath = createDatabasePath();
-    const repository = new SqliteJobRepository(databasePath);
-    const capacity = new CapacityManager(5);
-    const registry = new JobRunnerRegistry();
-    let markWritten: (() => void) | undefined;
-    let releaseSubmit: (() => void) | undefined;
-    const written = new Promise<void>((resolve) => {
-      markWritten = resolve;
+  it("keeps the written-but-unconfirmed submit durable across a timed-out shutdown and recovers it in the second runtime", async () => {
+    const path = databasePath();
+    const first = startFirstRuntime(path, "submitting");
+    await first.reached;
+    const beforeShutdown = onlyJob(first.repository);
+    expect(beforeShutdown.status).toBe("submitting");
+    const app = {
+      close: () => Promise.resolve(),
+      server: { closeAllConnections: () => undefined }
+    };
+    const recovery = { close: () => undefined };
+
+    await expect(shutdownServer({
+      app,
+      registry: first.registry,
+      coordinator: first.coordinator,
+      recovery,
+      repository: first.repository,
+      submitDrainTimeoutMs: 5,
+      runnerIdleTimeoutMs: 100
+    })).rejects.toThrow("Timed out draining submit critical sections");
+    expect(onlyJob(first.repository).status).toBe("submitting");
+
+    first.coordinator.stopPollers();
+    first.release();
+    await first.registry.waitUntilIdle();
+    const stopped = onlyJob(first.repository);
+    const payload = first.payload();
+    expect(stopped.status).toBe("submitting");
+    await shutdownServer({
+      app,
+      registry: first.registry,
+      coordinator: first.coordinator,
+      recovery,
+      repository: first.repository,
+      submitDrainTimeoutMs: 100,
+      runnerIdleTimeoutMs: 100
     });
-    const submitGate = new Promise<void>((resolve) => {
-      releaseSubmit = resolve;
-    });
-    let submitCount = 0;
-    let submitted = false;
-    const transport = {
-      read: vi.fn((path: string) => {
-        if (path === "/joycreator/space/asset/list") {
-          return Promise.resolve({
-            records: submitted
-              ? [{
-                  id: "fixture-asset-restart",
-                  scene: "image-generation",
-                  modelCode: "fixture-model-code",
-                  createTime: Date.now() + 1,
-                  creationCode: "fixture-creation-restart",
-                  taskId: "fixture-task-restart",
-                  reqParam: payload,
-                  status: 0
-                }]
-              : []
-          });
-        }
-        if (path === "/openApi/modelmarket/describeUserTask") {
-          return Promise.resolve({
-            data: {
-              task: {
-                taskId: "fixture-task-restart",
-                status: 1,
-                taskResults: [{
-                  imageUrl: "https://media.example/fixture-restart.png",
-                  width: 1024,
-                  height: 1024
-                }]
-              }
-            }
-          });
-        }
-        throw new Error(`Unexpected shutdown path ${path}`);
-      }),
-      submitOnce: vi.fn(async () => {
-        submitCount += 1;
-        markWritten?.();
-        await submitGate;
-        submitted = true;
-        return {};
-      }),
-      uploadApi: vi.fn(),
-      putSigned: vi.fn()
-    } as unknown as LingjingTransport;
-    const coordinator = coordinatorFor(
-      repository,
-      capacity,
-      registry,
-      transport
+
+    const recovered = await recoverSecondRuntime(
+      path,
+      stopped.id,
+      payload
     );
-    const creation = coordinator.create({
-      kind: "image",
-      sourceType: "image-generation",
-      model: "fixture-api",
-      values: { prompt: "fixture restart prompt" },
-      media: [],
-      idempotencyKey: "fixture-shutdown-window"
+    expect(first.submitCount()).toBe(1);
+    expect(recovered.submitCount).toBe(0);
+    expect(recovered.assetReads).toBeGreaterThan(0);
+    expect(recovered.taskPolls).toBeGreaterThan(0);
+    expect(recovered.job.status).toBe("completed");
+    expect(recovered.job.result).toEqual({
+      outputs: [{
+        url: "https://media.example/fixture-restart.png",
+        posterUrl: null,
+        width: 1024,
+        height: 1024,
+        duration: null,
+        format: null
+      }]
     });
-    await written;
-    const persisted = repository.list({ status: "submitting", limit: 1 })[0];
-    expect(persisted?.status).toBe("submitting");
-
-    const shutdown = shutdownServer({
-      app: {
-        close: () => Promise.resolve(),
-        server: { closeAllConnections: () => undefined }
-      },
-      registry,
-      coordinator,
-      recovery: { close: () => undefined },
-      repository,
-      submitDrainTimeoutMs: 1_000,
-      runnerIdleTimeoutMs: 1_000
-    });
-    let shutdownSettled = false;
-    void shutdown.then(() => {
-      shutdownSettled = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(shutdownSettled).toBe(false);
-    expect(repository.findById(persisted?.id ?? "")?.status)
-      .toBe("submitting");
-
-    releaseSubmit?.();
-    await shutdown;
-    await creation.catch(() => undefined);
-    expect(submitCount).toBe(1);
-
-    const recoverySubmits = { value: 0 };
-    await restartAndRecover(
-      databasePath,
-      persisted?.id ?? "",
-      recoverySubmits
-    );
-    expect(recoverySubmits.value).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,12 +6,13 @@ import { LingjingTaskPoller } from "../../src/jobs/poller.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { JobRecord, NewJob } from "../../src/jobs/types.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const directories: string[] = [];
 
 afterEach(() => {
   for (const directory of directories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+    removeTestDirectory(directory);
   }
 });
 

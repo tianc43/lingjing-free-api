@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,17 +14,16 @@ import {
   type RemoteRequest
 } from "../../src/media/remote-fetcher.js";
 import { createTempBudget } from "../../src/media/temp-budget.js";
+import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const publicAnswer = [{ address: "93.184.216.34", family: 4 as const }];
 const fakeResolver: AddressResolver = () => Promise.resolve(publicAnswer);
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true })
-    )
-  );
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    removeTestDirectory(directory);
+  }
 });
 
 describe("remote media address policy", () => {
