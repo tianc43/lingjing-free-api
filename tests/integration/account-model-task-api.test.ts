@@ -324,14 +324,27 @@ describe("account, model, and task API", () => {
     })).statusCode).toBe(200);
   });
 
-  it("keeps root not-found handling outside the protected plugin", async () => {
-    const response = await fixture.app.inject({
-      method: "GET",
-      url: "/not-an-api-route"
-    });
-    expect(response.statusCode).toBe(404);
-    expect(response.json()).toMatchObject({
-      error: { code: "route_not_found" }
-    });
+  it("does not reveal unknown route existence before authentication", async () => {
+    for (const url of ["/does-not-exist", "/v1/not-a-real-route"]) {
+      const anonymous = await fixture.app.inject({
+        method: "GET",
+        url
+      });
+      expect(anonymous.statusCode).toBe(401);
+      expect(anonymous.headers["cache-control"]).toBe("no-store");
+      expect(anonymous.json()).toMatchObject({
+        error: { code: "invalid_api_key" }
+      });
+
+      const authorized = await authorizedInject(fixture.app, {
+        method: "GET",
+        url
+      });
+      expect(authorized.statusCode).toBe(404);
+      expect(authorized.headers["cache-control"]).toBe("no-store");
+      expect(authorized.json()).toMatchObject({
+        error: { code: "route_not_found" }
+      });
+    }
   });
 });

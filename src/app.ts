@@ -50,7 +50,15 @@ export async function buildApp(
   });
 
   registerErrorHandler(app);
-  app.setNotFoundHandler(() => {
+  app.setNotFoundHandler((request) => {
+    if (
+      !isAuthorized(
+        request.headers.authorization,
+        dependencies.config.apiKey
+      )
+    ) {
+      throw errors.authentication();
+    }
     throw new AppError(
       404,
       "invalid_request_error",
