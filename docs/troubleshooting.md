@@ -95,7 +95,7 @@ Get-Item -LiteralPath .\data\lingjing-backup.sqlite | Select-Object Name, Length
 ## Docker 启动与健康
 
 ```powershell
-docker compose config
+docker compose config --quiet
 docker compose up -d --wait
 docker compose ps
 docker compose logs --since 10m lingjing-free-api

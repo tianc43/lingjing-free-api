@@ -103,4 +103,21 @@ describe("operator documentation", () => {
       /(?:Get-Content|cat|type)\s+.*(?:cookie|storage-state|session-profile)/iu
     );
   });
+
+  it("never expands Compose configuration into operator output", async () => {
+    const documents = await Promise.all([
+      projectFile("README.md"),
+      projectFile("docs/protocol.md"),
+      projectFile("docs/security.md"),
+      projectFile("docs/troubleshooting.md")
+    ]);
+
+    for (const document of documents) {
+      for (const line of document.split(/\r?\n/u)) {
+        if (/^\s*docker compose(?:\s+-f\s+\S+)*\s+config\b/u.test(line)) {
+          expect(line).toContain("--quiet");
+        }
+      }
+    }
+  });
 });
