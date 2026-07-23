@@ -12,6 +12,7 @@ import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { AccountSnapshot } from "../../src/lingjing/account.js";
 import type { NormalizedModel, SourceType } from "../../src/models/types.js";
 import { createLogger } from "../../src/logging.js";
+import { createTempBudget } from "../../src/media/temp-budget.js";
 
 const API_KEY = "downstream-secret";
 
@@ -186,6 +187,17 @@ export async function createTestApp(
     capacity: new CapacityManager(5, 20),
     recovery: {
       ready: true
+    },
+    media: {
+      createRequestBudget: () => createTempBudget(
+        config.maxRequestMediaBytes
+      ),
+      prepareStream: () => Promise.reject(
+        new Error("Fixture media stream is not configured")
+      ),
+      fetchOutput: () => Promise.reject(
+        new Error("Fixture output fetch is not configured")
+      )
     },
     ...overrides
   };

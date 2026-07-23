@@ -8,6 +8,10 @@ import type { AccountService } from "../lingjing/account.js";
 import type { LingjingTransport } from "../lingjing/types.js";
 import type { CatalogService } from "../models/catalog.js";
 import type { SessionProvider } from "../session/types.js";
+import type {
+  PreparedMedia,
+  TempBudget
+} from "../media/types.js";
 
 export interface RecoveryService {
   readonly ready: boolean;
@@ -37,6 +41,22 @@ export interface AppDependencies {
   coordinator: GenerationCoordinator;
   capacity: Pick<CapacityManager, "counts">;
   recovery: RecoveryService;
+  media: {
+    createRequestBudget(): TempBudget;
+    prepareStream(
+      stream: NodeJS.ReadableStream,
+      options: {
+        filename: string;
+        contentType: string;
+        maxBytes: number;
+        requestBudget: TempBudget;
+      }
+    ): Promise<PreparedMedia>;
+    fetchOutput(
+      url: URL,
+      options: { kind: "image"; maxBytes: number }
+    ): Promise<PreparedMedia>;
+  };
 }
 
 export interface TaskResponse {

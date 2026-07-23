@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
+import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import Fastify, {
@@ -11,9 +12,11 @@ import Fastify, {
 import { isAuthorized } from "./api/auth.js";
 import { registerErrorHandler } from "./api/error-handler.js";
 import { registerAccountRoutes } from "./api/routes/account.js";
+import { registerImageRoutes } from "./api/routes/images.js";
 import { registerModelRoutes } from "./api/routes/models.js";
 import { registerSystemRoutes } from "./api/routes/system.js";
 import { registerTaskRoutes } from "./api/routes/tasks.js";
+import { registerVideoRoutes } from "./api/routes/videos.js";
 import {
   bearerSecurity,
   emptyQuerySchema,
@@ -107,6 +110,14 @@ export async function buildApp(
       keyGenerator: rateLimitKey,
       errorResponseBuilder: () => errors.rateLimited()
     });
+    await protectedApp.register(multipart, {
+      limits: {
+        files: 14,
+        fields: 50,
+        parts: 64,
+        fileSize: dependencies.config.maxImageBytes
+      }
+    });
 
     if (dependencies.config.docsEnabled) {
       await protectedApp.register(swaggerUi, {
@@ -115,8 +126,10 @@ export async function buildApp(
     }
 
     registerAccountRoutes(protectedApp, dependencies);
+    registerImageRoutes(protectedApp, dependencies);
     registerModelRoutes(protectedApp, dependencies);
     registerTaskRoutes(protectedApp, dependencies);
+    registerVideoRoutes(protectedApp, dependencies);
 
     if (dependencies.config.docsEnabled) {
       protectedApp.get("/openapi.json", {

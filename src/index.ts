@@ -5,6 +5,7 @@ import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import type { AppDependencies } from "./api/types.js";
+import { createRequestMediaBudget } from "./api/multipart.js";
 import { parseConfig } from "./config.js";
 import {
   LingjingGenerationCoordinator
@@ -25,6 +26,7 @@ import { prepareDataUri } from "./media/data-uri.js";
 import { RemoteMediaFetcher } from "./media/remote-fetcher.js";
 import { createTempBudget } from "./media/temp-budget.js";
 import { createPreparedTempFileFromBuffer } from "./media/temp-files.js";
+import { createPreparedTempFileFromStream } from "./media/temp-files.js";
 import type { MediaInput, PreparedMedia } from "./media/types.js";
 import { CatalogService } from "./models/catalog.js";
 import { createSessionProvider } from "./session/create-provider.js";
@@ -172,6 +174,32 @@ export async function startServer(
   try {
     await mkdir(tempDirectory, { recursive: true });
     const globalTempBudget = createTempBudget(config.maxTempBytes);
+    const media = {
+      createRequestBudget: () => createRequestMediaBudget(
+        config.maxRequestMediaBytes
+      ),
+      prepareStream: (
+        stream: NodeJS.ReadableStream,
+        options: {
+          filename: string;
+          contentType: string;
+          maxBytes: number;
+          requestBudget: ReturnType<typeof createTempBudget>;
+        }
+      ) => createPreparedTempFileFromStream(stream, {
+        ...options,
+        tempDirectory,
+        tempBudget: globalTempBudget
+      }),
+      fetchOutput: (
+        url: URL,
+        options: { kind: "image"; maxBytes: number }
+      ) => new RemoteMediaFetcher({
+        tempDirectory,
+        tempBudget: globalTempBudget,
+        requestBudget: createTempBudget(config.maxRequestMediaBytes)
+      }).fetch(url, options)
+    };
     const prepareMedia = async (input: MediaInput): Promise<PreparedMedia> => {
       if (input.source.type === "prepared") return input.source.media;
       const maxBytes = maxMediaBytes(input, config);
@@ -264,7 +292,8 @@ export async function startServer(
       repository,
       coordinator,
       capacity,
-      recovery
+      recovery,
+      media
     };
     const app = await buildApp(dependencies);
     startupCleanup = () => shutdownServer({

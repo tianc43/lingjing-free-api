@@ -198,7 +198,7 @@ describe("system API", () => {
   it("returns a no-store OpenAI error for unknown protected routes", async () => {
     const response = await authorizedInject(fixture.app, {
       method: "POST",
-      url: "/v1/images/generations?signature=query-secret",
+      url: "/v1/not-a-generation-route?signature=query-secret",
       payload: { prompt: "private fixture prompt" }
     });
     expect(response.statusCode).toBe(404);
