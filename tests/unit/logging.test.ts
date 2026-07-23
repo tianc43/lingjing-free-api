@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { redactForLog } from "../../src/logging.js";
+import { Writable } from "node:stream";
+import { createLogger, redactForLog } from "../../src/logging.js";
 
 describe("redactForLog", () => {
   it("removes credentials, prompts, media and URL queries", () => {
@@ -17,6 +18,61 @@ describe("redactForLog", () => {
       csrfToken: "[REDACTED]",
       prompt: "[TEXT length=14]",
       input_images: "[MEDIA count=1]"
+    });
+  });
+
+  it("redacts real Pino output and emits only safe serializer fields outside development", () => {
+    const output: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        output.push(chunk.toString("utf8"));
+        callback();
+      }
+    });
+    const testLogger = createLogger("info", stream);
+
+    testLogger.info({
+      authorization: "Bearer top-level-secret",
+      cookie: "top-level-cookie-secret",
+      csrfToken: "csrf-secret",
+      originPin: "origin-pin-secret",
+      prompt: "private prompt",
+      input_images: ["https://example.com/image.png?media-secret=yes#fragment-secret"],
+      callbackUrl: "https://example.com/callback?query-secret=yes#fragment-secret",
+      req: {
+        method: "POST",
+        url: "/v1/images?request-secret=yes#fragment-secret",
+        headers: { authorization: "Bearer request-secret", cookie: "request-cookie-secret" },
+        body: { prompt: "body-secret" }
+      },
+      res: {
+        statusCode: 201,
+        headers: { "set-cookie": "response-cookie-secret" },
+        body: { output: "body-secret" }
+      },
+      err: { code: "safe_error_code", stack: "private-stack" },
+      nested: { cause: { cookie: "nested-cookie-secret" } }
+    }, "safe log");
+
+    const serialized = output.join("");
+    for (const secret of [
+      "top-level-secret", "top-level-cookie-secret", "csrf-secret", "origin-pin-secret",
+      "private prompt", "media-secret", "query-secret", "fragment-secret", "request-secret",
+      "request-cookie-secret", "body-secret", "response-cookie-secret", "private-stack", "nested-cookie-secret"
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+
+    expect(JSON.parse(serialized)).toMatchObject({
+      req: { method: "POST", pathname: "/v1/images" },
+      res: { statusCode: 201 },
+      err: { code: "safe_error_code" },
+      csrfToken: "[REDACTED]",
+      originPin: "[REDACTED]",
+      prompt: "[REDACTED]",
+      input_images: "[REDACTED]",
+      callbackUrl: "https://example.com/callback",
+      nested: { cause: "[REDACTED]" }
     });
   });
 });

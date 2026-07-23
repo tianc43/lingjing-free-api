@@ -1,4 +1,4 @@
-import pino, { type Logger, type LoggerOptions } from "pino";
+import pino, { type DestinationStream, type Logger, type LoggerOptions } from "pino";
 
 const REDACTED = "[REDACTED]";
 const secretKeys = new Set([
@@ -100,8 +100,9 @@ const loggerOptions: LoggerOptions = {
   }
 };
 
-export function createLogger(level = "info"): Logger {
-  return pino({ ...loggerOptions, level });
+export function createLogger(level = "info", destination?: DestinationStream): Logger {
+  const options = { ...loggerOptions, level };
+  return destination === undefined ? pino(options) : pino(options, destination);
 }
 
 export const logger = createLogger();
