@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -577,4 +578,54 @@ describe("SqliteJobRepository", () => {
     expect(() => repository.recoverable()).toThrowError(/closed/u);
     expect(rawJob(databasePath, "job_missing")).toBeUndefined();
   });
+
+  it("fails closed quickly when a reader prevents WAL truncation", () => {
+    const databasePath = temporaryDatabasePath();
+    const movedDatabasePath = join(dirname(databasePath), "closed.sqlite");
+    const repository = new SqliteJobRepository(databasePath);
+    repository.createOrGet(fixtureNewJob);
+    const reader = new Database(databasePath, { readonly: true });
+    reader.exec("BEGIN");
+    reader.prepare("SELECT COUNT(*) FROM jobs").get();
+    repository.createOrGet({ ...fixtureNewJob, kind: "video" });
+
+    const startedAt = Date.now();
+    let closeError: unknown;
+    try {
+      repository.close();
+    } catch (cause) {
+      closeError = cause;
+    }
+    const elapsed = Date.now() - startedAt;
+
+    try {
+      if (!(closeError instanceof Error)) {
+        throw new Error("Expected close to fail with an Error");
+      }
+      expect(closeError.message).toMatch(/WAL checkpoint.*incomplete/u);
+      expect(elapsed).toBeLessThan(2_000);
+      expect(() => repository.findById("job_missing")).toThrowError(/closed/u);
+      expect(() => {
+        repository.close();
+      }).not.toThrow();
+    } finally {
+      reader.exec("ROLLBACK");
+      reader.close();
+    }
+
+    const recovery = new Database(databasePath);
+    const checkpoint = recovery.pragma("wal_checkpoint(TRUNCATE)") as Array<{
+      busy: number;
+      log: number;
+      checkpointed: number;
+    }>;
+    expect(checkpoint).toEqual([{ busy: 0, log: 0, checkpointed: 0 }]);
+    expect(recovery.prepare("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({
+      count: 2
+    });
+    recovery.close();
+
+    renameSync(databasePath, movedDatabasePath);
+    expect(readFileSync(movedDatabasePath).byteLength).toBeGreaterThan(0);
+  }, 15_000);
 });
