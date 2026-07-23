@@ -1,10 +1,9 @@
-import { readFile, readdir } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StorageStateProvider } from "../../src/session/storage-state-provider.js";
 import { CookieFileProvider } from "../../src/session/cookie-file-provider.js";
 import { atomicWritePrivateJson, atomicWritePrivateJsonPair } from "../../src/session/atomic-write.js";
-import { stat } from "node:fs/promises";
 import {
   copyFixtureToTemporaryFile,
   failingAtomicWriter,
@@ -103,6 +102,20 @@ describe("session providers", () => {
     expect(state.cookies.filter((cookie) => cookie.name === "fixture_session")).toHaveLength(1);
   });
 
+  it("serializes positive Max-Age as an absolute expiry and leaves missing SameSite unset", async () => {
+    const browserPath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    const provider = new StorageStateProvider(browserPath, profilePath, undefined, new URL(origin));
+    const before = Math.floor(Date.now() / 1000);
+    await provider.load();
+    await provider.applySetCookies(new URL(origin), ["max-age-cookie=value; Max-Age=120; Path=/; Secure"]);
+    const state = await readValidStorageState(browserPath) as { cookies: Array<{ name: string; expires: number; sameSite?: string }> };
+    const cookie = state.cookies.find((item) => item.name === "max-age-cookie");
+    expect(cookie?.expires).toBeGreaterThanOrEqual(before + 119);
+    expect(cookie?.expires).toBeLessThanOrEqual(before + 121);
+    expect(cookie).not.toHaveProperty("sameSite");
+  });
+
   it("creates missing private-writer parent directories with restrictive permissions", async () => {
     const directory = await copyFixtureToTemporaryFile("session-profile.json");
     const target = `${directory}.parent/auth/profile.json`;
@@ -145,5 +158,84 @@ describe("session providers", () => {
     await expect(readFile(storagePath, "utf8")).rejects.toBeDefined();
     await expect(readFile(profilePath, "utf8")).rejects.toBeDefined();
     expect((await readdir(directory)).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
+  });
+
+  it("cleans every temporary file when preparing the second file fails", async () => {
+    const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    const beforeStorage = await readFile(storagePath, "utf8");
+    const beforeProfile = await readFile(profilePath, "utf8");
+    let writes = 0;
+    await expect(atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { changed: "storage" } },
+      { targetPath: profilePath, value: { changed: "profile" } }
+    ], {
+      mkdir,
+      writeFile: async (...args) => {
+        writes += 1;
+        if (writes === 2) throw new Error("second prepare write failed");
+        return writeFile(...args);
+      },
+      chmod,
+      rename,
+      unlink
+    })).rejects.toThrow("second prepare write failed");
+    expect(await readFile(storagePath, "utf8")).toBe(beforeStorage);
+    expect(await readFile(profilePath, "utf8")).toBe(beforeProfile);
+    expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
+  });
+
+  it("restores originals without deletion when a later backup cannot be made", async () => {
+    const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    const beforeStorage = await readFile(storagePath, "utf8");
+    const beforeProfile = await readFile(profilePath, "utf8");
+    let backups = 0;
+    await expect(atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { changed: "storage" } },
+      { targetPath: profilePath, value: { changed: "profile" } }
+    ], {
+      mkdir,
+      writeFile,
+      chmod,
+      rename: async (from, to) => {
+        if (to.endsWith(".bak")) {
+          backups += 1;
+          if (backups === 2) throw new Error("second backup failed");
+        }
+        return rename(from, to);
+      },
+      unlink
+    })).rejects.toThrow("second backup failed");
+    expect(await readFile(storagePath, "utf8")).toBe(beforeStorage);
+    expect(await readFile(profilePath, "utf8")).toBe(beforeProfile);
+    expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
+  });
+
+  it("recovers the original pair if backup cleanup fails instead of leaving credential backups", async () => {
+    const storagePath = await copyFixtureToTemporaryFile("storage-state.json");
+    const profilePath = await copyFixtureToTemporaryFile("session-profile.json");
+    const beforeStorage = await readFile(storagePath, "utf8");
+    const beforeProfile = await readFile(profilePath, "utf8");
+    let failed = false;
+    await expect(atomicWritePrivateJsonPair([
+      { targetPath: storagePath, value: { changed: "storage" } },
+      { targetPath: profilePath, value: { changed: "profile" } }
+    ], {
+      mkdir,
+      writeFile,
+      chmod,
+      rename,
+      unlink: async (path) => {
+        if (path.endsWith(".bak") && !failed) {
+          failed = true;
+          throw new Error("backup cleanup failed");
+        }
+        return unlink(path);
+      }
+    })).rejects.toThrow("backup cleanup failed");
+    expect(await readFile(storagePath, "utf8")).toBe(beforeStorage);
+    expect(await readFile(profilePath, "utf8")).toBe(beforeProfile);
+    expect((await readdir(dirname(storagePath))).filter((name) => name.includes(".tmp") || name.includes(".bak"))).toEqual([]);
   });
 });

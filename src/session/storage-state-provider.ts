@@ -14,7 +14,7 @@ interface PlaywrightCookie {
   expires: number;
   httpOnly: boolean;
   secure: boolean;
-  sameSite: "Strict" | "Lax" | "None";
+  sameSite?: "Strict" | "Lax" | "None";
 }
 
 interface StorageState {
@@ -50,8 +50,9 @@ function storageStateFromJson(value: unknown): StorageState {
 }
 
 function cookieToPlaywright(cookie: Cookie): PlaywrightCookie {
-  const expires = cookie.expires instanceof Date && cookie.expires.getTime() > 0
-    ? Math.floor(cookie.expires.getTime() / 1000)
+  const expiryTime = cookie.expiryTime();
+  const expires = typeof expiryTime === "number" && Number.isFinite(expiryTime) && expiryTime > 0
+    ? Math.floor(expiryTime / 1000)
     : -1;
   return {
     name: cookie.key,
@@ -61,7 +62,7 @@ function cookieToPlaywright(cookie: Cookie): PlaywrightCookie {
     expires,
     httpOnly: cookie.httpOnly,
     secure: cookie.secure,
-    sameSite: cookie.sameSite === "strict" ? "Strict" : cookie.sameSite === "lax" ? "Lax" : "None"
+    ...(cookie.sameSite === "strict" ? { sameSite: "Strict" as const } : cookie.sameSite === "lax" ? { sameSite: "Lax" as const } : cookie.sameSite === "none" ? { sameSite: "None" as const } : {})
   };
 }
 
@@ -162,7 +163,8 @@ export class StorageStateProvider implements SessionProvider {
         const expiry = cookie.expires > 0 ? `; Expires=${new Date(cookie.expires * 1000).toUTCString()}` : "";
         const host = cookie.domain.replace(/^\./u, "");
         const domain = cookie.domain.startsWith(".") ? `Domain=${host}; ` : "";
-        const attributes = `${cookie.name}=${cookie.value}; ${domain}Path=${cookie.path}; ${cookie.secure ? "Secure; " : ""}${cookie.httpOnly ? "HttpOnly; " : ""}SameSite=${cookie.sameSite}${expiry}`;
+        const sameSite = cookie.sameSite === undefined ? "" : `SameSite=${cookie.sameSite}`;
+        const attributes = `${cookie.name}=${cookie.value}; ${domain}Path=${cookie.path}; ${cookie.secure ? "Secure; " : ""}${cookie.httpOnly ? "HttpOnly; " : ""}${sameSite}${expiry}`;
         await jar.setCookie(attributes, `https://${host}${cookie.path}`);
       }
       this.jar = jar;

@@ -29,23 +29,21 @@ export async function waitForAuthenticatedPage(page: LoginPage): Promise<string>
       if (new URL(page.url()).origin !== new URL(LOGIN_URL).origin) {
         throw new Error("Login cancelled before completion.");
       }
-      const authenticated = await page.evaluate(async () => {
+      const authentication = await page.evaluate(async () => {
         const response = await fetch("/api/user/describeBaseInfo");
         const envelope: unknown = await response.json();
         if (typeof envelope !== "object" || envelope === null) {
-          return false;
+          return { authenticated: false, originPin: null };
         }
         const value = envelope as { error?: unknown; result?: unknown };
-        return !value.error && value.result !== undefined && value.result !== null;
+        const account = (window as Window & { JDCloud?: { account?: { originPin?: unknown } } }).JDCloud?.account;
+        return {
+          authenticated: !value.error && value.result !== undefined && value.result !== null,
+          originPin: typeof account?.originPin === "string" ? account.originPin : null
+        };
       });
-      if (authenticated) {
-        const originPin = await page.evaluate(() => {
-          const account = (window as Window & { JDCloud?: { account?: { originPin?: unknown } } }).JDCloud?.account;
-          return typeof account?.originPin === "string" ? account.originPin : null;
-        });
-        if (originPin !== null && originPin.trim().length > 0) {
-          return originPin;
-        }
+      if (authentication.authenticated && authentication.originPin !== null && authentication.originPin.trim().length > 0) {
+        return authentication.originPin;
       }
       await page.waitForTimeout(1_000);
     } catch {

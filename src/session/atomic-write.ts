@@ -2,6 +2,16 @@ import { chmod, mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
+export interface AtomicWriteOperations {
+  mkdir(path: string, options: { recursive: true; mode: number }): Promise<string | undefined>;
+  writeFile(path: string, data: string, options: { encoding: "utf8"; mode: number }): Promise<void>;
+  chmod(path: string, mode: number): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  unlink(path: string): Promise<void>;
+}
+
+const defaultOperations: AtomicWriteOperations = { mkdir, writeFile, chmod, rename, unlink };
+
 export async function atomicWritePrivateJson(targetPath: string, value: unknown): Promise<void> {
   const temporaryPath = join(dirname(targetPath), `.${basename(targetPath)}.${randomUUID()}.tmp`);
   try {
@@ -15,32 +25,55 @@ export async function atomicWritePrivateJson(targetPath: string, value: unknown)
   }
 }
 
+interface PreparedEntry {
+  targetPath: string;
+  temporaryPath: string;
+  backupPath: string;
+  backedUp: boolean;
+  replaced: boolean;
+}
+
+function resolveOperations(operationsOrReplace: AtomicWriteOperations | ((from: string, to: string) => Promise<void>) | undefined): AtomicWriteOperations {
+  if (typeof operationsOrReplace === "function") return { ...defaultOperations, rename: operationsOrReplace };
+  return operationsOrReplace ?? defaultOperations;
+}
+
 export async function atomicWritePrivateJsonPair(
   entries: ReadonlyArray<{ targetPath: string; value: unknown }>,
-  replace: (from: string, to: string) => Promise<void> = rename
+  operationsOrReplace?: AtomicWriteOperations | ((from: string, to: string) => Promise<void>)
 ): Promise<void> {
-  const prepared: Array<{ targetPath: string; temporaryPath: string; backupPath: string }> = [];
+  const operations = resolveOperations(operationsOrReplace);
+  const prepared: PreparedEntry[] = [];
   try {
     for (const entry of entries) {
-      await mkdir(dirname(entry.targetPath), { recursive: true, mode: 0o700 });
       const temporaryPath = join(dirname(entry.targetPath), `.${basename(entry.targetPath)}.${randomUUID()}.tmp`);
-      await writeFile(temporaryPath, `${JSON.stringify(entry.value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      await chmod(temporaryPath, 0o600);
-      prepared.push({ targetPath: entry.targetPath, temporaryPath, backupPath: `${temporaryPath}.bak` });
+      const item: PreparedEntry = { targetPath: entry.targetPath, temporaryPath, backupPath: `${temporaryPath}.bak`, backedUp: false, replaced: false };
+      prepared.push(item);
+      await operations.mkdir(dirname(entry.targetPath), { recursive: true, mode: 0o700 });
+      await operations.writeFile(temporaryPath, `${JSON.stringify(entry.value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await operations.chmod(temporaryPath, 0o600);
     }
     for (const item of prepared) {
-      await rename(item.targetPath, item.backupPath).catch((error: unknown) => {
+      try {
+        await operations.rename(item.targetPath, item.backupPath);
+        item.backedUp = true;
+      } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      });
+      }
     }
-    for (const item of prepared) await replace(item.temporaryPath, item.targetPath);
-    await Promise.all(prepared.map((item) => unlink(item.backupPath).catch(() => undefined)));
+    for (const item of prepared) {
+      await operations.rename(item.temporaryPath, item.targetPath);
+      item.replaced = true;
+    }
+    for (const item of prepared) {
+      if (item.backedUp) await operations.unlink(item.backupPath);
+    }
   } catch (error) {
-    await Promise.all(prepared.map(async (item) => {
-      await unlink(item.targetPath).catch(() => undefined);
-      await rename(item.backupPath, item.targetPath).catch(() => undefined);
-      await unlink(item.temporaryPath).catch(() => undefined);
-    }));
+    for (const item of [...prepared].reverse()) {
+      if (item.replaced) await operations.unlink(item.targetPath).catch(() => undefined);
+      if (item.backedUp) await operations.rename(item.backupPath, item.targetPath).catch(() => undefined);
+      await operations.unlink(item.temporaryPath).catch(() => undefined);
+    }
     throw error;
   }
 }

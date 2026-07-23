@@ -63,7 +63,7 @@
   ],
   "origins": [
     {
-      "origin": "https://lingjing.jdcloud.com",
+      "origin": "https://fixture.invalid",
       "localStorage": []
     }
   ]
