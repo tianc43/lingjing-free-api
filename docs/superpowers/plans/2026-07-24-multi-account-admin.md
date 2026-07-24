@@ -695,7 +695,7 @@ git commit -m "feat: schedule generation across budgeted accounts"
 ```ts
 export interface AdminSession {
   id: string;
-  csrfToken: string;
+  readonly csrfToken: string;
   expiresAt: number;
 }
 
