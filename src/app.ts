@@ -13,6 +13,7 @@ import Fastify, {
 } from "fastify";
 import { isAuthorized } from "./api/auth.js";
 import { registerAdminRoutes } from "./admin/routes.js";
+import { registerAdminStatic } from "./admin/static.js";
 import { registerErrorHandler } from "./api/error-handler.js";
 import { registerAccountRoutes } from "./api/routes/account.js";
 import { registerChatRoutes } from "./api/routes/chat.js";
@@ -68,7 +69,8 @@ export async function buildApp(
 
   registerErrorHandler(app);
   app.setNotFoundHandler((request) => {
-    if (adminPath(request.url)) {
+    const requestPath = request.url.split("?", 1)[0] ?? "";
+    if (adminPath(request.url) || requestPath.startsWith("/assets/")) {
       throw new AppError(
         404,
         "invalid_request_error",
@@ -137,6 +139,7 @@ export async function buildApp(
   }
 
   await registerAdminRoutes(app, dependencies);
+  await registerAdminStatic(app, dependencies.config.adminPassword !== null);
   registerSystemRoutes(app, dependencies);
   await app.register(async function protectedApi(protectedApp) {
     protectedApp.addHook("onRequest", (request): Promise<void> => {

@@ -2,10 +2,11 @@ import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, "tests/live/**"],
+    exclude: [...configDefaults.exclude, "tests/live/**", "tests/browser/**"],
     environment: "node",
     restoreMocks: true,
     clearMocks: true,
+    fileParallelism: false,
     testTimeout: 10_000,
     coverage: {
       provider: "v8",
