@@ -3,6 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
+import { AccountScheduler } from "./accounts/scheduler.js";
+import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
+import { SqliteAccountRepository } from "./accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "./accounts/sqlite-admission-repository.js";
 import { buildApp } from "./app.js";
 import type { AppDependencies } from "./api/types.js";
 import { createRequestMediaBudget } from "./api/multipart.js";
@@ -12,14 +16,11 @@ import {
 } from "./generation/coordinator.js";
 import { JobRunnerRegistry } from "./generation/runner-registry.js";
 import { CapacityManager } from "./jobs/capacity.js";
-import { DiscoveryLock } from "./jobs/discovery-lock.js";
 import {
   removeOrphanTemporaryFiles,
   StartupRecovery
 } from "./jobs/recovery.js";
 import { SqliteJobRepository } from "./jobs/sqlite-repository.js";
-import { AccountService } from "./lingjing/account.js";
-import { LingjingClient } from "./lingjing/client.js";
 import type { LingjingTransport } from "./lingjing/types.js";
 import { createLogger } from "./logging.js";
 import { prepareDataUri } from "./media/data-uri.js";
@@ -28,8 +29,7 @@ import { createTempBudget } from "./media/temp-budget.js";
 import { createPreparedTempFileFromBuffer } from "./media/temp-files.js";
 import { createPreparedTempFileFromStream } from "./media/temp-files.js";
 import type { MediaInput, PreparedMedia } from "./media/types.js";
-import { CatalogService } from "./models/catalog.js";
-import { createSessionProvider } from "./session/create-provider.js";
+import { SqliteStore } from "./persistence/sqlite-store.js";
 
 const SHUTDOWN_DRAIN_MS = 30_000;
 const SHUTDOWN_RUNNER_WAIT_MS = 30_000;
@@ -108,6 +108,8 @@ export interface ShutdownServerOptions {
   coordinator: Pick<LingjingGenerationCoordinator, "stopPollers">;
   recovery: Pick<StartupRecovery, "close">;
   repository: Pick<SqliteJobRepository, "close">;
+  runtimes?: Pick<AccountRuntimeRegistry, "close">;
+  store?: Pick<SqliteStore, "close">;
   submitDrainTimeoutMs?: number;
   runnerIdleTimeoutMs?: number;
 }
@@ -142,7 +144,9 @@ export async function shutdownServer(
   );
   if (failure !== undefined) throw failure.reason;
 
+  await options.runtimes?.close();
   options.repository.close();
+  options.store?.close();
 }
 
 export async function startServer(
@@ -152,26 +156,35 @@ export async function startServer(
   const processStart = Date.now();
   const config = parseConfig(env);
   const logger = createLogger(config.logLevel);
-  const session = await createSessionProvider(config);
-  await session.load();
-  const transport = options.transport ?? new LingjingClient({ session });
-  const account = new AccountService({
-    read: transport.read.bind(transport),
-    session,
-    config
-  });
-  const catalog = new CatalogService(transport, config.modelCacheTtlMs);
-  const repository = new SqliteJobRepository(config.dbPath);
+  const store = new SqliteStore(config.dbPath);
+  const accounts = new SqliteAccountRepository(store);
+  accounts.ensureLegacyAccount("data/auth");
+  const repository = new SqliteJobRepository(store);
+  const admissions = new SqliteAdmissionRepository(store);
   const capacity = new CapacityManager(
     config.maxConcurrency,
     config.maxQueuedRequests
   );
   const registry = options.registry ?? new JobRunnerRegistry();
-  const discoveryLock = new DiscoveryLock();
+  const runtimes = new AccountRuntimeRegistry({
+    accounts,
+    config,
+    ...(options.transport === undefined
+      ? {}
+      : { transportFactory: () => options.transport as LingjingTransport })
+  });
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
 
   try {
+    await runtimes.ready();
+    const legacyRuntime = runtimes.require("legacy");
+    const scheduler = new AccountScheduler({
+      registry: runtimes,
+      accounts,
+      admissions,
+      capacity
+    });
     await mkdir(tempDirectory, { recursive: true });
     const globalTempBudget = createTempBudget(config.maxTempBytes);
     const media = {
@@ -242,11 +255,9 @@ export async function startServer(
     const coordinator = new LingjingGenerationCoordinator({
       repository,
       capacity,
-      account,
-      catalog,
-      transport,
+      scheduler,
+      admissions,
       prepareMedia,
-      discoveryLock,
       registry,
       assetDiscoveryTimeoutMs: config.assetDiscoveryTimeoutMs,
       unknownCapacityHoldMs: config.unknownCapacityHoldMs,
@@ -257,6 +268,8 @@ export async function startServer(
       capacity,
       registry,
       resumeJob: coordinator.recoveryResumeRunner,
+      scheduler,
+      admissions,
       unknownCapacityHoldMs: config.unknownCapacityHoldMs,
       cleanupOrphans: () => removeOrphanTemporaryFiles(
         tempDirectory,
@@ -275,7 +288,9 @@ export async function startServer(
         options.shutdown?.runnerIdleTimeoutMs ?? SHUTDOWN_RUNNER_WAIT_MS,
         "Timed out waiting for job runners"
       );
+      await runtimes.close();
       repository.close();
+      store.close();
     };
 
     // Recovery must have restored capacity and scheduled all durable work
@@ -285,10 +300,10 @@ export async function startServer(
     const dependencies: AppDependencies = {
       config,
       logger,
-      session,
-      transport,
-      account,
-      catalog,
+      session: legacyRuntime.session,
+      transport: legacyRuntime.transport,
+      account: legacyRuntime.account,
+      catalog: legacyRuntime.catalog,
       repository,
       coordinator,
       capacity,
@@ -302,6 +317,8 @@ export async function startServer(
       coordinator,
       recovery,
       repository,
+      runtimes,
+      store,
       ...options.shutdown
     });
     await app.listen({ host: config.host, port: config.port });
@@ -314,6 +331,8 @@ export async function startServer(
         coordinator,
         recovery,
         repository,
+        runtimes,
+        store,
         ...options.shutdown
       }).catch((cause: unknown) => {
         stopPromise = undefined;
@@ -325,8 +344,13 @@ export async function startServer(
     return { app, dependencies, repository, registry, stop };
   } catch (cause) {
     try {
-      if (startupCleanup === undefined) repository.close();
-      else await startupCleanup();
+      if (startupCleanup === undefined) {
+        await runtimes.close();
+        repository.close();
+        store.close();
+      } else {
+        await startupCleanup();
+      }
     } catch (cleanupCause) {
       throw new AggregateError(
         [cause, cleanupCause],

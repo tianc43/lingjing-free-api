@@ -1,0 +1,305 @@
+import { randomUUID } from "node:crypto";
+import { AppError, errors } from "../errors.js";
+import type {
+  GenerationRequest
+} from "../generation/types.js";
+import type { CapacityManager } from "../jobs/capacity.js";
+import { createRequestFingerprint } from "../jobs/fingerprint.js";
+import type {
+  CapacityAdmission,
+  CapacityLease,
+  JobRecord
+} from "../jobs/types.js";
+import type { NormalizedModel } from "../models/types.js";
+import { budgetWindows } from "./budget.js";
+import { quotedPoints } from "./quote.js";
+import type { AccountRuntime } from "./runtime.js";
+import type { AccountRuntimeRegistry } from "./runtime-registry.js";
+import type { SqliteAccountRepository } from "./sqlite-account-repository.js";
+import type { SqliteAdmissionRepository } from "./sqlite-admission-repository.js";
+import type { AccountRecord } from "./types.js";
+
+export interface AccountAdmission {
+  runtime: AccountRuntime;
+  model: NormalizedModel;
+  job: JobRecord;
+  lease: CapacityLease | null;
+  created: boolean;
+}
+
+export interface AccountSchedulerOptions {
+  registry: Pick<AccountRuntimeRegistry, "listEnabled" | "require">;
+  accounts: Pick<SqliteAccountRepository, "findById" | "usage">;
+  admissions: Pick<SqliteAdmissionRepository, "reserveOrGet">;
+  capacity: CapacityManager;
+  now?: () => number;
+}
+
+interface Candidate {
+  runtime: AccountRuntime;
+  record: AccountRecord;
+  model: NormalizedModel;
+  spaceId: number;
+  quote: number;
+  activeJobs: number;
+}
+
+class CompositeCapacityLease implements CapacityLease {
+  readonly jobId: string;
+  private released = false;
+
+  constructor(private readonly leases: readonly CapacityLease[]) {
+    const first = leases[0];
+    if (first === undefined) throw new Error("Composite capacity lease is empty");
+    this.jobId = first.jobId;
+  }
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    for (const lease of this.leases) lease.release();
+  }
+}
+
+export function combineCapacityLeases(
+  ...leases: CapacityLease[]
+): CapacityLease {
+  return new CompositeCapacityLease(leases);
+}
+
+function mediaParameter(model: NormalizedModel): (
+  NormalizedModel["parameters"][number] | undefined
+) {
+  const parameters = model.parameters.filter(
+    (parameter) => parameter.kind === "image-list"
+  );
+  if (parameters.length > 1) throw errors.catalogChanged();
+  return parameters[0];
+}
+
+export function validateGenerationMedia(
+  request: GenerationRequest,
+  model: NormalizedModel
+): void {
+  const parameter = mediaParameter(model);
+  if (request.media.some((input) => input.kind !== "image")) {
+    throw errors.invalidRequest("Model only accepts image media", "media");
+  }
+  if (parameter === undefined) {
+    if (request.media.length > 0) {
+      throw errors.invalidRequest("Model does not accept media", "media");
+    }
+    return;
+  }
+  if (parameter.required && request.media.length === 0) {
+    throw errors.invalidRequest("Model requires media", "media");
+  }
+  if (
+    parameter.maxFiles !== undefined
+    && request.media.length > parameter.maxFiles
+  ) {
+    throw errors.invalidRequest("Too many media inputs", "media");
+  }
+  if (request.media.length > 0 && model.modelCode === null) {
+    throw errors.catalogChanged();
+  }
+}
+
+function capacityFull(cause: unknown): boolean {
+  return cause instanceof AppError
+    && cause.code === "lingjing_capacity_queue_full";
+}
+
+function compareCandidates(left: Candidate, right: Candidate): number {
+  return left.record.priority - right.record.priority
+    || left.activeJobs - right.activeJobs
+    || (left.record.lastSelectedAt ?? Number.NEGATIVE_INFINITY)
+      - (right.record.lastSelectedAt ?? Number.NEGATIVE_INFINITY)
+    || left.record.id.localeCompare(right.record.id);
+}
+
+export class AccountScheduler {
+  private readonly now: () => number;
+
+  constructor(private readonly options: AccountSchedulerOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  async admit(input: {
+    request: GenerationRequest;
+    requestFingerprint: string;
+    idempotencyKeyHash: string | null;
+    inputContentHashes?: readonly string[];
+  }): Promise<AccountAdmission> {
+    let globalAdmission: CapacityAdmission;
+    try {
+      globalAdmission = this.options.capacity.admit(randomUUID());
+    } catch (cause) {
+      if (capacityFull(cause)) throw errors.capacityExhausted();
+      throw cause;
+    }
+
+    let transferred = false;
+    try {
+      const evaluation = await this.candidates(input.request);
+      const { candidates } = evaluation;
+      if (candidates.length === 0) {
+        throw evaluation.validationError ?? errors.noEligibleAccount();
+      }
+
+      let capacityBlocked = false;
+      for (const candidate of candidates) {
+        let accountAdmission: CapacityAdmission;
+        try {
+          accountAdmission = candidate.runtime.capacity.admit(randomUUID());
+        } catch (cause) {
+          if (capacityFull(cause)) {
+            capacityBlocked = true;
+            continue;
+          }
+          throw cause;
+        }
+
+        try {
+          const requestFingerprint = input.inputContentHashes === undefined
+            ? input.requestFingerprint
+            : createRequestFingerprint({
+                model: candidate.model.apiId,
+                parameters: input.request.values,
+                inputContentHashes: input.inputContentHashes
+              });
+          const result = this.options.admissions.reserveOrGet({
+            kind: input.request.kind,
+            sourceType: input.request.sourceType,
+            model: input.request.model,
+            apiId: candidate.model.apiId,
+            modelCode: candidate.model.modelCode,
+            expectedAssetScene: candidate.model.expectedAssetScene,
+            requestFingerprint,
+            idempotencyKeyHash: input.idempotencyKeyHash,
+            spaceId: candidate.spaceId,
+            accountId: candidate.record.id,
+            quotedPoints: candidate.quote,
+            windows: budgetWindows(this.now())
+          });
+          if (result.outcome === "existing") {
+            accountAdmission.release();
+            globalAdmission.release();
+            transferred = true;
+            return {
+              runtime: this.restore(result.job),
+              model: candidate.model,
+              job: result.job,
+              lease: null,
+              created: false
+            };
+          }
+          if (result.outcome !== "created") {
+            accountAdmission.release();
+            continue;
+          }
+
+          const [globalLease, accountLease] = await Promise.all([
+            globalAdmission.acquire(result.job.id),
+            accountAdmission.acquire(result.job.id)
+          ]);
+          transferred = true;
+          return {
+            runtime: candidate.runtime,
+            model: candidate.model,
+            job: result.job,
+            lease: combineCapacityLeases(globalLease, accountLease),
+            created: true
+          };
+        } catch (cause) {
+          accountAdmission.release();
+          throw cause;
+        }
+      }
+
+      throw capacityBlocked
+        ? errors.capacityExhausted()
+        : errors.noEligibleAccount();
+    } finally {
+      if (!transferred) globalAdmission.release();
+    }
+  }
+
+  restore(job: JobRecord): AccountRuntime {
+    return this.options.registry.require(job.accountId);
+  }
+
+  expireUnknown(now: number): void {
+    for (const runtime of this.options.registry.listEnabled()) {
+      runtime.capacity.expireUnknown(now);
+    }
+  }
+
+  private async candidates(request: GenerationRequest): Promise<{
+    candidates: Candidate[];
+    validationError: AppError | null;
+  }> {
+    const windows = budgetWindows(this.now());
+    const candidates: Candidate[] = [];
+    let validationError: AppError | null = null;
+    let validatedModel = false;
+    for (const runtime of this.options.registry.listEnabled()) {
+      const record = this.options.accounts.findById(runtime.record.id);
+      if (
+        record === null
+        || !record.enabled
+        || record.healthStatus !== "ready"
+      ) {
+        continue;
+      }
+      const usage = this.options.accounts.usage(record.id, windows);
+      let resolved: [
+        NormalizedModel,
+        Awaited<ReturnType<AccountRuntime["account"]["describe"]>>
+      ];
+      try {
+        resolved = await Promise.all([
+          runtime.catalog.resolve(request.model, request.sourceType, true),
+          runtime.account.describe()
+        ]);
+      } catch {
+        continue;
+      }
+      const [model, account] = resolved;
+      try {
+        validateGenerationMedia(request, model);
+      } catch (cause) {
+        if (cause instanceof AppError) validationError ??= cause;
+        continue;
+      }
+      validatedModel = true;
+      const quote = quotedPoints(model, request.values);
+      if (
+        quote === null
+        || account.pointsBalance < quote
+        || (
+          record.dailyPointLimit !== 0
+          && usage.dayUsedPoints + quote > record.dailyPointLimit
+        )
+        || (
+          record.monthlyPointLimit !== 0
+          && usage.monthUsedPoints + quote > record.monthlyPointLimit
+        )
+      ) {
+        continue;
+      }
+      candidates.push({
+        runtime,
+        record,
+        model,
+        spaceId: account.spaceId,
+        quote,
+        activeJobs: runtime.capacity.counts().active
+      });
+    }
+    return {
+      candidates: candidates.sort(compareCandidates),
+      validationError: validatedModel ? null : validationError
+    };
+  }
+}

@@ -1,9 +1,14 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import {
+  combineCapacityLeases,
+  type AccountScheduler
+} from "../accounts/scheduler.js";
+import type { AccountRuntime } from "../accounts/runtime.js";
+import type { SqliteAdmissionRepository } from "../accounts/sqlite-admission-repository.js";
 import { errors } from "../errors.js";
 import { abortable } from "../jobs/abort.js";
 import { assetsFromResponse } from "../jobs/assets.js";
 import type { CapacityManager } from "../jobs/capacity.js";
-import { DiscoveryLock } from "../jobs/discovery-lock.js";
 import {
   LingjingAssetDiscovery,
   type DiscoveryResult
@@ -20,9 +25,7 @@ import type {
   JobStatus,
   JobTransition
 } from "../jobs/types.js";
-import type { AccountSnapshot } from "../lingjing/account.js";
 import { SubmitAmbiguousError } from "../lingjing/error-map.js";
-import type { LingjingTransport } from "../lingjing/types.js";
 import type { MediaInput, PreparedMedia } from "../media/types.js";
 import type { NormalizedModel } from "../models/types.js";
 import { buildPayload } from "../models/payload-builder.js";
@@ -63,23 +66,19 @@ type Sleep = (
   signal?: AbortSignal
 ) => Promise<void>;
 
-interface CatalogResolver {
-  resolve(
-    value: string,
-    sourceType: GenerationRequest["sourceType"],
-    charged?: boolean
-  ): Promise<NormalizedModel>;
-}
-
 export interface LingjingGenerationCoordinatorOptions {
   repository: GenerationRepository;
   capacity: CapacityManager;
-  account: { describe(): Promise<AccountSnapshot> };
-  catalog: CatalogResolver;
-  transport: LingjingTransport;
+  scheduler: Pick<AccountScheduler, "admit" | "restore">;
+  admissions: Pick<
+    SqliteAdmissionRepository,
+    "charge" | "releasePreSubmit"
+  >;
   prepareMedia(input: MediaInput): Promise<PreparedMedia>;
-  createUploadService?: (model: NormalizedModel) => UploadService;
-  discoveryLock: DiscoveryLock;
+  createUploadService?: (
+    runtime: AccountRuntime,
+    model: NormalizedModel
+  ) => UploadService;
   registry: JobRunnerRegistry;
   assetDiscoveryTimeoutMs: number;
   unknownCapacityHoldMs: number;
@@ -140,34 +139,6 @@ function mediaParameter(model: NormalizedModel): (
   return parameters[0];
 }
 
-function validateMedia(
-  request: GenerationRequest,
-  model: NormalizedModel
-): void {
-  const parameter = mediaParameter(model);
-  if (request.media.some((input) => input.kind !== "image")) {
-    throw errors.invalidRequest("Model only accepts image media", "media");
-  }
-  if (parameter === undefined) {
-    if (request.media.length > 0) {
-      throw errors.invalidRequest("Model does not accept media", "media");
-    }
-    return;
-  }
-  if (parameter.required && request.media.length === 0) {
-    throw errors.invalidRequest("Model requires media", "media");
-  }
-  if (
-    parameter.maxFiles !== undefined
-    && request.media.length > parameter.maxFiles
-  ) {
-    throw errors.invalidRequest("Too many media inputs", "media");
-  }
-  if (request.media.length > 0 && model.modelCode === null) {
-    throw errors.catalogChanged();
-  }
-}
-
 function jobErrorTransition(
   status: "failed",
   now: number,
@@ -185,26 +156,12 @@ implements GenerationCoordinator {
   private readonly now: () => number;
   private readonly sleep: Sleep;
   private readonly notifier: JobUpdateNotifier;
-  private readonly discoverer: LingjingAssetDiscovery;
-  private readonly poller: LingjingTaskPoller;
   private readonly pollerAbort = new AbortController();
 
   constructor(private readonly options: LingjingGenerationCoordinatorOptions) {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.notifier = options.notifier ?? new JobUpdateNotifier();
-    this.discoverer = new LingjingAssetDiscovery({
-      transport: options.transport,
-      timeoutMs: options.assetDiscoveryTimeoutMs,
-      pollIntervalMs: options.taskPollIntervalMs,
-      sleep: (milliseconds, signal) => this.sleep(milliseconds, signal),
-      now: this.now
-    });
-    this.poller = new LingjingTaskPoller({
-      repository: options.repository,
-      transport: options.transport,
-      now: this.now
-    });
   }
 
   stopPollers(): void {
@@ -215,27 +172,10 @@ implements GenerationCoordinator {
 
   async create(request: GenerationRequest): Promise<GenerationHandle> {
     const ownedPrepared = new Set(preparedInputs(request.media));
-    let admission: ReturnType<CapacityManager["admit"]>;
-    try {
-      admission = this.options.capacity.admit(randomUUID());
-    } catch (cause) {
-      await disposeAll(ownedPrepared);
-      throw cause;
-    }
     const prepared: PreparedMedia[] = [];
     let ownsPrepared = true;
-    let createdJob: JobRecord | null = null;
-    let lease: CapacityLease | null = null;
 
     try {
-      const account = await this.options.account.describe();
-      const model = await this.options.catalog.resolve(
-        request.model,
-        request.sourceType,
-        true
-      );
-      validateMedia(request, model);
-
       for (const input of request.media) {
         const media = await this.options.prepareMedia(input);
         prepared.push(media);
@@ -253,96 +193,78 @@ implements GenerationCoordinator {
       }
 
       const requestFingerprint = createRequestFingerprint({
-        model: model.apiId,
+        model: request.model,
         parameters: request.values,
         inputContentHashes
       });
       const idempotencyKeyHash = request.idempotencyKey === null
         ? null
         : hashIdempotencyKey(request.idempotencyKey);
-      const result = this.options.repository.createOrGet({
-        kind: request.kind,
-        sourceType: request.sourceType,
-        model: request.model,
-        apiId: model.apiId,
-        modelCode: model.modelCode,
-        expectedAssetScene: model.expectedAssetScene,
+      const admission = await this.options.scheduler.admit({
+        request,
         requestFingerprint,
         idempotencyKeyHash,
-        spaceId: account.spaceId
+        inputContentHashes
       });
-      createdJob = result.job;
 
-      if (!result.created) {
+      if (!admission.created) {
         await disposeAll(ownedPrepared);
         ownsPrepared = false;
-        admission.release();
-        return this.handle(result.job);
+        return this.handle(admission.job);
       }
-
-      try {
-        lease = await admission.acquire(result.job.id);
-      } catch (cause) {
-        this.transition(result.job.id, ["queued"], jobErrorTransition(
-          "failed",
-          this.now(),
-          "capacity_acquire_failed"
-        ));
-        admission.release();
-        throw cause;
+      if (admission.lease === null) {
+        throw new Error("Created generation admission has no capacity lease");
       }
 
       const submitReservation =
         this.options.registry.reserveSubmitCriticalSection();
       const scheduled = this.options.registry.startOnce(
-        result.job.id,
+        admission.job.id,
         () => this.runInitial(
-          result.job,
+          admission.job,
           request,
-          model,
-          account.spaceId,
+          admission.runtime,
+          admission.model,
+          admission.job.spaceId,
           prepared,
-          lease as CapacityLease,
+          admission.lease as CapacityLease,
           submitReservation
         )
       );
       if (!scheduled.started) {
         submitReservation.cancel();
-        const current = this.options.repository.findById(result.job.id);
+        const current = this.options.repository.findById(admission.job.id);
         if (current?.status === "queued") {
           this.transition(current.id, ["queued"], jobErrorTransition(
             "failed",
             this.now(),
             "runner_not_started"
           ));
+          this.options.admissions.releasePreSubmit(current.id);
         }
         await disposeAll(ownedPrepared);
         ownsPrepared = false;
-        lease.release();
+        admission.lease.release();
         await scheduled.promise;
       } else {
         ownsPrepared = false;
         void scheduled.promise.catch(() => undefined);
       }
 
-      const durable = await this.waitUntilDurable(result.job.id);
+      const durable = await this.waitUntilDurable(admission.job.id);
       return this.handle(durable);
     } catch (cause) {
       if (ownsPrepared) await disposeAll(ownedPrepared);
-      if (createdJob === null) admission.release();
       throw cause;
     }
   }
 
   resume(jobId: string): Promise<GenerationHandle> {
     const job = this.requireJob(jobId);
+    this.chargeRecoverable(job);
     if (isTerminal(job)) return Promise.resolve(this.handle(job));
-    const lease = this.options.capacity.restore(
-      job.id,
-      job.status,
-      job.unknownHoldUntil,
-      this.now()
-    );
+    const runtime = this.options.scheduler.restore(job);
+    const lease = this.restoreBoundCapacity(job, runtime);
     if (lease === null) return Promise.resolve(this.handle(job));
     const scheduled = this.options.registry.startOnce(
       job.id,
@@ -364,26 +286,29 @@ implements GenerationCoordinator {
     lease: CapacityLease
   ): Promise<void> {
     let current = this.requireJob(snapshot.id);
+    const runtime = this.options.scheduler.restore(current);
     try {
       this.pollerAbort.signal.throwIfAborted();
+      this.chargeRecoverable(current);
       if (current.status === "submitting") {
         current = this.transition(current.id, ["submitting"], {
           status: "discovering"
         });
       }
-      await this.runPostSubmit(current, lease);
+      await this.runPostSubmit(current, runtime, lease);
     } catch {
       if (this.pollerAbort.signal.aborted) {
         lease.release();
         return;
       }
-      this.releaseIfTerminalOrRefreshUnknown(current.id, lease);
+      this.releaseIfTerminalOrRefreshUnknown(current.id, runtime, lease);
     }
   }
 
   private async runInitial(
     job: JobRecord,
     request: GenerationRequest,
+    runtime: AccountRuntime,
     model: NormalizedModel,
     spaceId: number,
     prepared: PreparedMedia[],
@@ -391,9 +316,20 @@ implements GenerationCoordinator {
     submitReservation: SubmitCriticalReservation
   ): Promise<void> {
     const remaining = new Set(prepared);
+    let budgetState: "reserved" | "charged" | "released" = "reserved";
+    const charge = (): void => {
+      if (budgetState !== "reserved") return;
+      this.options.admissions.charge(job.id);
+      budgetState = "charged";
+    };
+    const release = (): void => {
+      if (budgetState !== "reserved") return;
+      this.options.admissions.releasePreSubmit(job.id);
+      budgetState = "released";
+    };
     try {
-      const uploader = this.options.createUploadService?.(model)
-        ?? new LingjingUploadService(this.options.transport, {
+      const uploader = this.options.createUploadService?.(runtime, model)
+        ?? new LingjingUploadService(runtime.transport, {
           uploadStrategy: model.uploadStrategy
         });
       const uploaded = [];
@@ -421,8 +357,8 @@ implements GenerationCoordinator {
 
       let discovery: DiscoveryResult;
       try {
-        discovery = await this.options.discoveryLock.runExclusive(async () => {
-          const baselineIds = await this.snapshotAssetIds(spaceId);
+        discovery = await runtime.discoveryLock.runExclusive(async () => {
+          const baselineIds = await this.snapshotAssetIds(runtime, spaceId);
           const submitting = this.transition(job.id, ["queued"], {
             status: "submitting",
             submittedAt: this.now(),
@@ -430,7 +366,7 @@ implements GenerationCoordinator {
           });
           await submitReservation.run(async () => {
             try {
-              await this.options.transport.submitOnce(
+              await runtime.transport.submitOnce(
                 GENERATION_ENDPOINT,
                 payload
               );
@@ -445,16 +381,18 @@ implements GenerationCoordinator {
                     "generation_submit_rejected"
                   )
                 );
+                release();
                 throw cause;
               }
             }
+            charge();
           });
           const discovering = this.transition(
             submitting.id,
             ["submitting"],
             { status: "discovering" }
           );
-          return this.discoverer.discover(
+          return this.discovererFor(runtime).discover(
             discovering,
             baselineIds,
             this.pollerAbort.signal
@@ -469,13 +407,19 @@ implements GenerationCoordinator {
           current.id,
           ["discovering"],
           "generation_discovery_read_failed",
-          holdUntil
+          holdUntil,
+          runtime
         );
-        await this.recoverUnknown(unknown, lease, holdUntil);
+        await this.recoverUnknown(unknown, runtime, lease, holdUntil);
         return;
       }
 
-      await this.persistDiscoveryAndPoll(job.id, discovery, lease);
+      await this.persistDiscoveryAndPoll(
+        job.id,
+        discovery,
+        runtime,
+        lease
+      );
     } catch {
       const current = this.options.repository.findById(job.id);
       if (this.pollerAbort.signal.aborted) {
@@ -488,8 +432,9 @@ implements GenerationCoordinator {
           this.now(),
           "generation_before_submit_failed"
         ));
+        release();
       }
-      this.releaseIfTerminalOrRefreshUnknown(job.id, lease);
+      this.releaseIfTerminalOrRefreshUnknown(job.id, runtime, lease);
     } finally {
       submitReservation.cancel();
       await disposeAll(remaining);
@@ -498,6 +443,7 @@ implements GenerationCoordinator {
 
   private async runPostSubmit(
     snapshot: JobRecord,
+    runtime: AccountRuntime,
     lease: CapacityLease
   ): Promise<void> {
     this.pollerAbort.signal.throwIfAborted();
@@ -511,17 +457,17 @@ implements GenerationCoordinator {
       if (current.status === "unknown") {
         const holdUntil = current.unknownHoldUntil;
         if (holdUntil === null || holdUntil <= this.now()) {
-          this.options.capacity.expireUnknown(this.now());
+          this.expireBoundUnknown(runtime, this.now());
           return;
         }
-        await this.recoverUnknown(current, lease, holdUntil);
+        await this.recoverUnknown(current, runtime, lease, holdUntil);
         return;
       }
       if (current.status !== "discovering") return;
       let discovery: DiscoveryResult;
       try {
-        discovery = await this.options.discoveryLock.runExclusive(
-          () => this.discoverer.discover(
+        discovery = await runtime.discoveryLock.runExclusive(
+          () => this.discovererFor(runtime).discover(
             current,
             new Set(),
             this.pollerAbort.signal
@@ -534,12 +480,18 @@ implements GenerationCoordinator {
           current.id,
           ["discovering"],
           "generation_discovery_read_failed",
-          holdUntil
+          holdUntil,
+          runtime
         );
-        await this.recoverUnknown(unknown, lease, holdUntil);
+        await this.recoverUnknown(unknown, runtime, lease, holdUntil);
         return;
       }
-      await this.persistDiscoveryAndPoll(current.id, discovery, lease);
+      await this.persistDiscoveryAndPoll(
+        current.id,
+        discovery,
+        runtime,
+        lease
+      );
       return;
     }
 
@@ -547,30 +499,31 @@ implements GenerationCoordinator {
       current = this.transition(current.id, ["discovering"], {
         status: "processing"
       });
-      this.refreshProcessingLease(current);
+      this.refreshProcessingLease(current, runtime);
     }
     if (current.status === "unknown") {
       const holdUntil = current.unknownHoldUntil;
       if (
         holdUntil === null
-        || !this.ownsUnknownCapacity(current.id, holdUntil)
+        || !this.ownsUnknownCapacity(current.id, holdUntil, runtime)
       ) {
-        this.options.capacity.expireUnknown(this.now());
+        this.expireBoundUnknown(runtime, this.now());
         return;
       }
       current = this.transition(current.id, ["unknown"], {
         status: "processing"
       });
-      this.refreshProcessingLease(current);
+      this.refreshProcessingLease(current, runtime);
     }
     if (current.status === "processing") {
-      await this.pollUntilSettled(current, lease);
+      await this.pollUntilSettled(current, runtime, lease);
     }
   }
 
   private async persistDiscoveryAndPoll(
     jobId: string,
     result: DiscoveryResult,
+    runtime: AccountRuntime,
     lease: CapacityLease,
     existingHoldUntil?: number
   ): Promise<void> {
@@ -596,19 +549,20 @@ implements GenerationCoordinator {
         result.kind === "ambiguous"
           ? "generation_discovery_ambiguous"
           : "generation_discovery_timeout",
-        holdUntil
+        holdUntil,
+        runtime
       );
       if (existingHoldUntil === undefined) {
-        await this.recoverUnknown(unknown, lease, holdUntil);
+        await this.recoverUnknown(unknown, runtime, lease, holdUntil);
       }
       return;
     }
 
     if (
       existingHoldUntil !== undefined
-      && !this.ownsUnknownCapacity(jobId, existingHoldUntil)
+      && !this.ownsUnknownCapacity(jobId, existingHoldUntil, runtime)
     ) {
-      this.options.capacity.expireUnknown(this.now());
+      this.expireBoundUnknown(runtime, this.now());
       return;
     }
     const processing = this.transition(
@@ -621,12 +575,13 @@ implements GenerationCoordinator {
         discoveredAt: this.now()
       }
     );
-    this.refreshProcessingLease(processing);
-    await this.pollUntilSettled(processing, lease);
+    this.refreshProcessingLease(processing, runtime);
+    await this.pollUntilSettled(processing, runtime, lease);
   }
 
   private async recoverUnknown(
     initial: JobRecord,
+    runtime: AccountRuntime,
     lease: CapacityLease,
     holdUntil: number
   ): Promise<void> {
@@ -637,12 +592,14 @@ implements GenerationCoordinator {
       try {
         const discovery = await this.discoverUnknownWithinHold(
           current,
-          holdUntil
+          holdUntil,
+          runtime
         );
         if (discovery === null) break;
         await this.persistDiscoveryAndPoll(
           current.id,
           discovery,
+          runtime,
           lease,
           holdUntil
         );
@@ -654,17 +611,19 @@ implements GenerationCoordinator {
         if (current.status !== "unknown") return;
       }
     }
-    this.options.capacity.expireUnknown(this.now());
+    this.expireBoundUnknown(runtime, this.now());
   }
 
   private async pollUntilSettled(
     initial: JobRecord,
+    runtime: AccountRuntime,
     lease: CapacityLease
   ): Promise<void> {
     let current = initial;
+    const poller = this.pollerFor(runtime);
     for (;;) {
       try {
-        const next = await this.poller.poll(
+        const next = await poller.poll(
           current,
           this.pollerAbort.signal
         );
@@ -672,7 +631,7 @@ implements GenerationCoordinator {
           this.notifier.notify(next.id);
         }
         current = next;
-        this.refreshProcessingLease(current);
+        this.refreshProcessingLease(current, runtime);
       } catch {
         this.pollerAbort.signal.throwIfAborted();
         await this.waitForPollInterval();
@@ -696,54 +655,55 @@ implements GenerationCoordinator {
     jobId: string,
     expectedStatuses: readonly JobStatus[],
     errorCode: string,
-    holdUntil: number
+    holdUntil: number,
+    runtime: AccountRuntime
   ): JobRecord {
     const unknown = this.transition(jobId, expectedStatuses, {
       status: "unknown",
       unknownHoldUntil: holdUntil,
       errorCode
     });
-    this.options.capacity.restore(
-      unknown.id,
-      unknown.status,
-      unknown.unknownHoldUntil,
-      this.now()
-    );
+    this.refreshBoundCapacity(unknown, runtime);
     return unknown;
   }
 
-  private ownsUnknownCapacity(jobId: string, holdUntil: number): boolean {
+  private ownsUnknownCapacity(
+    jobId: string,
+    holdUntil: number,
+    runtime: AccountRuntime
+  ): boolean {
     return this.now() < holdUntil
-      && this.options.capacity.activeJobIds().includes(jobId);
+      && this.options.capacity.activeJobIds().includes(jobId)
+      && runtime.capacity.activeJobIds().includes(jobId);
   }
 
-  private refreshProcessingLease(job: JobRecord): void {
+  private refreshProcessingLease(
+    job: JobRecord,
+    runtime: AccountRuntime
+  ): void {
     if (
       job.status === "processing"
       && this.options.capacity.activeJobIds().includes(job.id)
+      && runtime.capacity.activeJobIds().includes(job.id)
     ) {
-      this.options.capacity.restore(
-        job.id,
-        job.status,
-        job.unknownHoldUntil,
-        this.now()
-      );
+      this.refreshBoundCapacity(job, runtime);
     }
   }
 
   private async discoverUnknownWithinHold(
     job: JobRecord,
-    holdUntil: number
+    holdUntil: number,
+    runtime: AccountRuntime
   ): Promise<DiscoveryResult | null> {
-    if (!this.ownsUnknownCapacity(job.id, holdUntil)) return null;
+    if (!this.ownsUnknownCapacity(job.id, holdUntil, runtime)) return null;
     const remaining = Math.max(0, holdUntil - this.now());
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<null>((resolve) => {
       timer = setTimeout(resolve, Math.min(remaining, 2_147_483_647), null);
       timer.unref();
     });
-    const discovery = this.options.discoveryLock.runExclusive(
-      () => this.discoverer.discover(
+    const discovery = runtime.discoveryLock.runExclusive(
+      () => this.discovererFor(runtime).discover(
         job,
         new Set(),
         this.pollerAbort.signal
@@ -756,12 +716,12 @@ implements GenerationCoordinator {
       if (timer !== undefined) clearTimeout(timer);
     }
     if (result === null) {
-      this.options.capacity.expireUnknown(this.now());
+      this.expireBoundUnknown(runtime, this.now());
       await discovery.catch(() => undefined);
       return null;
     }
     if (
-      !this.ownsUnknownCapacity(job.id, holdUntil)
+      !this.ownsUnknownCapacity(job.id, holdUntil, runtime)
     ) {
       return null;
     }
@@ -775,10 +735,13 @@ implements GenerationCoordinator {
     );
   }
 
-  private async snapshotAssetIds(spaceId: number): Promise<Set<string>> {
+  private async snapshotAssetIds(
+    runtime: AccountRuntime,
+    spaceId: number
+  ): Promise<Set<string>> {
     const ids = new Set<string>();
     for (let currentPage = 1; currentPage <= MAX_ASSET_PAGES; currentPage += 1) {
-      const response = await this.options.transport.read<unknown>(
+      const response = await runtime.transport.read<unknown>(
         ASSET_LIST_ENDPOINT,
         {
           query: {
@@ -794,6 +757,83 @@ implements GenerationCoordinator {
       if (page.length < ASSET_PAGE_SIZE) break;
     }
     return ids;
+  }
+
+  private discovererFor(runtime: AccountRuntime): LingjingAssetDiscovery {
+    return new LingjingAssetDiscovery({
+      transport: runtime.transport,
+      timeoutMs: this.options.assetDiscoveryTimeoutMs,
+      pollIntervalMs: this.options.taskPollIntervalMs,
+      sleep: (milliseconds, signal) => this.sleep(milliseconds, signal),
+      now: this.now
+    });
+  }
+
+  private pollerFor(runtime: AccountRuntime): LingjingTaskPoller {
+    return new LingjingTaskPoller({
+      repository: this.options.repository,
+      transport: runtime.transport,
+      now: this.now
+    });
+  }
+
+  private chargeRecoverable(job: JobRecord): void {
+    if (
+      job.status === "submitting"
+      || job.status === "discovering"
+      || job.status === "processing"
+      || job.status === "unknown"
+      || job.status === "completed"
+    ) {
+      this.options.admissions.charge(job.id);
+    }
+  }
+
+  private restoreBoundCapacity(
+    job: JobRecord,
+    runtime: AccountRuntime
+  ): CapacityLease | null {
+    const globalLease = this.options.capacity.restore(
+      job.id,
+      job.status,
+      job.unknownHoldUntil,
+      this.now()
+    );
+    if (globalLease === null) return null;
+    const accountLease = runtime.capacity.restore(
+      job.id,
+      job.status,
+      job.unknownHoldUntil,
+      this.now()
+    );
+    if (accountLease === null) {
+      globalLease.release();
+      return null;
+    }
+    return combineCapacityLeases(globalLease, accountLease);
+  }
+
+  private refreshBoundCapacity(
+    job: JobRecord,
+    runtime: AccountRuntime
+  ): void {
+    this.options.capacity.restore(
+      job.id,
+      job.status,
+      job.unknownHoldUntil,
+      this.now()
+    );
+    runtime.capacity.restore(
+      job.id,
+      job.status,
+      job.unknownHoldUntil,
+      this.now()
+    );
+  }
+
+  private expireBoundUnknown(runtime: AccountRuntime, now: number): void {
+    this.options.capacity.expireUnknown(now);
+    runtime.capacity.expireUnknown(now);
   }
 
   private transition(
@@ -812,6 +852,7 @@ implements GenerationCoordinator {
 
   private releaseIfTerminalOrRefreshUnknown(
     jobId: string,
+    runtime: AccountRuntime,
     lease: CapacityLease
   ): void {
     const current = this.options.repository.findById(jobId);
@@ -820,12 +861,7 @@ implements GenerationCoordinator {
       return;
     }
     if (current.status === "unknown") {
-      this.options.capacity.restore(
-        current.id,
-        current.status,
-        current.unknownHoldUntil,
-        this.now()
-      );
+      this.refreshBoundCapacity(current, runtime);
     }
   }
 

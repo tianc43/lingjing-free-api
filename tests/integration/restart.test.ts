@@ -2,6 +2,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { budgetWindows } from "../../src/accounts/budget.js";
+import { combineCapacityLeases } from "../../src/accounts/scheduler.js";
+import type { AccountRuntime } from "../../src/accounts/runtime.js";
+import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import {
   LingjingGenerationCoordinator
 } from "../../src/generation/coordinator.js";
@@ -11,10 +16,11 @@ import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
 import { StartupRecovery } from "../../src/jobs/recovery.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
-import type { JobRecord } from "../../src/jobs/types.js";
+import type { CapacityLease, JobRecord } from "../../src/jobs/types.js";
 import { SubmitAmbiguousError } from "../../src/lingjing/error-map.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import type { NormalizedModel } from "../../src/models/types.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
 type Boundary = "submitting" | "discovering" | "processing";
@@ -102,15 +108,63 @@ function coordinatorFor(
   registry: JobRunnerRegistry,
   transport: LingjingTransport
 ): LingjingGenerationCoordinator {
-  return new LingjingGenerationCoordinator({
-    repository,
-    capacity: new CapacityManager(5),
-    registry,
+  const capacity = new CapacityManager(5);
+  const accountCapacity = new CapacityManager(5);
+  const runtime = {
+    record: { id: "legacy" },
     transport,
     account: account(),
     catalog: { resolve: () => Promise.resolve(fixtureModel) },
+    capacity: accountCapacity,
+    discoveryLock: new DiscoveryLock()
+  } as unknown as AccountRuntime;
+  return new LingjingGenerationCoordinator({
+    repository,
+    capacity,
+    registry,
+    scheduler: {
+      admit: async (input) => {
+        const result = repository.createOrGet({
+          kind: input.request.kind,
+          sourceType: input.request.sourceType,
+          model: input.request.model,
+          apiId: fixtureModel.apiId,
+          modelCode: fixtureModel.modelCode,
+          expectedAssetScene: fixtureModel.expectedAssetScene,
+          requestFingerprint: input.requestFingerprint,
+          idempotencyKeyHash: input.idempotencyKeyHash,
+          spaceId: 0
+        });
+        if (!result.created) {
+          return {
+            runtime,
+            model: fixtureModel,
+            job: result.job,
+            lease: null,
+            created: false
+          };
+        }
+        const [globalLease, accountLease] = await Promise.all([
+          capacity.admit(`global-${result.job.id}`).acquire(result.job.id),
+          accountCapacity.admit(`account-${result.job.id}`).acquire(
+            result.job.id
+          )
+        ]);
+        return {
+          runtime,
+          model: fixtureModel,
+          job: result.job,
+          lease: combineCapacityLeases(globalLease, accountLease),
+          created: true
+        };
+      },
+      restore: () => runtime
+    },
+    admissions: {
+      charge: () => undefined,
+      releasePreSubmit: () => undefined
+    },
     prepareMedia: () => Promise.reject(new Error("No media expected")),
-    discoveryLock: new DiscoveryLock(),
     assetDiscoveryTimeoutMs: 30,
     unknownCapacityHoldMs: 100,
     taskPollIntervalMs: 1,
@@ -402,5 +456,210 @@ describe("durable restart recovery", () => {
         format: null
       }]
     });
+  });
+
+  it("charges before resume and restores the bound account lease without reselection", async () => {
+    const path = databasePath();
+    const store = new SqliteStore(path);
+    const repository = new SqliteJobRepository(store);
+    const accounts = new SqliteAccountRepository(store);
+    const accountRecord = accounts.ensureLegacyAccount("data/auth");
+    accounts.recordObservation(accountRecord.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const admissionRepository = new SqliteAdmissionRepository(store);
+    const admitted = admissionRepository.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-api",
+      apiId: "fixture-api",
+      modelCode: "fixture-model-code",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "c".repeat(64),
+      idempotencyKeyHash: "d".repeat(64),
+      spaceId: 0,
+      accountId: accountRecord.id,
+      quotedPoints: 7,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    repository.transition(admitted.job.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now()
+    });
+
+    const globalCapacity = new CapacityManager(1);
+    const accountCapacity = new CapacityManager(1);
+    const events: string[] = [];
+    const charge = vi.fn((jobId: string) => {
+      events.push("charge");
+      admissionRepository.charge(jobId);
+    });
+    const resumeGate = deferred();
+    const resumeStarted = deferred();
+    let restoredGlobal = false;
+    let restoredAccount = false;
+    const runtime = {
+      record: accounts.findById(accountRecord.id),
+      capacity: accountCapacity
+    } as AccountRuntime;
+    const scheduler = {
+      restore: vi.fn((job: JobRecord) => {
+        events.push(`restore:${job.accountId}`);
+        return runtime;
+      }),
+      expireUnknown: vi.fn()
+    };
+    const registry = new JobRunnerRegistry();
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: globalCapacity,
+      registry,
+      resumeJob: async (job: JobRecord, lease: CapacityLease) => {
+        events.push("resume");
+        restoredGlobal = globalCapacity.activeJobIds().includes(job.id);
+        restoredAccount = accountCapacity.activeJobIds().includes(job.id);
+        resumeStarted.resolve();
+        await resumeGate.promise;
+        lease.release();
+      },
+      unknownCapacityHoldMs: 100,
+      scheduler,
+      admissions: {
+        charge,
+        releasePreSubmit: admissionRepository.releasePreSubmit.bind(
+          admissionRepository
+        )
+      }
+    });
+    try {
+      await recovery.start();
+      await resumeStarted.promise;
+      expect(events.slice(0, 3)).toEqual([
+        "charge",
+        `restore:${accountRecord.id}`,
+        "resume"
+      ]);
+      expect(charge).toHaveBeenCalledTimes(1);
+      expect(restoredGlobal).toBe(true);
+      expect(restoredAccount).toBe(true);
+      expect(scheduler.restore).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: accountRecord.id })
+      );
+      resumeGate.resolve();
+      await recovery.waitUntilIdle();
+      expect(globalCapacity.activeJobIds()).toEqual([]);
+      expect(accountCapacity.activeJobIds()).toEqual([]);
+    } finally {
+      resumeGate.resolve();
+      recovery.close();
+      await registry.waitUntilIdle();
+      repository.close();
+      store.close();
+    }
+  });
+
+  it("promotes a still-reserved completed job without starting a runner", async () => {
+    const path = databasePath();
+    const store = new SqliteStore(path);
+    const repository = new SqliteJobRepository(store);
+    const accounts = new SqliteAccountRepository(store);
+    const accountRecord = accounts.ensureLegacyAccount("data/auth");
+    accounts.recordObservation(accountRecord.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const admissionRepository = new SqliteAdmissionRepository(store);
+    const admitted = admissionRepository.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-api",
+      apiId: "fixture-api",
+      modelCode: "fixture-model-code",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "e".repeat(64),
+      idempotencyKeyHash: "f".repeat(64),
+      spaceId: 0,
+      accountId: accountRecord.id,
+      quotedPoints: 7,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    const submitting = repository.transition(admitted.job.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now()
+    });
+    const discovering = repository.transition(
+      submitting.id,
+      ["submitting"],
+      { status: "discovering" }
+    );
+    const processing = repository.transition(
+      discovering.id,
+      ["discovering"],
+      {
+        status: "processing",
+        creationCode: "fixture-creation",
+        upstreamTaskId: "fixture-task"
+      }
+    );
+    repository.transition(processing.id, ["processing"], {
+      status: "completed",
+      completedAt: Date.now(),
+      result: { outputs: [] }
+    });
+
+    const charge = vi.fn(
+      admissionRepository.charge.bind(admissionRepository)
+    );
+    const resumeJob = vi.fn<(
+      job: JobRecord,
+      lease: CapacityLease
+    ) => Promise<void>>();
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: new CapacityManager(1),
+      registry: new JobRunnerRegistry(),
+      resumeJob,
+      scheduler: {
+        restore: () => {
+          throw new Error("Completed jobs must not restore a runtime");
+        },
+        expireUnknown: () => undefined
+      },
+      admissions: {
+        charge,
+        releasePreSubmit: admissionRepository.releasePreSubmit.bind(
+          admissionRepository
+        )
+      },
+      unknownCapacityHoldMs: 100
+    });
+    try {
+      await recovery.start();
+      const budget = store.read((database) => database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ?"
+      ).get(admitted.job.id) as { state: string });
+      expect(budget.state).toBe("charged");
+      expect(charge).toHaveBeenCalledTimes(1);
+      expect(resumeJob).not.toHaveBeenCalled();
+    } finally {
+      recovery.close();
+      repository.close();
+      store.close();
+    }
   });
 });

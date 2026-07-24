@@ -21,20 +21,22 @@ afterEach(async () => {
 });
 
 describe("LingjingGenerationCoordinator", () => {
-  it("reserves admission before account, catalog, and media preparation", async () => {
+  it("prepares fingerprint media before account scheduling", async () => {
     const app = harness();
 
     const handle = await app.coordinator.create(fixtureRequest());
     await handle.wait(5_000);
 
     expect(app.events).toEqual([
+      "prepare:admitted=0",
+      "catalog:707:image-generation:true",
       "account",
       "catalog:707:image-generation:true",
-      "prepare:admitted=1"
+      "account"
     ]);
   });
 
-  it("disposes prepared media when admission rejects before preparation", async () => {
+  it("disposes prepared media when global scheduling admission rejects", async () => {
     const app = createGenerationHarness({
       capacityActiveLimit: 1,
       capacityMaxQueuedRequests: 0
@@ -51,17 +53,17 @@ describe("LingjingGenerationCoordinator", () => {
           kind: "image"
         }]
       }))).rejects.toMatchObject({
-        code: "lingjing_capacity_queue_full"
+        code: "lingjing_capacity_exhausted"
       });
 
       expect(media.disposeCount()).toBe(1);
-      expect(app.events).toEqual([]);
+      expect(app.events).toEqual(["prepare:admitted=0"]);
     } finally {
       blockingLease.release();
     }
   });
 
-  it("disposes prepared media when catalog resolution rejects before preparation", async () => {
+  it("disposes prepared media when no runtime resolves the model", async () => {
     const failure = new Error("injected catalog failure");
     const app = createGenerationHarness({ catalogFailure: failure });
     harnesses.push(app);
@@ -72,12 +74,17 @@ describe("LingjingGenerationCoordinator", () => {
         source: { type: "prepared", media },
         kind: "image"
       }]
-    }))).rejects.toBe(failure);
+    }))).rejects.toMatchObject({
+      code: "lingjing_no_eligible_account"
+    });
 
     expect(media.disposeCount()).toBe(1);
     expect(app.events).toEqual([
+      "prepare:admitted=0",
+      "catalog:707:image-generation:true",
       "account",
-      "catalog:707:image-generation:true"
+      "catalog:707:image-generation:true",
+      "account"
     ]);
   });
 
@@ -105,6 +112,69 @@ describe("LingjingGenerationCoordinator", () => {
     expect(secondMedia.disposeCount()).toBe(1);
     expect(app.uploadCount()).toBe(1);
     await first.wait(5_000);
+  });
+
+  it("binds every upstream action to the scheduler-selected account", async () => {
+    const app = harness();
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    const completed = await handle.wait(5_000);
+
+    expect(completed.accountId).toBe(app.selectedAccountId);
+    expect(app.boundActions).not.toHaveLength(0);
+    expect(app.boundActions.every((event) => (
+      event.includes(app.selectedAccountId)
+    ))).toBe(true);
+  });
+
+  it("charges once only after an accepted submit returns", async () => {
+    const app = harness();
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await handle.wait(5_000);
+
+    expect(app.chargeCount()).toBe(1);
+    expect(app.releaseCount()).toBe(0);
+    expect(app.budgetEvents).toEqual([
+      "submit:start",
+      "submit:end",
+      "charge"
+    ]);
+  });
+
+  it("charges an ambiguous submit exactly once", async () => {
+    const app = harness();
+    app.disconnectNextSubmit();
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await handle.wait(5_000);
+
+    expect(app.chargeCount()).toBe(1);
+    expect(app.releaseCount()).toBe(0);
+  });
+
+  it("releases a reserved budget once when upload fails before submit", async () => {
+    const app = harness();
+    app.failUpload(new Error("injected upload failure"));
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.repository.findById(handle.job.id)?.status).toBe("failed");
+    expect(app.chargeCount()).toBe(0);
+    expect(app.releaseCount()).toBe(1);
+  });
+
+  it("releases a reserved budget once for a definite submit rejection", async () => {
+    const app = harness();
+    app.failNextSubmit(new Error("injected submit rejection"));
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.repository.findById(handle.job.id)?.status).toBe("failed");
+    expect(app.chargeCount()).toBe(0);
+    expect(app.releaseCount()).toBe(1);
   });
 
   it("rejects duplicate prepared media identity without double disposal", async () => {
@@ -309,7 +379,8 @@ describe("LingjingGenerationCoordinator", () => {
   });
 
   it("persists unknown and recovers in the same worker after the first discovery read fails", async () => {
-    const app = harness();
+    const app = createGenerationHarness({ unknownCapacityHoldMs: 5_000 });
+    harnesses.push(app);
     app.failNextPostSubmitAssetRead();
 
     const handle = await app.coordinator.create(fixtureRequest());

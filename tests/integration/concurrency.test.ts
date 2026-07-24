@@ -86,4 +86,57 @@ describe("generation concurrency", () => {
     ]);
     expect(harness.maximumCriticalConcurrency()).toBeLessThanOrEqual(5);
   });
+
+  it("keeps the selected account limit in addition to the global limit", async () => {
+    const harness = createGenerationHarness({
+      capacityActiveLimit: 2,
+      accountCapacityActiveLimit: 1,
+      initialTaskStatuses: [0]
+    });
+    harnesses.push(harness);
+
+    const first = await harness.coordinator.create(fixtureRequest({
+      idempotencyKey: "account-limit-first"
+    }));
+    await eventually(() => {
+      expect(harness.submitCount()).toBe(1);
+      expect(harness.accountCapacity.counts().active).toBe(1);
+    });
+
+    let secondSettled = false;
+    const secondPromise = harness.coordinator.create(fixtureRequest({
+      idempotencyKey: "account-limit-second"
+    })).then((handle) => {
+      secondSettled = true;
+      return handle;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondSettled).toBe(false);
+    expect(harness.submitCount()).toBe(1);
+    expect(harness.capacity.counts().active).toBe(2);
+    expect(harness.accountCapacity.counts()).toMatchObject({
+      active: 1,
+      admitted: 1
+    });
+
+    await eventually(() => {
+      expect(harness.repository.findById(first.job.id)?.upstreamTaskId)
+        .not.toBeNull();
+    });
+    const firstJob = harness.repository.findById(first.job.id);
+    harness.setTaskStatuses(firstJob?.upstreamTaskId ?? "", [1]);
+    await first.wait(1_000);
+    const second = await secondPromise;
+    await eventually(() => {
+      expect(harness.submitCount()).toBe(2);
+    });
+
+    await eventually(() => {
+      expect(harness.repository.findById(second.job.id)?.upstreamTaskId)
+        .not.toBeNull();
+    });
+    const secondJob = harness.repository.findById(second.job.id);
+    harness.setTaskStatuses(secondJob?.upstreamTaskId ?? "", [1]);
+    await second.wait(1_000);
+  });
 });

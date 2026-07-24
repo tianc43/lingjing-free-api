@@ -1,0 +1,384 @@
+import { describe, expect, it, vi } from "vitest";
+import { AccountScheduler } from "../../src/accounts/scheduler.js";
+import type { AccountRuntime } from "../../src/accounts/runtime.js";
+import type { AccountRecord, AdmissionResult } from "../../src/accounts/types.js";
+import type { GenerationRequest } from "../../src/generation/types.js";
+import { CapacityManager } from "../../src/jobs/capacity.js";
+import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
+import { createRequestFingerprint } from "../../src/jobs/fingerprint.js";
+import type { JobRecord } from "../../src/jobs/types.js";
+import type { AccountSnapshot } from "../../src/lingjing/account.js";
+import type { NormalizedModel } from "../../src/models/types.js";
+
+const NOW = Date.parse("2026-07-24T03:00:00Z");
+const REQUEST_FINGERPRINT = "a".repeat(64);
+const IDEMPOTENCY_HASH = "b".repeat(64);
+
+const model: NormalizedModel = {
+  id: "fixture-id",
+  apiId: "707",
+  alias: "fixture-model",
+  displayName: "Fixture model",
+  sourceType: "image-generation",
+  modelCode: null,
+  refId: "fixture-ref",
+  sceneCode: "fixture-scene",
+  expectedAssetScene: "image",
+  uploadStrategy: "general",
+  priceQuerySchema: null,
+  parameters: [{
+    idx: "1",
+    key: "prompt",
+    displayName: "Prompt",
+    required: true,
+    kind: "string"
+  }],
+  pricing: { unit: "points", amount: 7 },
+  rawRevision: "fixture-revision"
+};
+
+const request: GenerationRequest = {
+  kind: "image",
+  sourceType: "image-generation",
+  model: "707",
+  values: { prompt: "draw a fixture" },
+  media: [],
+  idempotencyKey: "fixture-key"
+};
+
+function record(
+  id: string,
+  overrides: Partial<AccountRecord> = {}
+): AccountRecord {
+  return {
+    id,
+    name: id,
+    enabled: true,
+    priority: 0,
+    dailyPointLimit: 0,
+    monthlyPointLimit: 0,
+    authDirectory: `data/accounts/${id}`,
+    healthStatus: "ready",
+    lastErrorCode: null,
+    subjectHash: null,
+    pointsBalance: 100,
+    totalBalance: 100,
+    maxConcurrency: 5,
+    lastCheckedAt: NOW,
+    lastSelectedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides
+  };
+}
+
+function snapshot(pointsBalance = 100): AccountSnapshot {
+  return {
+    subject: "fixture-subject",
+    spaceId: 91_001,
+    membership: null,
+    maxConcurrency: 5,
+    pointsBalance,
+    couponBalance: 0,
+    availableAmount: pointsBalance,
+    totalBalance: pointsBalance,
+    resourcePackages: []
+  };
+}
+
+function runtime(
+  accountRecord: AccountRecord,
+  options: {
+    capacity?: CapacityManager;
+    resolve?: () => Promise<NormalizedModel>;
+    describe?: () => Promise<AccountSnapshot>;
+  } = {}
+): AccountRuntime {
+  return {
+    record: accountRecord,
+    session: {} as AccountRuntime["session"],
+    transport: {} as AccountRuntime["transport"],
+    account: {
+      describe: options.describe ?? (() => Promise.resolve(snapshot()))
+    } as AccountRuntime["account"],
+    catalog: {
+      resolve: options.resolve ?? (() => Promise.resolve(model))
+    } as unknown as AccountRuntime["catalog"],
+    capacity: options.capacity ?? new CapacityManager(5, 10),
+    discoveryLock: new DiscoveryLock()
+  };
+}
+
+function job(accountId: string, overrides: Partial<JobRecord> = {}): JobRecord {
+  return {
+    id: `job-${accountId}`,
+    kind: "image",
+    sourceType: "image-generation",
+    model: request.model,
+    apiId: model.apiId,
+    modelCode: model.modelCode,
+    expectedAssetScene: model.expectedAssetScene,
+    requestFingerprint: REQUEST_FINGERPRINT,
+    idempotencyKeyHash: IDEMPOTENCY_HASH,
+    spaceId: 91_001,
+    accountId,
+    quotedPoints: 7,
+    status: "queued",
+    creationCode: null,
+    upstreamTaskId: null,
+    upstreamFingerprint: null,
+    submittedAt: null,
+    discoveredAt: null,
+    completedAt: null,
+    failedAt: null,
+    unknownHoldUntil: null,
+    errorCode: null,
+    result: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides
+  };
+}
+
+function schedulerFor(
+  runtimes: AccountRuntime[],
+  options: {
+    usage?: Record<string, { dayUsedPoints: number; monthUsedPoints: number }>;
+    reserve?: (accountId: string) => AdmissionResult;
+    globalCapacity?: CapacityManager;
+  } = {}
+): {
+  scheduler: AccountScheduler;
+  reserveOrGet: ReturnType<typeof vi.fn>;
+  globalCapacity: CapacityManager;
+} {
+  const records = new Map(runtimes.map((item) => [item.record.id, item.record]));
+  const reserveOrGet = vi.fn((input: { accountId: string }): AdmissionResult => (
+    options.reserve?.(input.accountId)
+      ?? { outcome: "created" as const, job: job(input.accountId) }
+  ));
+  const globalCapacity = options.globalCapacity ?? new CapacityManager(10, 10);
+  return {
+    scheduler: new AccountScheduler({
+      registry: {
+        listEnabled: () => runtimes,
+        require: (accountId: string) => {
+          const found = runtimes.find((item) => item.record.id === accountId);
+          if (found === undefined) throw new Error("runtime unavailable");
+          return found;
+        }
+      },
+      accounts: {
+        findById: (accountId: string) => records.get(accountId) ?? null,
+        usage: (accountId: string) => options.usage?.[accountId] ?? {
+          dayUsedPoints: 0,
+          monthUsedPoints: 0
+        }
+      },
+      admissions: { reserveOrGet },
+      capacity: globalCapacity,
+      now: () => NOW
+    }),
+    reserveOrGet,
+    globalCapacity
+  };
+}
+
+const admissionInput = {
+  request,
+  requestFingerprint: REQUEST_FINGERPRINT,
+  idempotencyKeyHash: IDEMPOTENCY_HASH
+};
+
+describe("AccountScheduler", () => {
+  it("orders candidates by priority, active jobs, last selection, then ID", async () => {
+    const lowerPriority = runtime(record("acct_priority", {
+      priority: 0,
+      lastSelectedAt: NOW
+    }));
+    lowerPriority.capacity.restore("active-priority-a", "processing", null, NOW);
+    lowerPriority.capacity.restore("active-priority-b", "processing", null, NOW);
+    const fewerActive = runtime(record("acct_active", {
+      priority: 0,
+      lastSelectedAt: NOW
+    }));
+    fewerActive.capacity.restore("active-one", "processing", null, NOW);
+    const olderSelection = runtime(record("acct_older", {
+      priority: 0,
+      lastSelectedAt: NOW - 1
+    }));
+    olderSelection.capacity.restore("active-two", "processing", null, NOW);
+    const { scheduler } = schedulerFor([
+      lowerPriority,
+      fewerActive,
+      olderSelection
+    ]);
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted.runtime.record.id).toBe("acct_older");
+    admitted.lease?.release();
+  });
+
+  it("prefers a lower numeric priority before current load", async () => {
+    const lowPriorityBusy = runtime(record("acct_low", { priority: 0 }));
+    lowPriorityBusy.capacity.restore("busy", "processing", null, NOW);
+    const highPriorityIdle = runtime(record("acct_high", { priority: 1 }));
+    const { scheduler } = schedulerFor([highPriorityIdle, lowPriorityBusy]);
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted.runtime.record.id).toBe("acct_low");
+    admitted.lease?.release();
+  });
+
+  it.each([
+    ["disabled", record("acct_disabled", { enabled: false }), {}, {}],
+    ["unhealthy", record("acct_unhealthy", { healthStatus: "unhealthy" }), {}, {}],
+    ["unsupported model", record("acct_model"), {
+      resolve: () => Promise.reject(new Error("unsupported"))
+    }, {}],
+    ["insufficient wallet", record("acct_wallet"), {
+      describe: () => Promise.resolve(snapshot(6))
+    }, {}],
+    ["daily budget", record("acct_daily", { dailyPointLimit: 10 }), {}, {
+      dayUsedPoints: 4,
+      monthUsedPoints: 0
+    }],
+    ["monthly budget", record("acct_monthly", { monthlyPointLimit: 10 }), {}, {
+      dayUsedPoints: 0,
+      monthUsedPoints: 4
+    }],
+    ["unknown quote", record("acct_quote"), {
+      resolve: () => Promise.resolve({ ...model, pricing: null })
+    }, {}]
+  ] as const)(
+    "rejects %s accounts without exposing account details",
+    async (_name, accountRecord, runtimeOptions, usage) => {
+      const candidate = runtime(accountRecord, runtimeOptions);
+      const { scheduler, globalCapacity } = schedulerFor([candidate], {
+        usage: { [accountRecord.id]: { dayUsedPoints: 0, monthUsedPoints: 0, ...usage } }
+      });
+
+      await expect(scheduler.admit(admissionInput)).rejects.toMatchObject({
+        statusCode: 429,
+        code: "lingjing_no_eligible_account"
+      });
+      expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    }
+  );
+
+  it("reports temporary capacity exhaustion separately", async () => {
+    const accountCapacity = new CapacityManager(1, 0);
+    accountCapacity.restore("already-active", "processing", null, NOW);
+    const candidate = runtime(record("acct_busy"), {
+      capacity: accountCapacity
+    });
+    const { scheduler, globalCapacity } = schedulerFor([candidate]);
+
+    await expect(scheduler.admit(admissionInput)).rejects.toMatchObject({
+      statusCode: 429,
+      code: "lingjing_capacity_exhausted"
+    });
+    expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+  });
+
+  it("preserves request validation errors when every resolved model rejects media", async () => {
+    const candidate = runtime(record("acct_media"));
+    const { scheduler } = schedulerFor([candidate]);
+
+    await expect(scheduler.admit({
+      ...admissionInput,
+      request: {
+        ...request,
+        media: [{
+          kind: "image",
+          source: {
+            type: "prepared",
+            media: {} as GenerationRequest["media"][number]["source"] extends {
+              media: infer T;
+            } ? T : never
+          }
+        }]
+      }
+    })).rejects.toMatchObject({
+      statusCode: 400,
+      code: "invalid_request"
+    });
+  });
+
+  it("retries the next candidate when the transaction loses a budget race", async () => {
+    const first = runtime(record("acct_first", { lastSelectedAt: NOW - 2 }));
+    const second = runtime(record("acct_second", { lastSelectedAt: NOW - 1 }));
+    const outcomes: AdmissionResult[] = [
+      { outcome: "budget_exhausted" },
+      { outcome: "created", job: job("acct_second") }
+    ];
+    const { scheduler, reserveOrGet } = schedulerFor([first, second], {
+      reserve: () => outcomes.shift() ?? { outcome: "account_unavailable" }
+    });
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted.runtime.record.id).toBe("acct_second");
+    expect(reserveOrGet).toHaveBeenCalledTimes(2);
+    expect(first.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    admitted.lease?.release();
+  });
+
+  it("releases all fresh admissions for an idempotent replay", async () => {
+    const first = runtime(record("acct_first"));
+    const original = runtime(record("acct_original"));
+    const existing = job("acct_original", { status: "processing" });
+    const { scheduler, globalCapacity } = schedulerFor([first, original], {
+      reserve: () => ({ outcome: "existing", job: existing })
+    });
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted).toMatchObject({
+      created: false,
+      lease: null,
+      job: { id: existing.id, accountId: "acct_original" },
+      runtime: { record: { id: "acct_original" } }
+    });
+    expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    expect(first.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+  });
+
+  it("returns one lease that releases global and selected account capacity", async () => {
+    const selected = runtime(record("acct_selected"));
+    const { scheduler, globalCapacity } = schedulerFor([selected]);
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted.created).toBe(true);
+    expect(admitted.lease).not.toBeNull();
+    expect(globalCapacity.activeJobIds()).toEqual([admitted.job.id]);
+    expect(selected.capacity.activeJobIds()).toEqual([admitted.job.id]);
+    admitted.lease?.release();
+    expect(globalCapacity.activeJobIds()).toEqual([]);
+    expect(selected.capacity.activeJobIds()).toEqual([]);
+  });
+
+  it("persists the canonical resolved model in the request fingerprint", async () => {
+    const selected = runtime(record("acct_selected"));
+    const { scheduler, reserveOrGet } = schedulerFor([selected]);
+    const inputContentHashes = ["c".repeat(64)];
+
+    const admitted = await scheduler.admit({
+      ...admissionInput,
+      request: { ...request, model: model.alias },
+      inputContentHashes
+    });
+
+    expect(reserveOrGet).toHaveBeenCalledWith(expect.objectContaining({
+      requestFingerprint: createRequestFingerprint({
+        model: model.apiId,
+        parameters: request.values,
+        inputContentHashes
+      })
+    }));
+    admitted.lease?.release();
+  });
+});

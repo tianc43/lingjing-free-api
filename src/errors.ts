@@ -71,5 +71,7 @@ export const errors = {
   temporaryStorageExhausted: () => new AppError(503, "server_error", "temporary_storage_exhausted", "Temporary media storage exhausted"),
   contentPolicy: () => new AppError(400, "invalid_request_error", "content_policy_violation", "Content policy violation"),
   idempotencyConflict: () => new AppError(409, "invalid_request_error", "idempotency_conflict", "Idempotency key reused with different input"),
+  noEligibleAccount: () => new AppError(429, "rate_limit_error", "lingjing_no_eligible_account", "No eligible Lingjing account is available"),
+  capacityExhausted: () => new AppError(429, "rate_limit_error", "lingjing_capacity_exhausted", "Lingjing generation capacity is temporarily exhausted"),
   upstream: () => new AppError(502, "upstream_error", "lingjing_upstream_error", "Lingjing upstream request failed")
 };

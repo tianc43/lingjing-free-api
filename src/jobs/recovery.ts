@@ -1,5 +1,10 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  combineCapacityLeases,
+  type AccountScheduler
+} from "../accounts/scheduler.js";
+import type { SqliteAdmissionRepository } from "../accounts/sqlite-admission-repository.js";
 import { JobRunnerRegistry } from "../generation/runner-registry.js";
 import type { CapacityManager } from "./capacity.js";
 import type { SqliteJobRepository } from "./sqlite-repository.js";
@@ -40,6 +45,11 @@ export interface StartupRecoveryOptions {
   capacity: CapacityManager;
   registry: JobRunnerRegistry;
   resumeJob: (job: JobRecord, lease: CapacityLease) => Promise<void>;
+  scheduler?: Pick<AccountScheduler, "restore" | "expireUnknown">;
+  admissions?: Pick<
+    SqliteAdmissionRepository,
+    "charge" | "releasePreSubmit"
+  >;
   unknownCapacityHoldMs: number;
   cleanupOrphans?: () => Promise<void>;
   now?: () => number;
@@ -85,17 +95,20 @@ export class StartupRecovery {
   private async initialize(): Promise<void> {
     try {
       await this.options.cleanupOrphans?.();
+      this.chargeCompletedJobs();
       this.failInterruptedQueuedJobs();
       for (const promise of this.scheduleRecoverableJobs()) {
         void promise.catch(() => undefined);
       }
       this.options.capacity.expireUnknown(this.now());
+      this.options.scheduler?.expireUnknown(this.now());
       const sweepMs = Math.max(
         1,
         Math.min(60_000, Math.floor(this.options.unknownCapacityHoldMs / 4))
       );
       this.sweepTimer = this.createInterval(() => {
         this.options.capacity.expireUnknown(this.now());
+        this.options.scheduler?.expireUnknown(this.now());
       }, sweepMs);
       this.sweepTimer.unref();
       this.readyState = true;
@@ -153,6 +166,7 @@ export class StartupRecovery {
           failedAt: this.now(),
           errorCode: "interrupted_before_submit"
         });
+        this.options.admissions?.releasePreSubmit(job.id);
       }
       queued = this.options.repository.list({
         status: "queued",
@@ -176,13 +190,29 @@ export class StartupRecovery {
   private prepare(
     persisted: JobRecord
   ): { job: JobRecord; lease: CapacityLease } | null {
-    const lease = this.options.capacity.restore(
+    this.options.admissions?.charge(persisted.id);
+    const runtime = this.options.scheduler?.restore(persisted);
+    const globalLease = this.options.capacity.restore(
       persisted.id,
       persisted.status,
       persisted.unknownHoldUntil,
       this.now()
     );
-    if (lease === null) return null;
+    if (globalLease === null) return null;
+    let lease = globalLease;
+    if (runtime !== undefined) {
+      const accountLease = runtime.capacity.restore(
+        persisted.id,
+        persisted.status,
+        persisted.unknownHoldUntil,
+        this.now()
+      );
+      if (accountLease === null) {
+        globalLease.release();
+        return null;
+      }
+      lease = combineCapacityLeases(globalLease, accountLease);
+    }
     const job = persisted.status === "submitting"
       ? this.options.repository.transition(
           persisted.id,
@@ -190,13 +220,7 @@ export class StartupRecovery {
           { status: "discovering" }
         )
       : persisted;
-    const refreshed = this.options.capacity.restore(
-      job.id,
-      job.status,
-      job.unknownHoldUntil,
-      this.now()
-    );
-    return refreshed === null ? null : { job, lease: refreshed };
+    return { job, lease };
   }
 
   private schedule(job: JobRecord, lease: CapacityLease): Promise<void> {
@@ -204,5 +228,14 @@ export class StartupRecovery {
       job.id,
       () => this.options.resumeJob(job, lease)
     ).promise;
+  }
+
+  private chargeCompletedJobs(): void {
+    if (this.options.admissions === undefined) return;
+    const completed = this.options.repository.list({
+      status: "completed",
+      limit: 1_000_000
+    });
+    for (const job of completed) this.options.admissions.charge(job.id);
   }
 }

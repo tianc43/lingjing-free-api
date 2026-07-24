@@ -3,6 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { AccountScheduler } from "../../src/accounts/scheduler.js";
+import type { AccountRuntime } from "../../src/accounts/runtime.js";
+import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import { removeTestDirectory } from "./cleanup.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
@@ -19,6 +23,7 @@ import {
   JobRunnerRegistry
 } from "../../src/generation/runner-registry.js";
 import type { GenerationRequest } from "../../src/generation/types.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 
 export const fixtureModel: NormalizedModel = {
   id: "fixture-model-id",
@@ -49,7 +54,7 @@ export const fixtureModel: NormalizedModel = {
       maxFiles: 1
     }
   ],
-  pricing: null,
+  pricing: { unit: "points", amount: 7 },
   rawRevision: "fixture-revision"
 };
 
@@ -129,6 +134,12 @@ export interface GenerationHarness {
   capacity: CapacityManager;
   registry: CountingRegistry;
   transport: LingjingTransport;
+  selectedAccountId: string;
+  accountCapacity: CapacityManager;
+  boundActions: string[];
+  chargeCount: () => number;
+  releaseCount: () => number;
+  budgetEvents: string[];
   submitCount: () => number;
   maximumCriticalConcurrency: () => number;
   criticalHistory: () => string[];
@@ -165,11 +176,40 @@ export function createGenerationHarness(options: {
   mediaMaxFiles?: number;
   capacityActiveLimit?: number;
   capacityMaxQueuedRequests?: number;
+  accountCapacityActiveLimit?: number;
+  accountCapacityMaxQueuedRequests?: number;
   catalogFailure?: Error;
   initialTaskStatuses?: number[];
 } = {}): GenerationHarness {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-generation-"));
-  const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
+  const store = new SqliteStore(join(directory, "jobs.sqlite"));
+  const repository = new SqliteJobRepository(store);
+  const accounts = new SqliteAccountRepository(store);
+  const legacy = accounts.ensureLegacyAccount("data/auth");
+  accounts.update(legacy.id, { priority: 1 });
+  accounts.recordObservation(legacy.id, {
+    healthStatus: "ready",
+    lastErrorCode: null,
+    subjectHash: "legacy-subject",
+    pointsBalance: 100,
+    totalBalance: 100,
+    maxConcurrency: options.accountCapacityActiveLimit ?? 5
+  });
+  const selected = accounts.create({
+    name: "Selected",
+    priority: 0,
+    dailyPointLimit: 0,
+    monthlyPointLimit: 0
+  });
+  accounts.update(selected.id, { enabled: true });
+  accounts.recordObservation(selected.id, {
+    healthStatus: "ready",
+    lastErrorCode: null,
+    subjectHash: "selected-subject",
+    pointsBalance: 100,
+    totalBalance: 100,
+    maxConcurrency: options.accountCapacityActiveLimit ?? 5
+  });
   const capacity = new CapacityManager(
     options.capacityActiveLimit ?? 5,
     options.capacityMaxQueuedRequests ?? 10
@@ -178,8 +218,12 @@ export function createGenerationHarness(options: {
   const assets: FixtureAsset[] = [];
   const statuses = new Map<string, number[]>();
   const events: string[] = [];
+  const boundActions: string[] = [];
+  const budgetEvents: string[] = [];
   let submissions = 0;
   let uploadCalls = 0;
+  let chargeCalls = 0;
+  let releaseCalls = 0;
   let assetsPerSubmit: 1 | 2 = 1;
   let disconnect = false;
   let submitFailure: Error | null = null;
@@ -327,15 +371,31 @@ export function createGenerationHarness(options: {
     })
   ));
 
-  const transport = {
-    read,
-    submitOnce,
+  const transportFor = (accountId: string): LingjingTransport => ({
+    read: vi.fn((...args: Parameters<LingjingTransport["read"]>) => {
+      boundActions.push(`read:${accountId}:${args[0]}`);
+      return read(...args);
+    }) as LingjingTransport["read"],
+    submitOnce: vi.fn(async (
+      ...args: Parameters<LingjingTransport["submitOnce"]>
+    ) => {
+      boundActions.push(`submit:${accountId}`);
+      budgetEvents.push("submit:start");
+      try {
+        return await submitOnce(...args);
+      } finally {
+        budgetEvents.push("submit:end");
+      }
+    }),
     uploadApi: vi.fn(),
     putSigned: vi.fn()
-  } as unknown as LingjingTransport;
+  } as unknown as LingjingTransport);
+  const legacyTransport = transportFor(legacy.id);
+  const selectedTransport = transportFor(selected.id);
 
-  const uploadService: UploadService = {
+  const uploadServiceFor = (accountId: string): UploadService => ({
     upload: async (media): Promise<UploadedMaterial> => {
+      boundActions.push(`upload:${accountId}`);
       uploadCalls += 1;
       try {
         if (uploadFailure !== null) throw uploadFailure;
@@ -349,36 +409,99 @@ export function createGenerationHarness(options: {
         await media.dispose();
       }
     }
+  });
+
+  const runtimeFor = (
+    accountId: string,
+    transport: LingjingTransport
+  ): AccountRuntime => {
+    const accountRecord = accounts.findById(accountId);
+    if (accountRecord === null) throw new Error("Fixture account disappeared");
+    return {
+      record: accountRecord,
+      session: {} as AccountRuntime["session"],
+      transport,
+      account: {
+        describe: () => {
+          events.push("account");
+          return Promise.resolve({
+            subject: `${accountId}-subject`,
+            spaceId: accountId === legacy.id ? 1 : 2,
+            membership: null,
+            maxConcurrency: options.accountCapacityActiveLimit ?? 5,
+            pointsBalance: 100,
+            couponBalance: 0,
+            availableAmount: 100,
+            totalBalance: 100,
+            resourcePackages: []
+          });
+        }
+      } as unknown as AccountRuntime["account"],
+      catalog: {
+        resolve: (
+          requestedModel: string,
+          sourceType: GenerationRequest["sourceType"],
+          charged?: boolean
+        ) => {
+          events.push(
+            `catalog:${requestedModel}:${sourceType}:${String(charged)}`
+          );
+          return options.catalogFailure === undefined
+            ? Promise.resolve(resolvedModel)
+            : Promise.reject(options.catalogFailure);
+        }
+      } as unknown as AccountRuntime["catalog"],
+      capacity: new CapacityManager(
+        options.accountCapacityActiveLimit ?? options.capacityActiveLimit ?? 5,
+        options.accountCapacityMaxQueuedRequests
+          ?? options.capacityMaxQueuedRequests
+          ?? 10
+      ),
+      discoveryLock: new DiscoveryLock()
+    };
   };
+  const legacyRuntime = runtimeFor(legacy.id, legacyTransport);
+  const selectedRuntime = runtimeFor(selected.id, selectedTransport);
+  const runtimes = [legacyRuntime, selectedRuntime];
+  const admissionsRepository = new SqliteAdmissionRepository(
+    store,
+    options.now ?? Date.now
+  );
+  const admissions = {
+    reserveOrGet: admissionsRepository.reserveOrGet.bind(admissionsRepository),
+    charge: (jobId: string) => {
+      chargeCalls += 1;
+      budgetEvents.push("charge");
+      admissionsRepository.charge(jobId);
+    },
+    releasePreSubmit: (jobId: string) => {
+      releaseCalls += 1;
+      budgetEvents.push("release");
+      admissionsRepository.releasePreSubmit(jobId);
+    }
+  };
+  const scheduler = new AccountScheduler({
+    registry: {
+      listEnabled: () => runtimes,
+      require: (accountId: string) => {
+        const found = runtimes.find(
+          (runtime) => runtime.record.id === accountId
+        );
+        if (found === undefined) throw new Error("Fixture runtime unavailable");
+        return found;
+      }
+    },
+    accounts,
+    admissions,
+    capacity,
+    ...(options.now === undefined ? {} : { now: options.now })
+  });
 
   const coordinator = new LingjingGenerationCoordinator({
     repository,
     capacity,
-    account: {
-      describe: () => {
-        events.push("account");
-        return Promise.resolve({
-          subject: "fixture-subject",
-          spaceId: 0,
-          membership: null,
-          maxConcurrency: 5,
-          pointsBalance: 100,
-          couponBalance: 0,
-          availableAmount: 100,
-          totalBalance: 100,
-          resourcePackages: []
-        });
-      }
-    },
-    catalog: {
-      resolve: (model, sourceType, charged) => {
-        events.push(`catalog:${model}:${sourceType}:${String(charged)}`);
-        return options.catalogFailure === undefined
-          ? Promise.resolve(resolvedModel)
-          : Promise.reject(options.catalogFailure);
-      }
-    },
-    transport,
+    scheduler,
+    admissions,
     prepareMedia: (input) => {
       events.push(`prepare:admitted=${String(capacity.counts().admitted)}`);
       if (input.source.type !== "prepared") {
@@ -386,8 +509,7 @@ export function createGenerationHarness(options: {
       }
       return Promise.resolve(input.source.media);
     },
-    createUploadService: () => uploadService,
-    discoveryLock: new DiscoveryLock(),
+    createUploadService: (runtime) => uploadServiceFor(runtime.record.id),
     registry,
     assetDiscoveryTimeoutMs: 30,
     unknownCapacityHoldMs: options.unknownCapacityHoldMs ?? 100,
@@ -401,7 +523,13 @@ export function createGenerationHarness(options: {
     repository,
     capacity,
     registry,
-    transport,
+    transport: selectedRuntime.transport,
+    selectedAccountId: selected.id,
+    accountCapacity: selectedRuntime.capacity,
+    boundActions,
+    chargeCount: () => chargeCalls,
+    releaseCount: () => releaseCalls,
+    budgetEvents,
     submitCount: () => submissions,
     maximumCriticalConcurrency: () => maxCriticalConcurrency,
     criticalHistory: () => [...criticalEvents],
@@ -487,6 +615,7 @@ export function createGenerationHarness(options: {
     close: async () => {
       await registry.waitUntilIdle();
       repository.close();
+      store.close();
       removeTestDirectory(directory);
     }
   };

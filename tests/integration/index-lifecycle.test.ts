@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { startServer, type RunningServer } from "../../src/index.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
-import type { LingjingTransport } from "../../src/lingjing/types.js";
+import type {
+  LingjingTransport,
+  ReadRequest
+} from "../../src/lingjing/types.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
 async function availablePort(): Promise<number> {
@@ -26,6 +29,39 @@ async function availablePort(): Promise<number> {
     throw new Error("Could not reserve a test port");
   }
   return address.port;
+}
+
+function withAccountRuntime(
+  fallback?: LingjingTransport
+): LingjingTransport {
+  return {
+    read<T>(path: string, init?: ReadRequest): Promise<T> {
+      const accountResponses: Record<string, unknown> = {
+        "/api/user/describeBaseInfo": {},
+        "/joycreator/team/space/menu/list": [{ spaceId: 0 }],
+        "/joycreator/member/queryMember?pin=fixture-pin": {
+          membership: "fixture"
+        },
+        "/api/wallet/describeAccountCoupons": {
+          pointsBalance: 100,
+          couponBalance: 0,
+          availableAmount: 100,
+          totalBalance: 100
+        }
+      };
+      if (Object.hasOwn(accountResponses, path)) {
+        return Promise.resolve(accountResponses[path] as T);
+      }
+      return fallback?.read<T>(path, init)
+        ?? Promise.reject(new Error(`Unexpected read ${path}`));
+    },
+    submitOnce: fallback?.submitOnce.bind(fallback)
+      ?? (() => Promise.reject(new Error("Unexpected submit"))),
+    uploadApi: fallback?.uploadApi.bind(fallback)
+      ?? (() => Promise.reject(new Error("Unexpected upload"))),
+    putSigned: fallback?.putSigned.bind(fallback)
+      ?? (() => Promise.reject(new Error("Unexpected signed upload")))
+  };
 }
 
 describe("server lifecycle", () => {
@@ -77,7 +113,9 @@ describe("server lifecycle", () => {
     const dbPath = join(directory, "jobs.sqlite");
     const env = await fixtureEnvironment(dbPath);
     const port = Number(env.PORT);
-    runtime = await startServer(env);
+    runtime = await startServer(env, {
+      transport: withAccountRuntime()
+    });
 
     expect(runtime.dependencies.recovery.ready).toBe(true);
     const health = await fetch(`http://127.0.0.1:${String(port)}/healthz`);
@@ -180,7 +218,7 @@ describe("server lifecycle", () => {
 
     runtime = await startServer(
       await fixtureEnvironment(dbPath),
-      { transport }
+      { transport: withAccountRuntime(transport) }
     );
     await started;
     expect(runtime.dependencies.recovery.ready).toBe(true);
@@ -199,6 +237,7 @@ describe("server lifecycle", () => {
     runtime = await startServer(
       await fixtureEnvironment(dbPath),
       {
+        transport: withAccountRuntime(),
         shutdown: {
           submitDrainTimeoutMs: 5,
           runnerIdleTimeoutMs: 100
@@ -288,7 +327,7 @@ describe("server lifecycle", () => {
 
     try {
       await expect(startServer(env, {
-        transport,
+        transport: withAccountRuntime(transport),
         registry
       })).rejects.toMatchObject({ code: "EADDRINUSE" });
       await started;
