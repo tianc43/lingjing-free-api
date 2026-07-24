@@ -43,3 +43,16 @@ asset isolation.
 - The browser fixture intentionally tests clipboard failure in its insecure
   local HTTP context; a secure-context success assertion can be added when the
   test host serves HTTPS.
+
+## Build output correction
+
+- Replaced Vite `emptyOutDir: true` with a build plugin that resolves and
+  validates the two permitted frontend targets under `dist/admin`: `index.html`
+  and `assets`. It leaves `dist/admin/*.js` server modules untouched.
+- The regression first failed with missing `dist/admin/routes.js` after Vite.
+  It now seeds `dist/admin/assets/old.js`, confirms that the stale asset is
+  removed, asserts `routes.js` survives, imports `dist/app.js`, and validates
+  that the HTML only references current portable frontend assets.
+- Re-verified: focused build regression, lint, typecheck, full build,
+  `node -e "import('./dist/app.js')"`, and default-parallel `npm test` (53
+  files, 572 tests).
