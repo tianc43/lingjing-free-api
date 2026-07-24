@@ -87,6 +87,7 @@ const config: AppConfig = {
   storageStatePath: "fixture-storage-state.json",
   cookieFilePath: "fixture-cookie.txt",
   sessionProfilePath: "fixture-profile.json",
+  dataDirectory: "fixture-data",
   dbPath: ":memory:",
   maxConcurrency: 5,
   modelCacheTtlMs: 300_000,

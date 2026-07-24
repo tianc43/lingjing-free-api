@@ -13,6 +13,12 @@ describe("parseConfig", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.maxConcurrency).toBe(5);
     expect(config.sessionMode).toBe("browser-state");
+    expect(config.dataDirectory).toBe("./data");
+  });
+
+  it("accepts an explicit data directory for server-derived account sessions", () => {
+    expect(parseConfig({ ...validEnv, DATA_DIRECTORY: "./private-data" }).dataDirectory)
+      .toBe("./private-data");
   });
 
   it("rejects the sample key and invalid concurrency", () => {

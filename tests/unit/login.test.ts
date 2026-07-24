@@ -1,10 +1,18 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { runLoginCli, waitForAuthenticatedPage } from "../../src/cli/login.js";
+import { parseLoginArguments, runLoginCli, waitForAuthenticatedPage } from "../../src/cli/login.js";
 import { copyFixtureToTemporaryFile } from "../helpers/session-fixtures.js";
 
 describe("login CLI", () => {
+  it("accepts only generated account IDs for the account login option", () => {
+    expect(parseLoginArguments(["--account-id", "acct_0123456789abcdef01234567"]))
+      .toEqual({ accountId: "acct_0123456789abcdef01234567" });
+    expect(parseLoginArguments([])).toEqual({});
+    expect(() => parseLoginArguments(["--account-id", "legacy"])).toThrow("Invalid account ID");
+    expect(() => parseLoginArguments(["--account-id", "../../escape"])).toThrow("Invalid account ID");
+  });
+
   it("reads authenticated state and origin pin in one browser evaluation", async () => {
     vi.stubGlobal("location", { origin: "https://lingjing.jdcloud.com" });
     vi.stubGlobal("fetch", () => Promise.resolve({ json: () => Promise.resolve({ result: { user: "fixture" } }) }));

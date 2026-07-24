@@ -1,5 +1,8 @@
 import { parseConfig } from "../config.js";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { atomicWritePrivateJsonPair } from "../session/atomic-write.js";
+import { GENERATED_ACCOUNT_ID, accountSessionPaths } from "../session/create-provider.js";
 import { chromium } from "playwright";
 
 const LOGIN_URL = "https://lingjing.jdcloud.com/";
@@ -21,6 +24,15 @@ interface LoginContext {
 interface LoginBrowser {
   newContext(): Promise<LoginContext>;
   close(): Promise<void>;
+}
+
+export function parseLoginArguments(args: string[]): { accountId?: string } {
+  if (args.length === 0) return {};
+  const accountId = args[1];
+  if (args.length === 2 && args[0] === "--account-id" && accountId !== undefined && GENERATED_ACCOUNT_ID.test(accountId)) {
+    return { accountId };
+  }
+  throw new Error("Invalid account ID");
 }
 
 export async function waitForAuthenticatedPage(page: LoginPage): Promise<string> {
@@ -89,5 +101,13 @@ export async function runLoginCli(
 }
 
 if (process.argv[1]?.endsWith("login.ts")) {
-  void runLoginCli(parseConfig(process.env)).then((exitCode) => { process.exitCode = exitCode; });
+  const config = parseConfig(process.env);
+  const arguments_ = parseLoginArguments(process.argv.slice(2));
+  const loginConfig = arguments_.accountId === undefined
+    ? config
+    : { ...config, ...accountSessionPaths(config, arguments_.accountId) };
+  const prepare = arguments_.accountId === undefined
+    ? Promise.resolve()
+    : mkdir(dirname(loginConfig.storageStatePath), { recursive: true });
+  void prepare.then(async () => await runLoginCli(loginConfig)).then((exitCode) => { process.exitCode = exitCode; });
 }

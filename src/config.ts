@@ -8,6 +8,7 @@ export interface AppConfig {
   storageStatePath: string;
   cookieFilePath: string;
   sessionProfilePath: string;
+  dataDirectory: string;
   dbPath: string;
   maxConcurrency: number;
   modelCacheTtlMs: number;
@@ -37,6 +38,7 @@ const configSchema = z.object({
   LINGJING_STORAGE_STATE: z.string().default("./data/auth/storage-state.json"),
   LINGJING_COOKIE_FILE: z.string().default("./data/auth/cookie.txt"),
   LINGJING_SESSION_PROFILE: z.string().default("./data/auth/session-profile.json"),
+  DATA_DIRECTORY: z.string().min(1).default("./data"),
   DB_PATH: z.string().default("./data/lingjing.db"),
   LINGJING_MAX_CONCURRENCY: positiveInteger.default(5),
   MODEL_CACHE_TTL_MS: positiveInteger.default(300_000),
@@ -86,6 +88,7 @@ export function parseConfig(env: NodeJS.ProcessEnv | Record<string, string | und
     storageStatePath: config.LINGJING_STORAGE_STATE,
     cookieFilePath: config.LINGJING_COOKIE_FILE,
     sessionProfilePath: config.LINGJING_SESSION_PROFILE,
+    dataDirectory: config.DATA_DIRECTORY,
     dbPath: config.DB_PATH,
     maxConcurrency: config.LINGJING_MAX_CONCURRENCY,
     modelCacheTtlMs: config.MODEL_CACHE_TTL_MS,
