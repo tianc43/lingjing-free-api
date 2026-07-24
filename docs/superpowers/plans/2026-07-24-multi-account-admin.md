@@ -545,7 +545,7 @@ export interface AccountAdmission {
   runtime: AccountRuntime;
   model: NormalizedModel;
   job: JobRecord;
-  lease: CapacityLease;
+  lease: CapacityLease | null;
   created: boolean;
 }
 
@@ -593,9 +593,13 @@ Expected: FAIL because `AccountScheduler` does not exist.
 
 Resolve the requested model independently per runtime. Validate request media
 against that model. Derive a trusted quote. Read budget usage and wallet. Sort
-eligible candidates by the specified stable ordering. Acquire the candidate's
-capacity admission before calling `reserveOrGet`; release it when the
-transaction rejects and continue to the next candidate.
+eligible candidates by the specified stable ordering. Acquire one global queue
+admission, then acquire the candidate's per-account capacity admission before
+calling `reserveOrGet`; release the candidate admission when the transaction
+rejects and continue to the next candidate. A newly created job acquires both
+leases and returns one composite lease that releases both. An idempotent replay
+releases both fresh admissions, returns `created: false` with `lease: null`,
+and never starts a second runner.
 
 Map terminal no-candidate states to:
 
@@ -614,6 +618,8 @@ Update the generation harness with two transports. Assert:
 - `job.accountId` never changes.
 - Pre-submit validation/upload failures call `releasePreSubmit(job.id)`.
 - Accepted or ambiguous submissions call `charge(job.id)` exactly once.
+- Recovery promotes a still-reserved `submitting` or later job to charged
+  before resuming it.
 - An idempotent replay returns the original account and creates no runner.
 - Recovery requires `registry.require(job.accountId)` and never chooses again.
 
@@ -630,10 +636,16 @@ Expected: FAIL until the coordinator consumes `AccountAdmission`.
 - [ ] **Step 6: Refactor the coordinator around admitted runtime**
 
 Preserve media preparation and request fingerprint behavior. Replace global
-account/catalog/transport/capacity/discovery dependencies with the scheduler
-admission. Pass the selected runtime into `runInitial`, `runPostSubmit`,
-discovery, polling, and recovery. Charge immediately before `submitOnce`; if a
-failure occurs before that point, release. An ambiguous submit remains charged.
+account/catalog/transport/discovery dependencies with the scheduler admission
+while retaining the existing global capacity manager as the total queue limit.
+Pass the selected runtime into `runInitial`, `runPostSubmit`, discovery,
+polling, and recovery. Keep the budget entry `reserved` while `submitOnce`
+runs. On success or `SubmitAmbiguousError`, transition it to `charged`; on a
+definite rejection or any earlier failure, release it. During startup recovery,
+any non-released entry whose durable job is already `submitting`,
+`discovering`, `processing`, `unknown`, or terminal-success is promoted to
+`charged` before work resumes, closing the crash gap between upstream submit
+and local charging.
 
 Register runner identity as `job.id`; account identity remains durable in the
 job record and need not be encoded in runner keys.
@@ -647,7 +659,8 @@ job record and need not be encoded in runner keys.
 3. Construct job, account, and admission repositories on the store.
 4. Initialize the runtime registry.
 5. Construct the scheduler and coordinator.
-6. Run account-bound recovery before listening.
+6. Run account-bound recovery before listening, restoring both the global and
+   bound account capacity leases and releasing them together.
 
 Shutdown stops new admissions, drains runners, stops pollers, closes account
 runtimes, and closes the shared store once.
