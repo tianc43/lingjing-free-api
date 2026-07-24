@@ -81,22 +81,33 @@ describe("SqliteAccountRepository", () => {
     const store = new SqliteStore(createVersionOneDatabase());
     const accounts = new SqliteAccountRepository(store);
 
-    expect(accounts.ensureLegacyAccount("data/auth")).toMatchObject({
-      id: "legacy",
-      name: "Legacy account",
-      enabled: true,
-      authDirectory: "data/auth",
-      dailyPointLimit: 0,
-      monthlyPointLimit: 0
-    });
-    expect(accounts.ensureLegacyAccount("data/ignored").authDirectory).toBe("data/auth");
-    expect(store.read((database) => database.prepare(`
-      SELECT account_id, quoted_points FROM jobs WHERE id = 'job_existing'
-    `).get())).toEqual({ account_id: "legacy", quoted_points: 0 });
-    expect(store.read((database) => database.prepare(`
-      SELECT state, quoted_points FROM budget_entries WHERE job_id = 'job_existing'
-    `).get())).toEqual({ state: "charged", quoted_points: 0 });
-    store.close();
+    try {
+      expect(accounts.ensureLegacyAccount("data/auth")).toMatchObject({
+        id: "legacy",
+        name: "Legacy account",
+        enabled: true,
+        authDirectory: "data/auth",
+        dailyPointLimit: 0,
+        monthlyPointLimit: 0
+      });
+      expect(accounts.ensureLegacyAccount("data/ignored").authDirectory).toBe("data/auth");
+      expect(store.read((database) => database.prepare(`
+        SELECT account_id, quoted_points, quote_known
+        FROM jobs WHERE id = 'job_existing'
+      `).get())).toEqual({
+        account_id: "legacy",
+        quoted_points: 0,
+        quote_known: 1
+      });
+      expect(store.read((database) => database.prepare(
+        "SELECT MAX(version) AS version FROM schema_migrations"
+      ).get())).toEqual({ version: 3 });
+      expect(store.read((database) => database.prepare(`
+        SELECT state, quoted_points FROM budget_entries WHERE job_id = 'job_existing'
+      `).get())).toEqual({ state: "charged", quoted_points: 0 });
+    } finally {
+      store.close();
+    }
   });
 
   it("creates validated accounts in generated auth directories", () => {

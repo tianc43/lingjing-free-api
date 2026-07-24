@@ -48,7 +48,7 @@ export interface StartupRecoveryOptions {
   scheduler?: Pick<AccountScheduler, "restore" | "expireUnknown">;
   admissions?: Pick<
     SqliteAdmissionRepository,
-    "charge" | "releasePreSubmit"
+    "charge" | "releasePreSubmit" | "failAndRelease"
   >;
   unknownCapacityHoldMs: number;
   cleanupOrphans?: () => Promise<void>;
@@ -96,6 +96,7 @@ export class StartupRecovery {
     try {
       await this.options.cleanupOrphans?.();
       this.chargeCompletedJobs();
+      this.releaseFailedReservations();
       this.failInterruptedQueuedJobs();
       for (const promise of this.scheduleRecoverableJobs()) {
         void promise.catch(() => undefined);
@@ -161,12 +162,19 @@ export class StartupRecovery {
     });
     while (queued.length > 0) {
       for (const job of queued) {
-        this.options.repository.transition(job.id, ["queued"], {
-          status: "failed",
-          failedAt: this.now(),
-          errorCode: "interrupted_before_submit"
-        });
-        this.options.admissions?.releasePreSubmit(job.id);
+        if (this.options.admissions === undefined) {
+          this.options.repository.transition(job.id, ["queued"], {
+            status: "failed",
+            failedAt: this.now(),
+            errorCode: "interrupted_before_submit"
+          });
+        } else {
+          this.options.admissions.failAndRelease(
+            job.id,
+            ["queued"],
+            "interrupted_before_submit"
+          );
+        }
       }
       queued = this.options.repository.list({
         status: "queued",
@@ -237,5 +245,16 @@ export class StartupRecovery {
       limit: 1_000_000
     });
     for (const job of completed) this.options.admissions.charge(job.id);
+  }
+
+  private releaseFailedReservations(): void {
+    if (this.options.admissions === undefined) return;
+    const failed = this.options.repository.list({
+      status: "failed",
+      limit: 1_000_000
+    });
+    for (const job of failed) {
+      this.options.admissions.releasePreSubmit(job.id);
+    }
   }
 }

@@ -20,6 +20,7 @@ import {
 import { LingjingTaskPoller } from "../jobs/poller.js";
 import { fingerprintUpstreamPayload } from "../jobs/upstream-fingerprint.js";
 import type {
+  CapacityAdmission,
   CapacityLease,
   JobRecord,
   JobStatus,
@@ -69,10 +70,10 @@ type Sleep = (
 export interface LingjingGenerationCoordinatorOptions {
   repository: GenerationRepository;
   capacity: CapacityManager;
-  scheduler: Pick<AccountScheduler, "admit" | "restore">;
+  scheduler: Pick<AccountScheduler, "start" | "admit" | "restore">;
   admissions: Pick<
     SqliteAdmissionRepository,
-    "charge" | "releasePreSubmit"
+    "charge" | "failAndRelease"
   >;
   prepareMedia(input: MediaInput): Promise<PreparedMedia>;
   createUploadService?: (
@@ -139,18 +140,6 @@ function mediaParameter(model: NormalizedModel): (
   return parameters[0];
 }
 
-function jobErrorTransition(
-  status: "failed",
-  now: number,
-  errorCode: string
-): JobTransition {
-  return {
-    status,
-    failedAt: now,
-    errorCode
-  };
-}
-
 export class LingjingGenerationCoordinator
 implements GenerationCoordinator {
   private readonly now: () => number;
@@ -174,8 +163,10 @@ implements GenerationCoordinator {
     const ownedPrepared = new Set(preparedInputs(request.media));
     const prepared: PreparedMedia[] = [];
     let ownsPrepared = true;
+    let globalAdmission: CapacityAdmission | null = null;
 
     try {
+      globalAdmission = this.options.scheduler.start();
       for (const input of request.media) {
         const media = await this.options.prepareMedia(input);
         prepared.push(media);
@@ -204,8 +195,10 @@ implements GenerationCoordinator {
         request,
         requestFingerprint,
         idempotencyKeyHash,
-        inputContentHashes
+        inputContentHashes,
+        globalAdmission
       });
+      globalAdmission = null;
 
       if (!admission.created) {
         await disposeAll(ownedPrepared);
@@ -235,12 +228,11 @@ implements GenerationCoordinator {
         submitReservation.cancel();
         const current = this.options.repository.findById(admission.job.id);
         if (current?.status === "queued") {
-          this.transition(current.id, ["queued"], jobErrorTransition(
-            "failed",
-            this.now(),
+          this.failAndRelease(
+            current.id,
+            ["queued"],
             "runner_not_started"
-          ));
-          this.options.admissions.releasePreSubmit(current.id);
+          );
         }
         await disposeAll(ownedPrepared);
         ownsPrepared = false;
@@ -254,6 +246,7 @@ implements GenerationCoordinator {
       const durable = await this.waitUntilDurable(admission.job.id);
       return this.handle(durable);
     } catch (cause) {
+      globalAdmission?.release();
       if (ownsPrepared) await disposeAll(ownedPrepared);
       throw cause;
     }
@@ -322,9 +315,13 @@ implements GenerationCoordinator {
       this.options.admissions.charge(job.id);
       budgetState = "charged";
     };
-    const release = (): void => {
+    const failAndRelease = (
+      jobId: string,
+      expectedStatuses: readonly JobStatus[],
+      errorCode: string
+    ): void => {
       if (budgetState !== "reserved") return;
-      this.options.admissions.releasePreSubmit(job.id);
+      this.failAndRelease(jobId, expectedStatuses, errorCode);
       budgetState = "released";
     };
     try {
@@ -372,16 +369,11 @@ implements GenerationCoordinator {
               );
             } catch (cause) {
               if (!(cause instanceof SubmitAmbiguousError)) {
-                this.transition(
+                failAndRelease(
                   submitting.id,
                   ["submitting"],
-                  jobErrorTransition(
-                    "failed",
-                    this.now(),
-                    "generation_submit_rejected"
-                  )
+                  "generation_submit_rejected"
                 );
-                release();
                 throw cause;
               }
             }
@@ -427,12 +419,11 @@ implements GenerationCoordinator {
         return;
       }
       if (current?.status === "queued") {
-        this.transition(current.id, ["queued"], jobErrorTransition(
-          "failed",
-          this.now(),
+        failAndRelease(
+          current.id,
+          ["queued"],
           "generation_before_submit_failed"
-        ));
-        release();
+        );
       }
       this.releaseIfTerminalOrRefreshUnknown(job.id, runtime, lease);
     } finally {
@@ -863,6 +854,20 @@ implements GenerationCoordinator {
     if (current.status === "unknown") {
       this.refreshBoundCapacity(current, runtime);
     }
+  }
+
+  private failAndRelease(
+    id: string,
+    expectedStatuses: readonly JobStatus[],
+    errorCode: string
+  ): JobRecord {
+    const failed = this.options.admissions.failAndRelease(
+      id,
+      expectedStatuses,
+      errorCode
+    );
+    this.notifier.notify(failed.id);
+    return failed;
   }
 
   private async waitUntilDurable(jobId: string): Promise<JobRecord> {

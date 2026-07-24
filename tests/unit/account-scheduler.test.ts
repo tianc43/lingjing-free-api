@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { AccountScheduler } from "../../src/accounts/scheduler.js";
 import type { AccountRuntime } from "../../src/accounts/runtime.js";
-import type { AccountRecord, AdmissionResult } from "../../src/accounts/types.js";
+import type {
+  AccountRecord,
+  AdmissionInput,
+  AdmissionResult
+} from "../../src/accounts/types.js";
 import type { GenerationRequest } from "../../src/generation/types.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
@@ -13,6 +17,15 @@ import type { NormalizedModel } from "../../src/models/types.js";
 const NOW = Date.parse("2026-07-24T03:00:00Z");
 const REQUEST_FINGERPRINT = "a".repeat(64);
 const IDEMPOTENCY_HASH = "b".repeat(64);
+
+function deferred<T>() {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  if (resolvePromise === undefined) throw new Error("Deferred was not initialized");
+  return { promise, resolve: resolvePromise };
+}
 
 const model: NormalizedModel = {
   id: "fixture-id",
@@ -90,7 +103,7 @@ function runtime(
   accountRecord: AccountRecord,
   options: {
     capacity?: CapacityManager;
-    resolve?: () => Promise<NormalizedModel>;
+    resolve?: (value: string) => Promise<NormalizedModel>;
     describe?: () => Promise<AccountSnapshot>;
   } = {}
 ): AccountRuntime {
@@ -144,19 +157,27 @@ function schedulerFor(
   runtimes: AccountRuntime[],
   options: {
     usage?: Record<string, { dayUsedPoints: number; monthUsedPoints: number }>;
-    reserve?: (accountId: string) => AdmissionResult;
+    reserve?: (
+      accountId: string,
+      input: AdmissionInput
+    ) => AdmissionResult;
     globalCapacity?: CapacityManager;
   } = {}
 ): {
   scheduler: AccountScheduler;
   reserveOrGet: ReturnType<typeof vi.fn>;
+  failAndRelease: ReturnType<typeof vi.fn>;
   globalCapacity: CapacityManager;
 } {
   const records = new Map(runtimes.map((item) => [item.record.id, item.record]));
-  const reserveOrGet = vi.fn((input: { accountId: string }): AdmissionResult => (
-    options.reserve?.(input.accountId)
-      ?? { outcome: "created" as const, job: job(input.accountId) }
+  const reserveOrGet = vi.fn((input: AdmissionInput): AdmissionResult => (
+    options.reserve?.(input.accountId, input)
+      ?? {
+        outcome: "created" as const,
+        job: job(input.accountId, { quotedPoints: input.quotedPoints })
+      }
   ));
+  const failAndRelease = vi.fn();
   const globalCapacity = options.globalCapacity ?? new CapacityManager(10, 10);
   return {
     scheduler: new AccountScheduler({
@@ -175,11 +196,12 @@ function schedulerFor(
           monthUsedPoints: 0
         }
       },
-      admissions: { reserveOrGet },
+      admissions: { reserveOrGet, failAndRelease },
       capacity: globalCapacity,
       now: () => NOW
     }),
     reserveOrGet,
+    failAndRelease,
     globalCapacity
   };
 }
@@ -249,9 +271,6 @@ describe("AccountScheduler", () => {
       dayUsedPoints: 0,
       monthUsedPoints: 4
     }],
-    ["unknown quote", record("acct_quote"), {
-      resolve: () => Promise.resolve({ ...model, pricing: null })
-    }, {}]
   ] as const)(
     "rejects %s accounts without exposing account details",
     async (_name, accountRecord, runtimeOptions, usage) => {
@@ -274,13 +293,55 @@ describe("AccountScheduler", () => {
     const candidate = runtime(record("acct_busy"), {
       capacity: accountCapacity
     });
-    const { scheduler, globalCapacity } = schedulerFor([candidate]);
+    const {
+      scheduler,
+      reserveOrGet,
+      failAndRelease,
+      globalCapacity
+    } = schedulerFor([candidate]);
 
     await expect(scheduler.admit(admissionInput)).rejects.toMatchObject({
       statusCode: 429,
       code: "lingjing_capacity_exhausted"
     });
+    expect(reserveOrGet).toHaveBeenCalledTimes(1);
+    expect(failAndRelease).toHaveBeenCalledWith(
+      expect.any(String),
+      ["queued"],
+      "account_capacity_acquire_failed"
+    );
     expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+  });
+
+  it("accepts an unknown quote only for an unlimited account", async () => {
+    const candidate = runtime(record("acct_unlimited"), {
+      resolve: () => Promise.resolve({ ...model, pricing: null }),
+      describe: () => Promise.resolve(snapshot(0))
+    });
+    const { scheduler, reserveOrGet } = schedulerFor([candidate]);
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    expect(admitted.job.quotedPoints).toBeNull();
+    expect(reserveOrGet).toHaveBeenCalledWith(expect.objectContaining({
+      quotedPoints: null
+    }));
+    admitted.lease?.release();
+  });
+
+  it("rejects an unknown quote when either account limit is configured", async () => {
+    const candidate = runtime(record("acct_limited", {
+      monthlyPointLimit: 10
+    }), {
+      resolve: () => Promise.resolve({ ...model, pricing: null })
+    });
+    const { scheduler, reserveOrGet } = schedulerFor([candidate]);
+
+    await expect(scheduler.admit(admissionInput)).rejects.toMatchObject({
+      statusCode: 429,
+      code: "lingjing_no_eligible_account"
+    });
+    expect(reserveOrGet).not.toHaveBeenCalled();
   });
 
   it("preserves request validation errors when every resolved model rejects media", async () => {
@@ -380,5 +441,97 @@ describe("AccountScheduler", () => {
       })
     }));
     admitted.lease?.release();
+  });
+
+  it("keeps account queue order as a subsequence of staggered global order", async () => {
+    const slowModel = deferred<NormalizedModel>();
+    const slowResolutionStarted = deferred<undefined>();
+    const globalCapacity = new CapacityManager(1, 2);
+    const accountCapacity = new CapacityManager(1, 2);
+    const globalBlocker = globalCapacity.restore(
+      "global-blocker",
+      "processing",
+      null,
+      NOW
+    );
+    const accountBlocker = accountCapacity.restore(
+      "account-blocker",
+      "processing",
+      null,
+      NOW
+    );
+    if (globalBlocker === null || accountBlocker === null) {
+      throw new Error("Capacity blockers were not restored");
+    }
+    const candidate = runtime(record("acct_shared"), {
+      capacity: accountCapacity,
+      resolve: (value) => {
+        if (value === "slow") {
+          slowResolutionStarted.resolve(undefined);
+          return slowModel.promise;
+        }
+        return Promise.resolve({ ...model, apiId: value });
+      }
+    });
+    const reserveOrder: string[] = [];
+    const completionOrder: string[] = [];
+    const { scheduler } = schedulerFor([candidate], {
+      globalCapacity,
+      reserve: (_accountId, input) => {
+        reserveOrder.push(input.model);
+        return {
+          outcome: "created",
+          job: job("acct_shared", {
+            id: `job-${input.model}`,
+            model: input.model,
+            apiId: input.apiId
+          })
+        };
+      }
+    });
+
+    const firstGlobal = scheduler.start();
+    const first = scheduler.admit({
+      ...admissionInput,
+      request: { ...request, model: "slow", idempotencyKey: null },
+      idempotencyKeyHash: null,
+      globalAdmission: firstGlobal
+    }).then((admitted) => {
+      completionOrder.push("slow");
+      admitted.lease?.release();
+      return admitted;
+    });
+    await slowResolutionStarted.promise;
+    const secondGlobal = scheduler.start();
+    const second = scheduler.admit({
+      ...admissionInput,
+      request: { ...request, model: "fast", idempotencyKey: null },
+      idempotencyKeyHash: null,
+      globalAdmission: secondGlobal
+    }).then((admitted) => {
+      completionOrder.push("fast");
+      admitted.lease?.release();
+      return admitted;
+    });
+
+    await vi.waitFor(() => {
+      expect(reserveOrder).toEqual(["fast"]);
+    });
+    slowModel.resolve({ ...model, apiId: "slow" });
+    await vi.waitFor(() => {
+      expect(reserveOrder).toEqual(["fast", "slow"]);
+    });
+    globalBlocker.release();
+    accountBlocker.release();
+
+    await expect(Promise.race([
+      Promise.all([first, second]),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("dual capacity acquisition deadlocked"));
+        }, 1_000);
+      })
+    ])).resolves.toHaveLength(2);
+    expect(completionOrder).toEqual(["slow", "fast"]);
   });
 });

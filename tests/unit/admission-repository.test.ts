@@ -9,6 +9,7 @@ import { budgetWindows } from "../../src/accounts/budget.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import type { AdmissionInput } from "../../src/accounts/types.js";
+import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
@@ -39,14 +40,19 @@ function inputFor(accountId: string, suffix: string): AdmissionInput {
   };
 }
 
-function createReadyAccount(databasePath: string): string {
+function createReadyAccount(
+  databasePath: string,
+  limits: { dailyPointLimit: number; monthlyPointLimit: number } = {
+    dailyPointLimit: 10,
+    monthlyPointLimit: 0
+  }
+): string {
   const store = new SqliteStore(databasePath);
   const accounts = new SqliteAccountRepository(store);
   const account = accounts.create({
     name: "Ready",
     priority: 1,
-    dailyPointLimit: 10,
-    monthlyPointLimit: 0
+    ...limits
   });
   accounts.update(account.id, { enabled: true });
   accounts.recordObservation(account.id, {
@@ -188,5 +194,105 @@ describe("SqliteAdmissionRepository", () => {
     admissions.releasePreSubmit(charged.job.id);
     expect(accounts.usage(accountId, input.windows).dayUsedPoints).toBe(7);
     store.close();
+  });
+
+  it("rolls back job status and history when atomic failure release aborts", () => {
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath);
+    const store = new SqliteStore(databasePath);
+    const jobs = new SqliteJobRepository(store);
+    const admissions = new SqliteAdmissionRepository(store);
+    const admitted = admissions.reserveOrGet(inputFor(accountId, "1"));
+    if (admitted.outcome !== "created") throw new Error("Expected a created admission");
+    try {
+      store.immediate((database) => database.exec(`
+        CREATE TRIGGER abort_budget_release
+        BEFORE UPDATE OF state ON budget_entries
+        WHEN NEW.state = 'released'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected budget release failure');
+        END
+      `));
+
+      expect(() => admissions.failAndRelease(
+        admitted.job.id,
+        ["queued"],
+        "fixture_pre_submit_failure"
+      )).toThrow(/injected budget release failure/u);
+      expect(jobs.findById(admitted.job.id)?.status).toBe("queued");
+      expect(jobs.history(admitted.job.id)).toEqual(["queued"]);
+      expect(store.read((database) => database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ?"
+      ).get(admitted.job.id))).toEqual({ state: "reserved" });
+
+      store.immediate((database) => database.exec("DROP TRIGGER abort_budget_release"));
+      admissions.failAndRelease(
+        admitted.job.id,
+        ["queued"],
+        "fixture_pre_submit_failure"
+      );
+      expect(jobs.findById(admitted.job.id)).toMatchObject({
+        status: "failed",
+        errorCode: "fixture_pre_submit_failure"
+      });
+      expect(jobs.history(admitted.job.id)).toEqual(["queued", "failed"]);
+      expect(store.read((database) => database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ?"
+      ).get(admitted.job.id))).toEqual({ state: "released" });
+    } finally {
+      jobs.close();
+      store.close();
+    }
+  });
+
+  it("persists an unknown unlimited quote without inventing a zero quote", () => {
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath, {
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    const store = new SqliteStore(databasePath);
+    const jobs = new SqliteJobRepository(store);
+    const admissions = new SqliteAdmissionRepository(store);
+
+    try {
+      const admitted = admissions.reserveOrGet({
+        ...inputFor(accountId, "2"),
+        quotedPoints: null
+      });
+
+      expect(admitted.outcome).toBe("created");
+      if (admitted.outcome !== "created") throw new Error("Expected a created admission");
+      expect(admitted.job.quotedPoints).toBeNull();
+      expect(jobs.findById(admitted.job.id)?.quotedPoints).toBeNull();
+      expect(store.read((database) => database.prepare(`
+        SELECT quoted_points, quote_known FROM jobs WHERE id = ?
+      `).get(admitted.job.id))).toEqual({
+        quoted_points: 0,
+        quote_known: 0
+      });
+      expect(store.read((database) => database.prepare(`
+        SELECT quoted_points FROM budget_entries WHERE job_id = ?
+      `).get(admitted.job.id))).toEqual({ quoted_points: 0 });
+    } finally {
+      jobs.close();
+      store.close();
+    }
+  });
+
+  it("rejects an unknown quote when the admission transaction sees a limit", () => {
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath);
+    const store = new SqliteStore(databasePath);
+    const admissions = new SqliteAdmissionRepository(store);
+
+    try {
+      expect(admissions.reserveOrGet({
+        ...inputFor(accountId, "3"),
+        quotedPoints: null
+      })).toEqual({ outcome: "budget_exhausted" });
+    } finally {
+      store.close();
+    }
   });
 });

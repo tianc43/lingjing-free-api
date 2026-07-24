@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import { errors } from "../errors.js";
 import type { JobRecord, JobStatus } from "../jobs/types.js";
+import { allowedTransitions } from "../jobs/sqlite-repository.js";
 import type { SqliteStore } from "../persistence/sqlite-store.js";
 import { budgetWindows } from "./budget.js";
 import type { AdmissionInput, AdmissionResult } from "./types.js";
@@ -19,6 +20,7 @@ interface JobRow {
   space_id: number;
   account_id: string;
   quoted_points: number;
+  quote_known: 0 | 1;
   status: JobStatus;
   creation_code: string | null;
   upstream_task_id: string | null;
@@ -44,6 +46,7 @@ interface AccountBudgetRow {
 const JOB_SELECT_COLUMNS = `
   id, kind, source_type, model, api_id, model_code, expected_asset_scene,
   request_fingerprint, idempotency_key_hash, space_id, account_id, quoted_points,
+  quote_known,
   status, creation_code, upstream_task_id, upstream_fingerprint, submitted_at,
   discovered_at, completed_at, failed_at, unknown_hold_until, error_code,
   result_json, created_at, updated_at
@@ -74,7 +77,7 @@ function jobFromRow(row: JobRow): JobRecord {
     idempotencyKeyHash: row.idempotency_key_hash,
     spaceId: row.space_id,
     accountId: row.account_id,
-    quotedPoints: row.quoted_points,
+    quotedPoints: row.quote_known === 1 ? row.quoted_points : null,
     status: row.status,
     creationCode: row.creation_code,
     upstreamTaskId: row.upstream_task_id,
@@ -99,8 +102,15 @@ function assertAdmissionInput(input: AdmissionInput, canonicalWindows: Admission
   if (typeof input.accountId !== "string" || input.accountId === "") {
     throw new TypeError("accountId must be a non-empty string");
   }
-  if (typeof input.quotedPoints !== "number" || !Number.isFinite(input.quotedPoints) || input.quotedPoints < 0) {
-    throw new RangeError("quotedPoints must be a non-negative finite number");
+  if (
+    input.quotedPoints !== null
+    && (
+      typeof input.quotedPoints !== "number"
+      || !Number.isFinite(input.quotedPoints)
+      || input.quotedPoints < 0
+    )
+  ) {
+    throw new RangeError("quotedPoints must be null or a non-negative finite number");
   }
   if (!Number.isFinite(input.windows.dayWindowStart) || !Number.isFinite(input.windows.monthWindowStart)) {
     throw new TypeError("Budget windows must be finite");
@@ -149,7 +159,14 @@ export class SqliteAdmissionRepository {
         day_used_points: number;
         month_used_points: number;
       };
-      if (
+      if (input.quotedPoints === null) {
+        if (
+          account.daily_point_limit !== 0
+          || account.monthly_point_limit !== 0
+        ) {
+          return { outcome: "budget_exhausted" };
+        }
+      } else if (
         (account.daily_point_limit !== 0 && usage.day_used_points + input.quotedPoints > account.daily_point_limit)
         || (account.monthly_point_limit !== 0 && usage.month_used_points + input.quotedPoints > account.monthly_point_limit)
       ) {
@@ -158,17 +175,25 @@ export class SqliteAdmissionRepository {
 
       const id = `job_${randomBytes(16).toString("hex")}`;
       const now = Date.now();
+      const storedQuotedPoints = input.quotedPoints ?? 0;
+      const quoteKnown = input.quotedPoints === null ? 0 : 1;
       database.prepare(`
         INSERT INTO jobs (
           id, kind, source_type, model, api_id, model_code, expected_asset_scene,
           request_fingerprint, idempotency_key_hash, space_id, account_id,
-          quoted_points, status, created_at, updated_at
+          quoted_points, quote_known, status, created_at, updated_at
         ) VALUES (
           @id, @kind, @sourceType, @model, @apiId, @modelCode, @expectedAssetScene,
           @requestFingerprint, @idempotencyKeyHash, @spaceId, @accountId,
-          @quotedPoints, 'queued', @now, @now
+          @storedQuotedPoints, @quoteKnown, 'queued', @now, @now
         )
-      `).run({ id, ...input, now });
+      `).run({
+        id,
+        ...input,
+        storedQuotedPoints,
+        quoteKnown,
+        now
+      });
       database.prepare(`
         INSERT INTO job_status_history(job_id, status, created_at)
         VALUES (?, 'queued', ?)
@@ -181,7 +206,7 @@ export class SqliteAdmissionRepository {
       `).run(
         input.accountId,
         id,
-        input.quotedPoints,
+        storedQuotedPoints,
         windows.dayWindowStart,
         windows.monthWindowStart,
         now,
@@ -224,6 +249,61 @@ export class SqliteAdmissionRepository {
         state: "reserved" | "charged" | "released";
       } | undefined;
       if (current === undefined) throw new Error(`Budget entry for job ${jobId} does not exist`);
+    });
+  }
+
+  failAndRelease(
+    jobId: string,
+    expectedStatuses: readonly JobStatus[],
+    errorCode: string
+  ): JobRecord {
+    return this.store.immediate((database) => {
+      const current = this.findJob(database, jobId);
+      if (current === undefined) throw new Error(`Job ${jobId} does not exist`);
+      if (!expectedStatuses.includes(current.status)) {
+        throw new Error(
+          `Job ${jobId} is ${current.status}; expected ${expectedStatuses.join(", ")}`
+        );
+      }
+      if (!allowedTransitions[current.status].includes("failed")) {
+        throw new Error(`Illegal job transition from ${current.status} to failed`);
+      }
+
+      const now = Date.now();
+      database.prepare(`
+        UPDATE jobs
+        SET status = 'failed',
+            failed_at = ?,
+            unknown_hold_until = NULL,
+            error_code = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(now, errorCode, now, jobId);
+      database.prepare(`
+        INSERT INTO job_status_history(job_id, status, created_at)
+        VALUES (?, 'failed', ?)
+      `).run(jobId, now);
+      const released = database.prepare(`
+        UPDATE budget_entries
+        SET state = 'released', updated_at = ?
+        WHERE job_id = ? AND state = 'reserved'
+      `).run(now, jobId).changes;
+      if (released === 0) {
+        const budget = database.prepare(
+          "SELECT state FROM budget_entries WHERE job_id = ?"
+        ).get(jobId) as {
+          state: "reserved" | "charged" | "released";
+        } | undefined;
+        if (budget === undefined) {
+          throw new Error(`Budget entry for job ${jobId} does not exist`);
+        }
+        if (budget.state === "charged") {
+          throw new Error(`Budget entry for job ${jobId} is charged`);
+        }
+      }
+      const failed = this.findJob(database, jobId);
+      if (failed === undefined) throw new Error("Failed job could not be read");
+      return jobFromRow(failed);
     });
   }
 

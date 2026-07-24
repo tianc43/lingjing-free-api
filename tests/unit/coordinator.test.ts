@@ -28,7 +28,7 @@ describe("LingjingGenerationCoordinator", () => {
     await handle.wait(5_000);
 
     expect(app.events).toEqual([
-      "prepare:admitted=0",
+      "prepare:admitted=1",
       "catalog:707:image-generation:true",
       "account",
       "catalog:707:image-generation:true",
@@ -57,7 +57,7 @@ describe("LingjingGenerationCoordinator", () => {
       });
 
       expect(media.disposeCount()).toBe(1);
-      expect(app.events).toEqual(["prepare:admitted=0"]);
+      expect(app.events).toEqual([]);
     } finally {
       blockingLease.release();
     }
@@ -80,7 +80,7 @@ describe("LingjingGenerationCoordinator", () => {
 
     expect(media.disposeCount()).toBe(1);
     expect(app.events).toEqual([
-      "prepare:admitted=0",
+      "prepare:admitted=1",
       "catalog:707:image-generation:true",
       "account",
       "catalog:707:image-generation:true",

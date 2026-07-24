@@ -36,6 +36,7 @@ interface JobRow {
   space_id: number;
   account_id: string;
   quoted_points: number;
+  quote_known: 0 | 1;
   status: JobStatus;
   creation_code: string | null;
   upstream_task_id: string | null;
@@ -64,6 +65,7 @@ const SELECT_COLUMNS = `
   space_id,
   account_id,
   quoted_points,
+  quote_known,
   status,
   creation_code,
   upstream_task_id,
@@ -147,7 +149,7 @@ function rowToJob(row: JobRow): JobRecord {
     idempotencyKeyHash: row.idempotency_key_hash,
     spaceId: row.space_id,
     accountId: row.account_id,
-    quotedPoints: row.quoted_points,
+    quotedPoints: row.quote_known === 1 ? row.quoted_points : null,
     status: row.status,
     creationCode: row.creation_code,
     upstreamTaskId: row.upstream_task_id,

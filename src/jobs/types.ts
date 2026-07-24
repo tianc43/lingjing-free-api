@@ -56,7 +56,7 @@ export interface JobListFilter {
 export interface JobRecord extends NewJob {
   id: string;
   accountId: string;
-  quotedPoints: number;
+  quotedPoints: number | null;
   status: JobStatus;
   creationCode: string | null;
   upstreamTaskId: string | null;

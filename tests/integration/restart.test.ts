@@ -118,11 +118,17 @@ function coordinatorFor(
     capacity: accountCapacity,
     discoveryLock: new DiscoveryLock()
   } as unknown as AccountRuntime;
+  let globalAdmissionId = 0;
+  const start = () => {
+    globalAdmissionId += 1;
+    return capacity.admit(`global-${String(globalAdmissionId)}`);
+  };
   return new LingjingGenerationCoordinator({
     repository,
     capacity,
     registry,
     scheduler: {
+      start,
       admit: async (input) => {
         const result = repository.createOrGet({
           kind: input.request.kind,
@@ -136,6 +142,7 @@ function coordinatorFor(
           spaceId: 0
         });
         if (!result.created) {
+          input.globalAdmission?.release();
           return {
             runtime,
             model: fixtureModel,
@@ -144,12 +151,12 @@ function coordinatorFor(
             created: false
           };
         }
-        const [globalLease, accountLease] = await Promise.all([
-          capacity.admit(`global-${result.job.id}`).acquire(result.job.id),
-          accountCapacity.admit(`account-${result.job.id}`).acquire(
-            result.job.id
-          )
-        ]);
+        const globalLease = await (input.globalAdmission ?? start()).acquire(
+          result.job.id
+        );
+        const accountLease = await accountCapacity
+          .admit(`account-${result.job.id}`)
+          .acquire(result.job.id);
         return {
           runtime,
           model: fixtureModel,
@@ -162,7 +169,13 @@ function coordinatorFor(
     },
     admissions: {
       charge: () => undefined,
-      releasePreSubmit: () => undefined
+      failAndRelease: (jobId, expectedStatuses, errorCode) => (
+        repository.transition(jobId, expectedStatuses, {
+          status: "failed",
+          failedAt: Date.now(),
+          errorCode
+        })
+      )
     },
     prepareMedia: () => Promise.reject(new Error("No media expected")),
     assetDiscoveryTimeoutMs: 30,
@@ -536,6 +549,9 @@ describe("durable restart recovery", () => {
         charge,
         releasePreSubmit: admissionRepository.releasePreSubmit.bind(
           admissionRepository
+        ),
+        failAndRelease: admissionRepository.failAndRelease.bind(
+          admissionRepository
         )
       }
     });
@@ -644,6 +660,9 @@ describe("durable restart recovery", () => {
         charge,
         releasePreSubmit: admissionRepository.releasePreSubmit.bind(
           admissionRepository
+        ),
+        failAndRelease: admissionRepository.failAndRelease.bind(
+          admissionRepository
         )
       },
       unknownCapacityHoldMs: 100
@@ -655,6 +674,76 @@ describe("durable restart recovery", () => {
       ).get(admitted.job.id) as { state: string });
       expect(budget.state).toBe("charged");
       expect(charge).toHaveBeenCalledTimes(1);
+      expect(resumeJob).not.toHaveBeenCalled();
+    } finally {
+      recovery.close();
+      repository.close();
+      store.close();
+    }
+  });
+
+  it("releases a pre-existing failed reservation without starting a runner", async () => {
+    const path = databasePath();
+    const store = new SqliteStore(path);
+    const repository = new SqliteJobRepository(store);
+    const accounts = new SqliteAccountRepository(store);
+    const accountRecord = accounts.ensureLegacyAccount("data/auth");
+    accounts.recordObservation(accountRecord.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const admissionRepository = new SqliteAdmissionRepository(store);
+    const admitted = admissionRepository.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-api",
+      apiId: "fixture-api",
+      modelCode: "fixture-model-code",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "7".repeat(64),
+      idempotencyKeyHash: "8".repeat(64),
+      spaceId: 0,
+      accountId: accountRecord.id,
+      quotedPoints: 7,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    repository.transition(admitted.job.id, ["queued"], {
+      status: "failed",
+      failedAt: Date.now(),
+      errorCode: "pre_existing_failure"
+    });
+    const resumeJob = vi.fn<(
+      job: JobRecord,
+      lease: CapacityLease
+    ) => Promise<void>>();
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: new CapacityManager(1),
+      registry: new JobRunnerRegistry(),
+      resumeJob,
+      admissions: {
+        charge: admissionRepository.charge.bind(admissionRepository),
+        releasePreSubmit: admissionRepository.releasePreSubmit.bind(
+          admissionRepository
+        ),
+        failAndRelease: admissionRepository.failAndRelease.bind(
+          admissionRepository
+        )
+      },
+      unknownCapacityHoldMs: 100
+    });
+    try {
+      await recovery.start();
+      expect(store.read((database) => database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ?"
+      ).get(admitted.job.id))).toEqual({ state: "released" });
       expect(resumeJob).not.toHaveBeenCalled();
     } finally {
       recovery.close();

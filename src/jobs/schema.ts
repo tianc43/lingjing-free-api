@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 const VERSION_ONE_SQL = `
   CREATE TABLE jobs (
@@ -109,6 +109,11 @@ const VERSION_TWO_SQL = `
   ON budget_entries(account_id, month_window_start, state);
 `;
 
+const VERSION_THREE_SQL = `
+  ALTER TABLE jobs ADD COLUMN quote_known INTEGER NOT NULL DEFAULT 1
+  CHECK (quote_known IN (0, 1));
+`;
+
 export function configureJobDatabase(database: Database.Database): void {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 10000");
@@ -181,6 +186,13 @@ export function migrateJobDatabase(database: Database.Database): void {
       database.prepare(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
       ).run(2, now);
+      version = 2;
+    }
+    if (version < 3) {
+      database.exec(VERSION_THREE_SQL);
+      database.prepare(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
+      ).run(3, Date.now());
     }
   }).immediate();
 }

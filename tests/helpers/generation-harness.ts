@@ -478,6 +478,21 @@ export function createGenerationHarness(options: {
       releaseCalls += 1;
       budgetEvents.push("release");
       admissionsRepository.releasePreSubmit(jobId);
+    },
+    failAndRelease: (
+      jobId: string,
+      expectedStatuses: Parameters<
+        SqliteAdmissionRepository["failAndRelease"]
+      >[1],
+      errorCode: string
+    ) => {
+      releaseCalls += 1;
+      budgetEvents.push("release");
+      return admissionsRepository.failAndRelease(
+        jobId,
+        expectedStatuses,
+        errorCode
+      );
     }
   };
   const scheduler = new AccountScheduler({
