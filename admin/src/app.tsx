@@ -77,6 +77,7 @@ export function App() {
     });
   }, [api, load]);
   const navigate = (next: PageName) => {
+    setError(null);
     history.pushState({}, "", `/admin/${next === "overview" ? "" : next}`);
     setPage(next);
   };
@@ -86,8 +87,10 @@ export function App() {
     return () => removeEventListener("popstate", listener);
   }, []);
   const login = async (password: string) => {
+    setError(null);
     try {
       await api.login(password);
+      setError(null);
       history.replaceState({}, "", "/admin/accounts");
       setPage("accounts");
       setAuthenticated(true);
@@ -103,6 +106,7 @@ export function App() {
     } else if (dialog !== undefined) {
       await api.updateAccount(dialog.id, input);
     }
+    setError(null);
     setDialog(undefined);
     await load();
   };
@@ -110,6 +114,7 @@ export function App() {
     if (account.enabled && account.active_jobs > 0 && !window.confirm(`Disable ${account.name}? ${account.active_jobs} active jobs will continue but no new jobs can start.`)) return;
     try {
       await api.setEnabled(account, !account.enabled);
+      setError(null);
       await loadAccounts();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update account");
@@ -119,6 +124,7 @@ export function App() {
     setChecking(account.id);
     try {
       await api.checkAccount(account.id);
+      setError(null);
       setNotice(`Health check completed for ${account.name}`);
       await loadAccounts();
     } catch (cause) {
@@ -130,8 +136,10 @@ export function App() {
   const copyCommand = async () => {
     try {
       await navigator.clipboard.writeText(loginCommand);
+      setError(null);
       setNotice("Login command copied");
     } catch {
+      setNotice("");
       setError("Could not copy the login command. Copy it manually.");
     }
   };

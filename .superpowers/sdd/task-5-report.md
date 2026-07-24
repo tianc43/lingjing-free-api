@@ -56,3 +56,21 @@ asset isolation.
 - Re-verified: focused build regression, lint, typecheck, full build,
   `node -e "import('./dist/app.js')"`, and default-parallel `npm test` (53
   files, 572 tests).
+
+## Final review corrections
+
+- Mobile Tasks now renders populated rows as labelled two-column cards at the
+  mobile breakpoint. IDs may wrap, the table headers remain in the DOM for
+  semantics, and the non-empty 390px browser check asserts no page overflow.
+- Account validation reports each field through its own `aria-invalid` and
+  described error; the first invalid field receives focus. Login errors are
+  associated with the password input.
+- Consolidated the operator console on a 4/8/12/16 spacing grid and consumed
+  component tokens for controls, navigation, dialog, status and meter. The
+  meter now exposes progress semantics.
+- Successful navigation/actions clear stale global failures; both account and
+  Settings clipboard paths distinguish failure from success.
+- Re-verified populated desktop/mobile browser flow (4/4, including updated
+  Tasks screenshot), lint, typecheck, build/import, and default-parallel
+  suite (53 files, 572 tests). One initial parallel temp-file cleanup flake
+  passed when focused and on the required full rerun.

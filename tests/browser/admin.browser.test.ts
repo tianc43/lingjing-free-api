@@ -85,6 +85,10 @@ test.beforeAll(async () => {
     const hasSession =
       request.headers.cookie?.includes("admin=fixture-session") === true;
     if (url.pathname === "/admin/api/login" && request.method === "POST") {
+      if ((await body(request)).password !== "fixture-admin-password") {
+        json(response, { error: { code: "invalid_password", message: "Incorrect password" } }, 401);
+        return;
+      }
       response.setHeader(
         "Set-Cookie",
         "admin=fixture-session; Path=/admin; HttpOnly; SameSite=Strict",
@@ -349,6 +353,10 @@ for (const viewport of [
       path: testInfo.outputPath("login.png"),
       fullPage: true,
     });
+    await page.getByLabel("Administrator password").fill("incorrect");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByText("Incorrect password")).toBeVisible();
+    await expect(page.getByLabel("Administrator password")).toHaveAttribute("aria-describedby", "login-password-error");
     await page
       .getByLabel("Administrator password")
       .fill("fixture-admin-password");
@@ -388,6 +396,12 @@ for (const viewport of [
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Create account" })).toBeFocused();
     await page.getByRole("button", { name: "Create account" }).click();
+    await page.getByLabel("Priority").fill("-1");
+    await page.getByLabel("Daily point limit").fill("1.5");
+    await page.getByLabel("Monthly point limit").fill("-2");
+    await page.getByRole("button", { name: "Create account" }).last().click();
+    for (const field of ["Account name", "Priority", "Daily point limit", "Monthly point limit"]) await expect(page.getByLabel(field)).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByLabel("Account name")).toBeFocused();
     await page.getByLabel("Account name").fill(`Browser ${viewport.name}`);
     await page.getByLabel("Priority").fill("7");
     await page.getByLabel("Daily point limit").fill("10");
@@ -427,6 +441,15 @@ for (const viewport of [
     });
     await navigate("tasks");
     await expect(page.getByText("Reserved")).toBeVisible();
+    await expect(
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).resolves.toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath("tasks.png"),
+      fullPage: true,
+    });
     await page
       .getByLabel("Account filter")
       .selectOption({ label: `Browser ${viewport.name}` });
