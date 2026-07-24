@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 const VERSION_ONE_SQL = `
   CREATE TABLE jobs (
@@ -110,9 +110,11 @@ const VERSION_TWO_SQL = `
 `;
 
 const VERSION_THREE_SQL = `
-  ALTER TABLE jobs ADD COLUMN quote_known INTEGER NOT NULL DEFAULT 0
+  ALTER TABLE jobs ADD COLUMN quote_known INTEGER NOT NULL DEFAULT 1
   CHECK (quote_known IN (0, 1));
+`;
 
+const VERSION_FOUR_SQL = `
   UPDATE jobs
   SET quote_known = CASE WHEN quoted_points <> 0 THEN 1 ELSE 0 END;
 
@@ -132,6 +134,7 @@ const VERSION_THREE_SQL = `
       SELECT 1 FROM jobs
       WHERE jobs.id = budget_entries.job_id
         AND jobs.status = 'failed'
+        AND jobs.submitted_at IS NULL
     );
 
   UPDATE budget_entries
@@ -140,12 +143,18 @@ const VERSION_THREE_SQL = `
     AND EXISTS (
       SELECT 1 FROM jobs
       WHERE jobs.id = budget_entries.job_id
-        AND jobs.status IN (
-          'submitting',
-          'discovering',
-          'processing',
-          'unknown',
-          'completed'
+        AND (
+          jobs.status IN (
+            'submitting',
+            'discovering',
+            'processing',
+            'unknown',
+            'completed'
+          )
+          OR (
+            jobs.status = 'failed'
+            AND jobs.submitted_at IS NOT NULL
+          )
         )
     );
 `;
@@ -216,19 +225,7 @@ export function migrateJobDatabase(database: Database.Database): void {
           account_id, job_id, quoted_points, state, day_window_start,
           month_window_start, created_at, updated_at
         )
-        SELECT
-          account_id,
-          id,
-          0,
-          CASE
-            WHEN status = 'queued' THEN 'reserved'
-            WHEN status = 'failed' THEN 'released'
-            ELSE 'charged'
-          END,
-          0,
-          0,
-          created_at,
-          updated_at
+        SELECT account_id, id, 0, 'charged', 0, 0, created_at, updated_at
         FROM jobs
       `).run();
       database.prepare(
@@ -241,6 +238,13 @@ export function migrateJobDatabase(database: Database.Database): void {
       database.prepare(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
       ).run(3, Date.now());
+      version = 3;
+    }
+    if (version < 4) {
+      database.exec(VERSION_FOUR_SQL);
+      database.prepare(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
+      ).run(4, Date.now());
     }
   }).immediate();
 }

@@ -153,11 +153,19 @@ function job(accountId: string, overrides: Partial<JobRecord> = {}): JobRecord {
   };
 }
 
+function reservedJobId(input: AdmissionInput): string {
+  if (input.jobId === undefined) {
+    throw new Error("Scheduler did not provide a job ID before reservation");
+  }
+  return input.jobId;
+}
+
 function schedulerFor(
   runtimes: AccountRuntime[],
   options: {
     usage?: Record<string, { dayUsedPoints: number; monthUsedPoints: number }>;
     existing?: JobRecord | null;
+    enabledRuntimes?: AccountRuntime[];
     reserve?: (
       accountId: string,
       input: AdmissionInput
@@ -179,7 +187,10 @@ function schedulerFor(
     options.reserve?.(input.accountId, input)
       ?? {
         outcome: "created" as const,
-        job: job(input.accountId, { quotedPoints: input.quotedPoints })
+        job: job(input.accountId, {
+          id: reservedJobId(input),
+          quotedPoints: input.quotedPoints
+        })
       }
   ));
   const failAndRelease = vi.fn();
@@ -187,7 +198,10 @@ function schedulerFor(
   return {
     scheduler: new AccountScheduler({
       registry: {
-        listEnabled: () => runtimes,
+        listEnabled: () => options.enabledRuntimes ?? runtimes,
+        listRetained: () => runtimes,
+        find: (accountId: string) =>
+          runtimes.find((item) => item.record.id === accountId) ?? null,
         require: (accountId: string) => {
           const found = runtimes.find((item) => item.record.id === accountId);
           if (found === undefined) throw new Error("runtime unavailable");
@@ -299,7 +313,36 @@ describe("AccountScheduler", () => {
     }
   );
 
-  it("reports temporary capacity exhaustion separately", async () => {
+  it("skips a full preferred account before persistence and admits the next candidate", async () => {
+    const accountCapacity = new CapacityManager(1, 0);
+    accountCapacity.restore("already-active", "processing", null, NOW);
+    const preferred = runtime(record("acct_busy", { priority: 0 }), {
+      capacity: accountCapacity
+    });
+    const fallback = runtime(record("acct_fallback", {
+      priority: 1,
+      lastSelectedAt: NOW
+    }));
+    const {
+      scheduler,
+      reserveOrGet,
+      failAndRelease
+    } = schedulerFor([preferred, fallback]);
+
+    const admitted = await scheduler.admit(admissionInput);
+
+    if (!admitted.created) throw new Error("Expected a new admission");
+    expect(admitted.runtime.record.id).toBe("acct_fallback");
+    expect(reserveOrGet).toHaveBeenCalledTimes(1);
+    expect(reserveOrGet).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: "acct_fallback"
+    }));
+    expect(failAndRelease).not.toHaveBeenCalled();
+    expect(accountCapacity.activeJobIds()).toEqual(["already-active"]);
+    admitted.lease.release();
+  });
+
+  it("reports temporary capacity exhaustion without persisting a job", async () => {
     const accountCapacity = new CapacityManager(1, 0);
     accountCapacity.restore("already-active", "processing", null, NOW);
     const candidate = runtime(record("acct_busy"), {
@@ -316,12 +359,8 @@ describe("AccountScheduler", () => {
       statusCode: 429,
       code: "lingjing_capacity_exhausted"
     });
-    expect(reserveOrGet).toHaveBeenCalledTimes(1);
-    expect(failAndRelease).toHaveBeenCalledWith(
-      expect.any(String),
-      ["queued"],
-      "account_capacity_acquire_failed"
-    );
+    expect(reserveOrGet).not.toHaveBeenCalled();
+    expect(failAndRelease).not.toHaveBeenCalled();
     expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
   });
 
@@ -383,12 +422,28 @@ describe("AccountScheduler", () => {
   it("retries the next candidate when the transaction loses a budget race", async () => {
     const first = runtime(record("acct_first", { lastSelectedAt: NOW - 2 }));
     const second = runtime(record("acct_second", { lastSelectedAt: NOW - 1 }));
-    const outcomes: AdmissionResult[] = [
-      { outcome: "budget_exhausted" },
-      { outcome: "created", job: job("acct_second") }
-    ];
+    const capacityAtReservation: Array<{
+      accountId: string;
+      active: number;
+      admitted: number;
+    }> = [];
     const { scheduler, reserveOrGet } = schedulerFor([first, second], {
-      reserve: () => outcomes.shift() ?? { outcome: "account_unavailable" }
+      reserve: (accountId, input) => {
+        const candidate = accountId === first.record.id ? first : second;
+        const counts = candidate.capacity.counts();
+        capacityAtReservation.push({
+          accountId,
+          active: counts.active,
+          admitted: counts.admitted
+        });
+        if (accountId === first.record.id) {
+          return { outcome: "budget_exhausted" };
+        }
+        return {
+          outcome: "created",
+          job: job(accountId, { id: reservedJobId(input) })
+        };
+      }
     });
 
     const admitted = await scheduler.admit(admissionInput);
@@ -396,8 +451,26 @@ describe("AccountScheduler", () => {
     if (!admitted.created) throw new Error("Expected a new admission");
     expect(admitted.runtime.record.id).toBe("acct_second");
     expect(reserveOrGet).toHaveBeenCalledTimes(2);
+    expect(capacityAtReservation).toEqual([
+      { accountId: "acct_first", active: 1, admitted: 0 },
+      { accountId: "acct_second", active: 1, admitted: 0 }
+    ]);
     expect(first.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
     admitted.lease.release();
+  });
+
+  it("expires unknown capacity across every retained runtime", () => {
+    const disabled = runtime(record("acct_disabled", {
+      enabled: false
+    }));
+    disabled.capacity.restore("job-disabled-unknown", "unknown", NOW, NOW - 1);
+    const { scheduler } = schedulerFor([disabled], {
+      enabledRuntimes: []
+    });
+
+    scheduler.expireUnknown(NOW);
+
+    expect(disabled.capacity.activeJobIds()).toEqual([]);
   });
 
   it("replays before candidate work when the bound runtime is unavailable", async () => {
@@ -562,7 +635,7 @@ describe("AccountScheduler", () => {
         return {
           outcome: "created",
           job: job("acct_shared", {
-            id: `job-${input.model}`,
+            id: reservedJobId(input),
             model: input.model,
             apiId: input.apiId
           })
@@ -594,13 +667,11 @@ describe("AccountScheduler", () => {
       return admitted;
     });
 
-    await vi.waitFor(() => {
-      expect(reserveOrder).toEqual(["fast"]);
-    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reserveOrder).toEqual([]);
     slowModel.resolve({ ...model, apiId: "slow" });
-    await vi.waitFor(() => {
-      expect(reserveOrder).toEqual(["fast", "slow"]);
-    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(reserveOrder).toEqual([]);
     globalBlocker.release();
     accountBlocker.release();
 
@@ -612,6 +683,7 @@ describe("AccountScheduler", () => {
         }, 1_000);
       })
     ])).resolves.toHaveLength(2);
+    expect(reserveOrder).toEqual(["slow", "fast"]);
     expect(completionOrder).toEqual(["slow", "fast"]);
   });
 });

@@ -165,7 +165,8 @@ function coordinatorFor(
           created: true
         };
       },
-      restore: () => runtime
+      restore: () => runtime,
+      tryRestore: () => runtime
     },
     admissions: {
       charge: () => undefined,
@@ -527,7 +528,7 @@ describe("durable restart recovery", () => {
       capacity: accountCapacity
     } as AccountRuntime;
     const scheduler = {
-      restore: vi.fn((job: JobRecord) => {
+      tryRestore: vi.fn((job: JobRecord) => {
         events.push(`restore:${job.accountId}`);
         return runtime;
       }),
@@ -569,7 +570,7 @@ describe("durable restart recovery", () => {
       expect(charge).toHaveBeenCalledTimes(1);
       expect(restoredGlobal).toBe(true);
       expect(restoredAccount).toBe(true);
-      expect(scheduler.restore).toHaveBeenCalledWith(
+      expect(scheduler.tryRestore).toHaveBeenCalledWith(
         expect.objectContaining({ accountId: accountRecord.id })
       );
       resumeGate.resolve();
@@ -580,6 +581,110 @@ describe("durable restart recovery", () => {
       resumeGate.resolve();
       recovery.close();
       await registry.waitUntilIdle();
+      repository.close();
+      store.close();
+    }
+  });
+
+  it("keeps startup ready when one recoverable job has no bound runtime", async () => {
+    const path = databasePath();
+    const store = new SqliteStore(path);
+    const repository = new SqliteJobRepository(store);
+    const accounts = new SqliteAccountRepository(store);
+    const accountRecord = accounts.ensureLegacyAccount("data/auth");
+    accounts.recordObservation(accountRecord.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const admissionRepository = new SqliteAdmissionRepository(store);
+    const admitted = admissionRepository.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-api",
+      apiId: "fixture-api",
+      modelCode: "fixture-model-code",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "1".repeat(64),
+      idempotencyKeyHash: "2".repeat(64),
+      spaceId: 0,
+      accountId: accountRecord.id,
+      quotedPoints: 7,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    const submitting = repository.transition(admitted.job.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now()
+    });
+    const discovering = repository.transition(
+      submitting.id,
+      ["submitting"],
+      { status: "discovering" }
+    );
+    const processing = repository.transition(
+      discovering.id,
+      ["discovering"],
+      {
+        status: "processing",
+        creationCode: "missing-runtime-creation",
+        upstreamTaskId: "missing-runtime-task"
+      }
+    );
+    const globalCapacity = new CapacityManager(1);
+    const resumeJob = vi.fn<(
+      job: JobRecord,
+      lease: CapacityLease
+    ) => Promise<void>>();
+    const recovery = new StartupRecovery({
+      repository,
+      capacity: globalCapacity,
+      registry: new JobRunnerRegistry(),
+      resumeJob,
+      scheduler: {
+        tryRestore: () => null,
+        expireUnknown: () => undefined
+      },
+      admissions: {
+        charge: admissionRepository.charge.bind(admissionRepository),
+        releasePreSubmit: admissionRepository.releasePreSubmit.bind(
+          admissionRepository
+        ),
+        failAndRelease: admissionRepository.failAndRelease.bind(
+          admissionRepository
+        )
+      },
+      unknownCapacityHoldMs: 60_000
+    });
+    try {
+      await expect(recovery.start()).resolves.toBeUndefined();
+      expect(recovery.ready).toBe(true);
+      expect(repository.findById(processing.id)).toMatchObject({
+        status: "unknown",
+        accountId: accountRecord.id,
+        errorCode: "account_runtime_unavailable"
+      });
+      expect(admissionRepository.budgetState(processing.id)).toBe("charged");
+      expect(globalCapacity.activeJobIds()).toEqual([processing.id]);
+      expect(resumeJob).not.toHaveBeenCalled();
+      const resolved = admissionRepository.resolveUnknown(
+        accountRecord.id,
+        processing.id,
+        "release"
+      );
+      expect(resolved).toMatchObject({
+        state: "released",
+        job: { status: "failed" }
+      });
+      globalCapacity.releaseJob(processing.id);
+      expect(globalCapacity.activeJobIds()).toEqual([]);
+    } finally {
+      recovery.close();
       repository.close();
       store.close();
     }
@@ -654,7 +759,7 @@ describe("durable restart recovery", () => {
       registry: new JobRunnerRegistry(),
       resumeJob,
       scheduler: {
-        restore: () => {
+        tryRestore: () => {
           throw new Error("Completed jobs must not restore a runtime");
         },
         expireUnknown: () => undefined

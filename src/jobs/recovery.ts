@@ -45,7 +45,7 @@ export interface StartupRecoveryOptions {
   capacity: CapacityManager;
   registry: JobRunnerRegistry;
   resumeJob: (job: JobRecord, lease: CapacityLease) => Promise<void>;
-  scheduler?: Pick<AccountScheduler, "restore" | "expireUnknown">;
+  scheduler?: Pick<AccountScheduler, "tryRestore" | "expireUnknown">;
   admissions?: Pick<
     SqliteAdmissionRepository,
     "charge" | "releasePreSubmit" | "failAndRelease"
@@ -199,7 +199,29 @@ export class StartupRecovery {
     persisted: JobRecord
   ): { job: JobRecord; lease: CapacityLease } | null {
     this.options.admissions?.charge(persisted.id);
-    const runtime = this.options.scheduler?.restore(persisted);
+    const runtime = this.options.scheduler?.tryRestore(persisted);
+    if (runtime === null) {
+      const recoveryNow = this.now();
+      const unavailable = persisted.status === "unknown"
+        ? persisted
+        : this.options.repository.transition(
+          persisted.id,
+          ["submitting", "discovering", "processing"],
+          {
+            status: "unknown",
+            unknownHoldUntil:
+              recoveryNow + this.options.unknownCapacityHoldMs,
+            errorCode: "account_runtime_unavailable"
+          }
+        );
+      this.options.capacity.restore(
+        unavailable.id,
+        unavailable.status,
+        unavailable.unknownHoldUntil,
+        recoveryNow
+      );
+      return null;
+    }
     const globalLease = this.options.capacity.restore(
       persisted.id,
       persisted.status,

@@ -36,7 +36,10 @@ export type AccountAdmission =
   };
 
 export interface AccountSchedulerOptions {
-  registry: Pick<AccountRuntimeRegistry, "listEnabled" | "require">;
+  registry: Pick<
+    AccountRuntimeRegistry,
+    "find" | "listEnabled" | "listRetained" | "require"
+  >;
   accounts: Pick<SqliteAccountRepository, "findById" | "usage">;
   admissions: Pick<
     SqliteAdmissionRepository,
@@ -121,6 +124,10 @@ function capacityFull(cause: unknown): boolean {
     && cause.code === "lingjing_capacity_queue_full";
 }
 
+function newJobId(): string {
+  return `job_${randomUUID().replaceAll("-", "")}`;
+}
+
 function compareCandidates(left: Candidate, right: Candidate): number {
   return left.record.priority - right.record.priority
     || left.activeJobs - right.activeJobs
@@ -152,7 +159,7 @@ export class AccountScheduler {
     inputContentHashes?: readonly string[];
     globalAdmission?: CapacityAdmission;
   }): Promise<AccountAdmission> {
-    const globalAdmission = input.globalAdmission ?? this.start();
+    let globalAdmission = input.globalAdmission ?? this.start();
     let transferred = false;
     try {
       if (input.idempotencyKeyHash !== null) {
@@ -183,27 +190,74 @@ export class AccountScheduler {
         throw evaluation.validationError ?? errors.noEligibleAccount();
       }
 
-      for (const candidate of candidates) {
+      let fullCandidates = 0;
+      for (const [index, candidate] of candidates.entries()) {
+        const hasNextCandidate = index < candidates.length - 1;
         const requestFingerprint = this.fingerprintForApiId(
           input,
           candidate.model.apiId
         );
-        const result = this.options.admissions.reserveOrGet({
-          kind: input.request.kind,
-          sourceType: input.request.sourceType,
-          model: input.request.model,
-          apiId: candidate.model.apiId,
-          modelCode: candidate.model.modelCode,
-          expectedAssetScene: candidate.model.expectedAssetScene,
-          requestFingerprint,
-          idempotencyKeyHash: input.idempotencyKeyHash,
-          spaceId: candidate.spaceId,
-          accountId: candidate.record.id,
-          quotedPoints: candidate.quote,
-          windows: budgetWindows(this.now())
-        });
+        const jobId = newJobId();
+        const globalLease = await globalAdmission.acquire(jobId);
+        let accountAdmission: CapacityAdmission;
+        try {
+          accountAdmission = candidate.runtime.capacity.admit(randomUUID());
+        } catch (cause) {
+          globalLease.release();
+          if (capacityFull(cause)) {
+            fullCandidates += 1;
+            if (hasNextCandidate) globalAdmission = this.start();
+            continue;
+          }
+          throw cause;
+        }
+
+        let accountLease: CapacityLease;
+        try {
+          accountLease = await accountAdmission.acquire(jobId);
+        } catch (cause) {
+          accountAdmission.release();
+          globalLease.release();
+          throw cause;
+        }
+
+        let result;
+        try {
+          result = this.options.admissions.reserveOrGet({
+            jobId,
+            kind: input.request.kind,
+            sourceType: input.request.sourceType,
+            model: input.request.model,
+            apiId: candidate.model.apiId,
+            modelCode: candidate.model.modelCode,
+            expectedAssetScene: candidate.model.expectedAssetScene,
+            requestFingerprint,
+            idempotencyKeyHash: input.idempotencyKeyHash,
+            spaceId: candidate.spaceId,
+            accountId: candidate.record.id,
+            quotedPoints: candidate.quote,
+            windows: budgetWindows(this.now())
+          });
+        } catch (cause) {
+          accountLease.release();
+          globalLease.release();
+          throw cause;
+        }
+
+        if (result.outcome === "created") {
+          transferred = true;
+          return {
+            runtime: candidate.runtime,
+            model: candidate.model,
+            job: result.job,
+            lease: combineCapacityLeases(globalLease, accountLease),
+            created: true
+          };
+        }
+
+        accountLease.release();
+        globalLease.release();
         if (result.outcome === "existing") {
-          globalAdmission.release();
           transferred = true;
           return {
             runtime: null,
@@ -213,46 +267,12 @@ export class AccountScheduler {
             created: false
           };
         }
-        if (result.outcome !== "created") continue;
-
-        let globalLease: CapacityLease;
-        try {
-          globalLease = await globalAdmission.acquire(result.job.id);
-          transferred = true;
-        } catch (cause) {
-          this.options.admissions.failAndRelease(
-            result.job.id,
-            ["queued"],
-            "global_capacity_acquire_failed"
-          );
-          throw cause;
-        }
-
-        let accountAdmission: CapacityAdmission | null = null;
-        try {
-          accountAdmission = candidate.runtime.capacity.admit(randomUUID());
-          const accountLease = await accountAdmission.acquire(result.job.id);
-          return {
-            runtime: candidate.runtime,
-            model: candidate.model,
-            job: result.job,
-            lease: combineCapacityLeases(globalLease, accountLease),
-            created: true
-          };
-        } catch (cause) {
-          accountAdmission?.release();
-          globalLease.release();
-          this.options.admissions.failAndRelease(
-            result.job.id,
-            ["queued"],
-            "account_capacity_acquire_failed"
-          );
-          if (capacityFull(cause)) throw errors.capacityExhausted();
-          throw cause;
-        }
+        if (hasNextCandidate) globalAdmission = this.start();
       }
 
-      throw errors.noEligibleAccount();
+      throw fullCandidates === candidates.length
+        ? errors.capacityExhausted()
+        : errors.noEligibleAccount();
     } finally {
       if (!transferred) globalAdmission.release();
     }
@@ -262,8 +282,12 @@ export class AccountScheduler {
     return this.options.registry.require(job.accountId);
   }
 
+  tryRestore(job: JobRecord): AccountRuntime | null {
+    return this.options.registry.find(job.accountId);
+  }
+
   expireUnknown(now: number): void {
-    for (const runtime of this.options.registry.listEnabled()) {
+    for (const runtime of this.options.registry.listRetained()) {
       runtime.capacity.expireUnknown(now);
     }
   }

@@ -60,6 +60,7 @@ export interface AccountBudgetUsage {
 }
 
 export interface AdmissionInput extends NewJob {
+  jobId?: string;
   accountId: string;
   quotedPoints: number | null;
   windows: BudgetWindow;

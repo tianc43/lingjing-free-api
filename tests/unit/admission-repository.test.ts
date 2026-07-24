@@ -93,6 +93,32 @@ describe("budgetWindows", () => {
 });
 
 describe("SqliteAdmissionRepository", () => {
+  it("persists the job ID already bound to capacity", () => {
+    const now = Date.parse("2026-07-24T03:00:00Z");
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath, {
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    const store = new SqliteStore(databasePath);
+    const admissions = new SqliteAdmissionRepository(store, () => now);
+    const input = {
+      ...inputFor(accountId, "c"),
+      jobId: `job_${"1".repeat(32)}`
+    };
+
+    try {
+      const created = admissions.reserveOrGet(input);
+
+      expect(created).toMatchObject({
+        outcome: "created",
+        job: { id: input.jobId }
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   it("looks up a persisted job by idempotency hash without admission data", () => {
     const now = Date.parse("2026-07-24T03:00:00Z");
     const databasePath = temporaryDatabasePath();

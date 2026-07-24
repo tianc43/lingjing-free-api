@@ -512,6 +512,8 @@ export function createGenerationHarness(options: {
   const scheduler = new AccountScheduler({
     registry: {
       listEnabled: () => [...availableRuntimes.values()],
+      listRetained: () => runtimes,
+      find: (accountId: string) => availableRuntimes.get(accountId) ?? null,
       require: (accountId: string) => {
         const found = availableRuntimes.get(accountId);
         if (found === undefined) throw new Error("Fixture runtime unavailable");

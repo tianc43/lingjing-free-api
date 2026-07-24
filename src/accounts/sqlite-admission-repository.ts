@@ -62,6 +62,7 @@ const JOB_SELECT_COLUMNS = `
 `;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const JOB_ID = /^job_[0-9a-f]{32}$/u;
 
 function assertSha256(value: string, name: string): void {
   if (!SHA256_HEX.test(value)) {
@@ -104,6 +105,9 @@ function jobFromRow(row: JobRow): JobRecord {
 }
 
 function assertAdmissionInput(input: AdmissionInput, canonicalWindows: AdmissionInput["windows"]): void {
+  if (input.jobId !== undefined && !JOB_ID.test(input.jobId)) {
+    throw new TypeError("jobId must be a generated job ID");
+  }
   assertSha256(input.requestFingerprint, "requestFingerprint");
   if (input.idempotencyKeyHash !== null) {
     assertSha256(input.idempotencyKeyHash, "idempotencyKeyHash");
@@ -194,7 +198,7 @@ export class SqliteAdmissionRepository {
         return { outcome: "budget_exhausted" };
       }
 
-      const id = `job_${randomBytes(16).toString("hex")}`;
+      const id = input.jobId ?? `job_${randomBytes(16).toString("hex")}`;
       const now = Date.now();
       const storedQuotedPoints = input.quotedPoints ?? 0;
       const quoteKnown = input.quotedPoints === null ? 0 : 1;

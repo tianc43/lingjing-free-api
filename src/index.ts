@@ -5,12 +5,14 @@ import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
 import { AccountScheduler } from "./accounts/scheduler.js";
 import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
+import type { AccountRuntime } from "./accounts/runtime.js";
 import { SqliteAccountRepository } from "./accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "./accounts/sqlite-admission-repository.js";
 import { buildApp } from "./app.js";
 import type { AppDependencies } from "./api/types.js";
 import { createRequestMediaBudget } from "./api/multipart.js";
 import { parseConfig } from "./config.js";
+import { errors } from "./errors.js";
 import {
   LingjingGenerationCoordinator
 } from "./generation/coordinator.js";
@@ -75,6 +77,18 @@ function assertBufferMedia(
   ) {
     throw new Error("Invalid prepared media buffer");
   }
+}
+
+function lazyService<T extends object>(service: () => T): T {
+  return new Proxy({} as T, {
+    get: (_target, property) => {
+      const current = service();
+      const value: unknown = Reflect.get(current, property, current);
+      if (typeof value !== "function") return value;
+      const bound: unknown = value.bind(current);
+      return bound;
+    }
+  });
 }
 
 export interface RunningServer {
@@ -178,7 +192,6 @@ export async function startServer(
 
   try {
     await runtimes.ready();
-    const legacyRuntime = runtimes.require("legacy");
     const scheduler = new AccountScheduler({
       registry: runtimes,
       accounts,
@@ -297,13 +310,18 @@ export async function startServer(
     // before the first socket can accept traffic.
     await recovery.start();
 
+    const compatibilityRuntime = (): AccountRuntime => {
+      const runtime = runtimes.listEnabled()[0];
+      if (runtime === undefined) throw errors.loginRequired();
+      return runtime;
+    };
     const dependencies: AppDependencies = {
       config,
       logger,
-      session: legacyRuntime.session,
-      transport: legacyRuntime.transport,
-      account: legacyRuntime.account,
-      catalog: legacyRuntime.catalog,
+      session: lazyService(() => compatibilityRuntime().session),
+      transport: lazyService(() => compatibilityRuntime().transport),
+      account: lazyService(() => compatibilityRuntime().account),
+      catalog: lazyService(() => compatibilityRuntime().catalog),
       repository,
       accounts,
       admissions,

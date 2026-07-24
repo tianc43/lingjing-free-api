@@ -171,6 +171,174 @@ function createVersionTwoDatabase(): string {
   return path;
 }
 
+function createVersionThreeDatabase(): string {
+  const directory = mkdtempSync(join(tmpdir(), "lingjing-recovery-v3-"));
+  directories.push(directory);
+  const path = join(directory, "jobs.sqlite");
+  const database = new Database(path);
+  database.exec(`
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    );
+    INSERT INTO schema_migrations(version, applied_at) VALUES
+      (1, 1),
+      (2, 2),
+      (3, 3);
+
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
+      source_type TEXT NOT NULL,
+      model TEXT NOT NULL,
+      api_id TEXT NOT NULL,
+      model_code TEXT,
+      expected_asset_scene TEXT NOT NULL,
+      request_fingerprint TEXT NOT NULL,
+      idempotency_key_hash TEXT,
+      space_id INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (
+        status IN (
+          'queued',
+          'submitting',
+          'discovering',
+          'processing',
+          'unknown',
+          'completed',
+          'failed'
+        )
+      ),
+      creation_code TEXT,
+      upstream_task_id TEXT,
+      upstream_fingerprint TEXT,
+      submitted_at INTEGER,
+      discovered_at INTEGER,
+      completed_at INTEGER,
+      failed_at INTEGER,
+      unknown_hold_until INTEGER,
+      error_code TEXT,
+      result_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      account_id TEXT,
+      quoted_points REAL NOT NULL DEFAULT 0,
+      quote_known INTEGER NOT NULL DEFAULT 1
+      CHECK (quote_known IN (0, 1))
+    );
+    CREATE UNIQUE INDEX jobs_idempotency_key_hash_unique
+    ON jobs(idempotency_key_hash)
+    WHERE idempotency_key_hash IS NOT NULL;
+    CREATE INDEX jobs_status_updated_at_idx
+    ON jobs(status, updated_at);
+    CREATE TABLE job_status_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (
+        status IN (
+          'queued',
+          'submitting',
+          'discovering',
+          'processing',
+          'unknown',
+          'completed',
+          'failed'
+        )
+      ),
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      priority INTEGER NOT NULL CHECK (priority >= 0),
+      daily_point_limit REAL NOT NULL CHECK (daily_point_limit >= 0),
+      monthly_point_limit REAL NOT NULL CHECK (monthly_point_limit >= 0),
+      auth_directory TEXT NOT NULL UNIQUE,
+      health_status TEXT NOT NULL CHECK (
+        health_status IN ('unknown', 'ready', 'needs_login', 'unhealthy')
+      ),
+      last_error_code TEXT,
+      subject_hash TEXT,
+      points_balance REAL,
+      total_balance REAL,
+      max_concurrency INTEGER,
+      last_checked_at INTEGER,
+      last_selected_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE budget_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT NOT NULL REFERENCES accounts(id),
+      job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+      quoted_points REAL NOT NULL CHECK (quoted_points >= 0),
+      state TEXT NOT NULL CHECK (state IN ('reserved', 'charged', 'released')),
+      day_window_start INTEGER NOT NULL,
+      month_window_start INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX budget_entries_account_day_idx
+    ON budget_entries(account_id, day_window_start, state);
+    CREATE INDEX budget_entries_account_month_idx
+    ON budget_entries(account_id, month_window_start, state);
+    INSERT INTO accounts (
+      id, name, enabled, priority, daily_point_limit, monthly_point_limit,
+      auth_directory, health_status, created_at, updated_at
+    ) VALUES (
+      'legacy', 'Legacy account', 1, 0, 0, 0,
+      'data/auth', 'unknown', 1, 1
+    );
+    INSERT INTO jobs (
+      id, kind, source_type, model, api_id, expected_asset_scene,
+      request_fingerprint, space_id, status, submitted_at, failed_at,
+      created_at, updated_at, account_id, quoted_points
+    ) VALUES
+      (
+        'job_v3_unknown_quote', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"a".repeat(64)}', 0, 'queued', NULL, NULL,
+        2, 2, 'legacy', 0
+      ),
+      (
+        'job_v3_submitted_failed', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"b".repeat(64)}', 0, 'failed', 3, 4,
+        3, 4, 'legacy', 7
+      ),
+      (
+        'job_v3_unsubmitted_failed', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"c".repeat(64)}', 0, 'failed', NULL, 5,
+        5, 5, 'legacy', 5
+      ),
+      (
+        'job_v3_processing', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"d".repeat(64)}', 0, 'processing', 6, NULL,
+        6, 6, 'legacy', 9
+      ),
+      (
+        'job_v3_unsubmitted_charged', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"f".repeat(64)}', 0, 'failed', NULL, 7,
+        7, 7, 'legacy', 6
+      );
+    INSERT INTO job_status_history(job_id, status, created_at) VALUES
+      ('job_v3_unknown_quote', 'queued', 2),
+      ('job_v3_submitted_failed', 'failed', 4),
+      ('job_v3_unsubmitted_failed', 'failed', 5),
+      ('job_v3_processing', 'processing', 6),
+      ('job_v3_unsubmitted_charged', 'failed', 7);
+    INSERT INTO budget_entries (
+      account_id, job_id, quoted_points, state, day_window_start,
+      month_window_start, created_at, updated_at
+    ) VALUES
+      ('legacy', 'job_v3_unknown_quote', 0, 'charged', 0, 0, 2, 2),
+      ('legacy', 'job_v3_submitted_failed', 7, 'charged', 0, 0, 3, 4),
+      ('legacy', 'job_v3_unsubmitted_failed', 5, 'reserved', 0, 0, 5, 5),
+      ('legacy', 'job_v3_processing', 9, 'reserved', 0, 0, 6, 6),
+      ('legacy', 'job_v3_unsubmitted_charged', 6, 'charged', 0, 0, 7, 7);
+  `);
+  database.close();
+  return path;
+}
+
 function submitting(repository: SqliteJobRepository): JobRecord {
   const job = repository.createOrGet(fixtureNewJob).job;
   return repository.transition(job.id, ["queued"], {
@@ -224,6 +392,44 @@ function submissionSensitiveResumeRunner(
 }
 
 describe("startup recovery", () => {
+  it("migrates v3 quote and budget semantics without refunding submitted failures", () => {
+    const store = new SqliteStore(createVersionThreeDatabase());
+    const repository = new SqliteJobRepository(store);
+
+    try {
+      expect(store.read((database) => database.prepare(`
+        SELECT MAX(version) AS version FROM schema_migrations
+      `).get())).toEqual({ version: 4 });
+      expect(repository.findById("job_v3_unknown_quote")?.quotedPoints).toBeNull();
+      expect(store.read((database) => database.prepare(`
+        SELECT dflt_value FROM pragma_table_info('jobs')
+        WHERE name = 'quote_known'
+      `).get())).toEqual({ dflt_value: "1" });
+      const created = repository.createOrGet({
+        ...fixtureNewJob,
+        requestFingerprint: "e".repeat(64)
+      }).job;
+      expect(created.quotedPoints).toBeNull();
+      expect(store.read((database) => database.prepare(`
+        SELECT quote_known FROM jobs WHERE id = ?
+      `).get(created.id))).toEqual({ quote_known: 0 });
+      expect(store.read((database) => database.prepare(`
+        SELECT job_id, state FROM budget_entries
+        WHERE job_id LIKE 'job_v3_%'
+        ORDER BY job_id
+      `).all())).toEqual([
+        { job_id: "job_v3_processing", state: "charged" },
+        { job_id: "job_v3_submitted_failed", state: "charged" },
+        { job_id: "job_v3_unknown_quote", state: "reserved" },
+        { job_id: "job_v3_unsubmitted_charged", state: "released" },
+        { job_id: "job_v3_unsubmitted_failed", state: "released" }
+      ]);
+    } finally {
+      repository.close();
+      store.close();
+    }
+  });
+
   it("migrates a v2 queued charged job before atomic startup recovery", async () => {
     const store = new SqliteStore(createVersionTwoDatabase());
     const repository = new SqliteJobRepository(store);
@@ -251,7 +457,7 @@ describe("startup recovery", () => {
       expect(store.read((database) => database.prepare(`
         SELECT dflt_value FROM pragma_table_info('jobs')
         WHERE name = 'quote_known'
-      `).get())).toEqual({ dflt_value: "0" });
+      `).get())).toEqual({ dflt_value: "1" });
       expect(store.read((database) => database.prepare(`
         SELECT job_id, state FROM budget_entries
         WHERE job_id IN ('job_v2_queued', 'job_v2_failed')

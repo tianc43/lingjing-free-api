@@ -493,7 +493,10 @@ describe("LingjingGenerationCoordinator", () => {
   });
 
   it("continues background recovery while an unknown job holds capacity", async () => {
-    const app = harness();
+    const app = createGenerationHarness({
+      unknownCapacityHoldMs: 5_000
+    });
+    harnesses.push(app);
     app.addAssetsPerSubmit(2);
 
     const handle = await app.coordinator.create(fixtureRequest());
@@ -534,24 +537,32 @@ describe("LingjingGenerationCoordinator", () => {
     }
   );
 
-  it("validates the bound release runtime before committing unknown resolution", async () => {
-    const app = harness();
-    app.addAssetsPerSubmit(2);
-    const handle = await app.coordinator.create(fixtureRequest());
-    expect((await handle.wait(5_000)).status).toBe("unknown");
-    app.removeRuntime(handle.job.accountId);
+  it.each(["charge", "release"] as const)(
+    "commits unknown %s resolution when the bound runtime is unavailable",
+    async (action) => {
+      const app = harness();
+      app.addAssetsPerSubmit(2);
+      const handle = await app.coordinator.create(fixtureRequest());
+      expect((await handle.wait(5_000)).status).toBe("unknown");
+      app.removeRuntime(handle.job.accountId);
 
-    expect(() => app.coordinator.resolveUnknown(
-      handle.job.accountId,
-      handle.job.id,
-      "release"
-    )).toThrow("Fixture runtime unavailable");
+      const resolved = app.coordinator.resolveUnknown(
+        handle.job.accountId,
+        handle.job.id,
+        action
+      );
 
-    expect(app.repository.findById(handle.job.id)?.status).toBe("unknown");
-    expect(app.budgetState(handle.job.id)).toBe("charged");
-    expect(app.capacity.counts().active).toBe(1);
-    expect(app.accountCapacity.counts().active).toBe(1);
-  });
+      const state = action === "charge" ? "charged" : "released";
+      expect(resolved).toMatchObject({
+        state,
+        job: { status: "failed" }
+      });
+      expect(app.repository.findById(handle.job.id)?.status).toBe("failed");
+      expect(app.budgetState(handle.job.id)).toBe(state);
+      expect(app.capacity.counts().active).toBe(0);
+      expect(app.accountCapacity.counts().active).toBe(1);
+    }
+  );
 
   it("keeps the unknown hold durable across a background discovery read failure", async () => {
     const app = createGenerationHarness({ unknownCapacityHoldMs: 1_000 });

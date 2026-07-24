@@ -70,7 +70,10 @@ type Sleep = (
 export interface LingjingGenerationCoordinatorOptions {
   repository: GenerationRepository;
   capacity: CapacityManager;
-  scheduler: Pick<AccountScheduler, "start" | "admit" | "restore">;
+  scheduler: Pick<
+    AccountScheduler,
+    "start" | "admit" | "restore" | "tryRestore"
+  >;
   admissions: Pick<
     SqliteAdmissionRepository,
     "charge" | "failAndRelease" | "resolveUnknown"
@@ -521,14 +524,14 @@ implements GenerationCoordinator {
     ) {
       throw new Error("Unknown job resolution conflict");
     }
-    const runtime = this.options.scheduler.restore(current);
+    const runtime = this.options.scheduler.tryRestore(current);
     const resolved = this.options.admissions.resolveUnknown(
       accountId,
       jobId,
       action
     );
     this.options.capacity.releaseJob(jobId);
-    runtime.capacity.releaseJob(jobId);
+    runtime?.capacity.releaseJob(jobId);
     this.notifier.notify(jobId);
     return resolved;
   }

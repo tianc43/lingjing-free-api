@@ -2,6 +2,8 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  rmSync,
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
@@ -159,6 +161,129 @@ describe("server lifecycle", () => {
       account: { id: "legacy", enabled: true, health_status: "ready" }
     });
     expect(runtime.dependencies.runtimes.listEnabled()).toHaveLength(1);
+  });
+
+  it.each(["missing", "corrupt"] as const)(
+    "boots administration with a %s legacy session and returns a recoverable compatibility error",
+    async (sessionState) => {
+      directory = mkdtempSync(join(tmpdir(), "lingjing-index-test-"));
+      const dbPath = join(directory, "jobs.sqlite");
+      const env = await fixtureEnvironment(dbPath);
+      env.LINGJING_ADMIN_PASSWORD = "fixture-admin-password";
+      const storageStatePath = env.LINGJING_STORAGE_STATE;
+      if (storageStatePath === undefined) {
+        throw new Error("Fixture storage-state path was not configured");
+      }
+      const validStorageState = readFileSync(storageStatePath);
+      if (sessionState === "missing") {
+        rmSync(storageStatePath);
+      } else {
+        writeFileSync(storageStatePath, "{invalid-json");
+      }
+
+      runtime = await startServer(env, {
+        transport: withAccountRuntime()
+      });
+
+      expect(runtime.dependencies.recovery.ready).toBe(true);
+      expect(runtime.dependencies.runtimes.listEnabled()).toEqual([]);
+      const login = await runtime.app.inject({
+        method: "POST",
+        url: "/admin/api/login",
+        payload: { password: "fixture-admin-password" }
+      });
+      expect(login.statusCode).toBe(200);
+      const loginBody = login.json<{ csrf_token: string }>();
+      const setCookie = login.headers["set-cookie"];
+      const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)
+        ?.split(";")[0];
+      if (cookie === undefined) throw new Error("Admin cookie was not set");
+      const compatibility = await runtime.app.inject({
+        method: "GET",
+        url: "/v1/session",
+        headers: {
+          authorization: "Bearer fixture-downstream-api-key"
+        }
+      });
+      expect(compatibility.statusCode).toBe(503);
+      expect(compatibility.json()).toMatchObject({
+        error: {
+          type: "login_required",
+          code: "lingjing_session_expired"
+        }
+      });
+
+      writeFileSync(storageStatePath, validStorageState);
+      const refreshed = await runtime.app.inject({
+        method: "POST",
+        url: "/admin/api/accounts/legacy/check",
+        headers: {
+          cookie,
+          "x-csrf-token": loginBody.csrf_token
+        }
+      });
+      expect(refreshed.statusCode).toBe(200);
+      expect(refreshed.json()).toMatchObject({
+        account: {
+          id: "legacy",
+          health_status: "ready"
+        }
+      });
+      const recoveredCompatibility = await runtime.app.inject({
+        method: "GET",
+        url: "/v1/session",
+        headers: {
+          authorization: "Bearer fixture-downstream-api-key"
+        }
+      });
+      expect(recoveredCompatibility.statusCode).toBe(200);
+      expect(recoveredCompatibility.json()).toMatchObject({
+        logged_in: true,
+        login_required: false
+      });
+    }
+  );
+
+  it("lazily uses another ready runtime when the legacy session is corrupt", async () => {
+    directory = mkdtempSync(join(tmpdir(), "lingjing-index-test-"));
+    const dbPath = join(directory, "jobs.sqlite");
+    const env = await fixtureEnvironment(dbPath);
+    const config = parseConfig(env);
+    const store = new SqliteStore(dbPath);
+    const accounts = new SqliteAccountRepository(store);
+    accounts.ensureLegacyAccount("data/auth");
+    const fallback = accounts.create({
+      name: "Compatibility fallback",
+      priority: 1,
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    const fallbackPaths = accountSessionPaths(config, fallback.id);
+    mkdirSync(dirname(fallbackPaths.storageStatePath), { recursive: true });
+    copyFileSync(config.storageStatePath, fallbackPaths.storageStatePath);
+    copyFileSync(config.sessionProfilePath, fallbackPaths.sessionProfilePath);
+    accounts.update(fallback.id, { enabled: true });
+    store.close();
+    writeFileSync(config.storageStatePath, "{invalid-json");
+
+    runtime = await startServer(env, {
+      transport: withAccountRuntime()
+    });
+
+    expect(runtime.dependencies.runtimes.listEnabled()).toHaveLength(1);
+    const compatibility = await runtime.app.inject({
+      method: "GET",
+      url: "/v1/session",
+      headers: {
+        authorization: "Bearer fixture-downstream-api-key"
+      }
+    });
+    expect(compatibility.statusCode).toBe(200);
+    expect(compatibility.json()).toEqual({
+      mode: "browser-state",
+      logged_in: true,
+      login_required: false
+    });
   });
 
   it("restores processing work on its disabled bound account after restart", async () => {

@@ -72,9 +72,17 @@ export class AccountRuntimeRegistry {
     );
   }
 
+  listRetained(): AccountRuntime[] {
+    return [...this.runtimes.values()];
+  }
+
+  find(accountId: string): AccountRuntime | null {
+    return this.runtimes.get(accountId) ?? null;
+  }
+
   require(accountId: string): AccountRuntime {
-    const runtime = this.runtimes.get(accountId);
-    if (runtime === undefined) throw new Error("Account runtime is unavailable");
+    const runtime = this.find(accountId);
+    if (runtime === null) throw new Error("Account runtime is unavailable");
     return runtime;
   }
 

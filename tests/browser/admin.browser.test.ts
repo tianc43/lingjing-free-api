@@ -516,6 +516,44 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
   await expect(page.getByText("Seed account")).toBeVisible();
 });
 
+test("shows executable login commands for legacy and generated accounts", async ({
+  page,
+}) => {
+  const seed = accounts[0]!;
+  accounts = [
+    {
+      ...seed,
+      id: "legacy",
+      name: "Legacy account",
+      daily_used_points: 12,
+      daily_reserved_points: 3,
+    },
+    {
+      ...seed,
+      id: "acct_0123456789abcdef01234567",
+      name: "Generated account",
+    },
+  ];
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("Administrator password").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const daily = page.getByRole("progressbar", { name: "Daily budget" }).first();
+  await expect(daily).toHaveAttribute("aria-valuenow", "10");
+  await expect(daily).toHaveAttribute(
+    "aria-valuetext",
+    "Charged 12, reserved 3, limit 10",
+  );
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByText("npm run login", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(
+      "npm run login -- --account-id acct_0123456789abcdef01234567",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("--account-id legacy")).toHaveCount(0);
+});
+
 test("logout clears an app action failure before returning to sign in", async ({ page }) => {
   await page.goto("http://127.0.0.1:4174/admin/");
   await page.getByLabel("Administrator password").fill("fixture-admin-password");
