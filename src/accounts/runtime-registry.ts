@@ -54,6 +54,7 @@ function invalidSession(cause: unknown): boolean {
 
 export class AccountRuntimeRegistry {
   private readonly runtimes = new Map<string, AccountRuntime>();
+  private readonly refreshTails = new Map<string, Promise<void>>();
   private readyPromise: Promise<void> | null = null;
 
   constructor(private readonly options: AccountRuntimeRegistryOptions) {}
@@ -77,7 +78,26 @@ export class AccountRuntimeRegistry {
     return runtime;
   }
 
-  async refresh(accountId: string): Promise<AccountRuntime | null> {
+  refresh(accountId: string): Promise<AccountRuntime | null> {
+    const previous = this.refreshTails.get(accountId)
+      ?? Promise.resolve();
+    const result = previous.then(() => this.refreshNow(accountId));
+    const tail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    this.refreshTails.set(accountId, tail);
+    void tail.then(() => {
+      if (this.refreshTails.get(accountId) === tail) {
+        this.refreshTails.delete(accountId);
+      }
+    });
+    return result;
+  }
+
+  private async refreshNow(
+    accountId: string
+  ): Promise<AccountRuntime | null> {
     const record = this.options.accounts.findById(accountId);
     if (record === null) {
       this.runtimes.delete(accountId);
@@ -99,7 +119,6 @@ export class AccountRuntimeRegistry {
   }
 
   private async createRuntime(record: AccountRecord): Promise<AccountRuntime | null> {
-    const existing = this.runtimes.get(record.id);
     const sessionFactory = this.options.sessionFactory ?? createSessionProvider;
     let session: SessionProvider;
     try {
@@ -138,17 +157,18 @@ export class AccountRuntimeRegistry {
       totalBalance: snapshot.totalBalance,
       maxConcurrency: snapshot.maxConcurrency
     });
+    const published = this.runtimes.get(record.id);
     const runtime: AccountRuntime = {
       record: observed,
       session,
       transport,
       account,
       catalog: new CatalogService(transport, this.options.config.modelCacheTtlMs),
-      capacity: existing?.capacity ?? new CapacityManager(
+      capacity: published?.capacity ?? new CapacityManager(
         snapshot.maxConcurrency,
         this.options.config.maxQueuedRequests
       ),
-      discoveryLock: existing?.discoveryLock ?? new DiscoveryLock()
+      discoveryLock: published?.discoveryLock ?? new DiscoveryLock()
     };
     this.runtimes.set(record.id, runtime);
     return runtime;

@@ -170,6 +170,273 @@ describe("AccountRuntimeRegistry", () => {
     expect(registry.listEnabled()).toEqual([]);
   });
 
+  it("serializes overlapping first refreshes and keeps the published coordination identity", async () => {
+    const store = new SqliteStore(":memory:");
+    const accounts = new SqliteAccountRepository(store);
+    accounts.ensureLegacyAccount("data/auth");
+    accounts.recordObservation("legacy", {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const repository = new SqliteJobRepository(store);
+    const admissions = new SqliteAdmissionRepository(store);
+    const admitted = admissions.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-image",
+      apiId: "707",
+      modelCode: "fixture-model",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "c".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 0,
+      accountId: "legacy",
+      quotedPoints: 2,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    repository.transition(admitted.job.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now()
+    });
+    const holdUntil = Date.now() + 60_000;
+    const unknown = repository.transition(
+      admitted.job.id,
+      ["submitting"],
+      { status: "unknown", unknownHoldUntil: holdUntil }
+    );
+
+    let refreshCalls = 0;
+    let markSlowStarted: (() => void) | undefined;
+    const slowStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const registry = new AccountRuntimeRegistry({
+      accounts,
+      config: parseConfig({
+        LINGJING_API_KEY:
+          "fixture-local-secret-with-sufficient-length",
+        LINGJING_MAX_CONCURRENCY: "1",
+        MAX_QUEUED_REQUESTS: "0"
+      }),
+      sessionFactory: async () => {
+        refreshCalls += 1;
+        if (refreshCalls === 2) {
+          markSlowStarted?.();
+          await slowGate;
+        }
+        return session();
+      },
+      transportFactory: () => transport()
+    });
+
+    const fastPromise = registry.refresh("legacy");
+    const slowPromise = registry.refresh("legacy");
+    const fast = await fastPromise;
+    if (fast === null) throw new Error("Fast refresh did not publish");
+    await slowStarted;
+    const globalCapacity = new CapacityManager(1, 0);
+    globalCapacity.restore(unknown.id, "unknown", holdUntil);
+    fast.capacity.restore(unknown.id, "unknown", holdUntil);
+    releaseSlow?.();
+    const final = await slowPromise;
+    if (final === null) throw new Error("Slow refresh did not publish");
+
+    expect(final).not.toBe(fast);
+    expect(registry.require("legacy")).toBe(final);
+    expect(final.capacity).toBe(fast.capacity);
+    expect(final.discoveryLock).toBe(fast.discoveryLock);
+    expect(final.capacity.activeJobIds()).toEqual([unknown.id]);
+    expect(() => final.capacity.admit("fixture-over-admission"))
+      .toThrow("Generation capacity queue is full");
+
+    const coordinator = new LingjingGenerationCoordinator({
+      repository,
+      capacity: globalCapacity,
+      scheduler: new AccountScheduler({
+        registry,
+        accounts,
+        admissions,
+        capacity: globalCapacity
+      }),
+      admissions,
+      prepareMedia: () => Promise.reject(
+        new Error("Fixture does not prepare media")
+      ),
+      registry: new JobRunnerRegistry(),
+      assetDiscoveryTimeoutMs: 30,
+      unknownCapacityHoldMs: 60_000,
+      taskPollIntervalMs: 1
+    });
+    expect(coordinator.resolveUnknown(
+      "legacy",
+      unknown.id,
+      "release"
+    )).toMatchObject({
+      state: "released",
+      job: { status: "failed" }
+    });
+    expect(globalCapacity.counts().active).toBe(0);
+    expect(fast.capacity.counts().active).toBe(0);
+
+    coordinator.stopPollers();
+    await registry.close();
+    repository.close();
+    store.close();
+  });
+
+  it("continues a queued refresh after the previous refresh rejects", async () => {
+    let current = accountRecord("legacy");
+    let observationCalls = 0;
+    let factoryCalls = 0;
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const registry = new AccountRuntimeRegistry({
+      accounts: {
+        list: () => [],
+        findById: () => current,
+        recordObservation: (_id, observation) => {
+          observationCalls += 1;
+          if (observationCalls === 1) {
+            throw new Error("fixture first observation failure");
+          }
+          current = {
+            ...current,
+            ...observation,
+            lastCheckedAt: observationCalls,
+            updatedAt: observationCalls
+          };
+          return current;
+        }
+      },
+      config: parseConfig({
+        LINGJING_API_KEY:
+          "fixture-local-secret-with-sufficient-length"
+      }),
+      sessionFactory: () => {
+        factoryCalls += 1;
+        if (factoryCalls !== 1) return Promise.resolve(session());
+        const firstSession = session();
+        return Promise.resolve({
+          ...firstSession,
+          load: async () => {
+            markFirstStarted?.();
+            await firstGate;
+            return {} as Awaited<
+              ReturnType<SessionProvider["load"]>
+            >;
+          }
+        });
+      },
+      transportFactory: () => transport()
+    });
+
+    const failed = registry.refresh("legacy");
+    const failedResult = failed.then(
+      (value) => ({ value, cause: null }),
+      (cause: unknown) => ({ value: null, cause })
+    );
+    await firstStarted;
+    const queued = registry.refresh("legacy");
+    const queuedResult = queued.then(
+      (value) => ({ value, cause: null }),
+      (cause: unknown) => ({ value: null, cause })
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const callsWhileFirstWasBlocked = factoryCalls;
+    releaseFirst?.();
+    const [firstOutcome, queuedOutcome] = await Promise.all([
+      failedResult,
+      queuedResult
+    ]);
+
+    expect(firstOutcome.cause).toMatchObject({
+      message: "fixture first observation failure"
+    });
+    expect(firstOutcome.value).toBeNull();
+    expect(queuedOutcome.cause).toBeNull();
+    expect(queuedOutcome.value).toMatchObject({
+      record: { healthStatus: "ready" }
+    });
+    expect(callsWhileFirstWasBlocked).toBe(1);
+    await expect(registry.refresh("legacy")).resolves.toMatchObject({
+      record: { healthStatus: "ready" }
+    });
+    expect(factoryCalls).toBe(3);
+  });
+
+  it("allows different accounts to refresh concurrently", async () => {
+    const first = accountRecord(
+      "acct_0123456789abcdef01234567"
+    );
+    const second = accountRecord(
+      "acct_89abcdef0123456701234567"
+    );
+    const records = new Map([
+      [first.id, first],
+      [second.id, second]
+    ]);
+    const started = new Set<string>();
+    let markBothStarted: (() => void) | undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      markBothStarted = resolve;
+    });
+    let releaseBoth: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const registry = new AccountRuntimeRegistry({
+      accounts: {
+        list: () => [],
+        findById: (id) => records.get(id) ?? null,
+        recordObservation: (id, observation) => ({
+          ...(records.get(id) as AccountRecord),
+          ...observation,
+          lastCheckedAt: 1,
+          updatedAt: 1
+        })
+      },
+      config: parseConfig({
+        LINGJING_API_KEY:
+          "fixture-local-secret-with-sufficient-length"
+      }),
+      sessionFactory: async (_config, accountId) => {
+        if (accountId === undefined) {
+          throw new Error("Fixture account ID is required");
+        }
+        started.add(accountId);
+        if (started.size === 2) markBothStarted?.();
+        await gate;
+        return session();
+      },
+      transportFactory: () => transport()
+    });
+
+    const firstRefresh = registry.refresh(first.id);
+    const secondRefresh = registry.refresh(second.id);
+    await bothStarted;
+    expect(started).toEqual(new Set([first.id, second.id]));
+    releaseBoth?.();
+    await expect(Promise.all([firstRefresh, secondRefresh]))
+      .resolves.toHaveLength(2);
+  });
+
   it.each(["charge", "release"] as const)(
     "keeps coordination identity across disabled check and re-enable before unknown %s resolution",
     async (action) => {
