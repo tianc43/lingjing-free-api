@@ -2,10 +2,17 @@ import { cp, mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { budgetWindows } from "../../src/accounts/budget.js";
 import { AccountRuntimeRegistry } from "../../src/accounts/runtime-registry.js";
+import { AccountScheduler } from "../../src/accounts/scheduler.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import type { AccountRecord } from "../../src/accounts/types.js";
 import { parseConfig } from "../../src/config.js";
+import { LingjingGenerationCoordinator } from "../../src/generation/coordinator.js";
+import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
+import { CapacityManager } from "../../src/jobs/capacity.js";
+import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { accountSessionPaths, createSessionProvider } from "../../src/session/create-provider.js";
@@ -20,14 +27,17 @@ afterEach(() => {
   }
 });
 
-function transport(): LingjingTransport {
+function transport(pointsBalance = 40): LingjingTransport {
   return {
     read<T>(path: string): Promise<T> {
       const responses: Record<string, unknown> = {
         "/api/user/describeBaseInfo": {},
         "/joycreator/team/space/menu/list": [{ spaceId: 0 }],
         "/joycreator/member/queryMember?pin=fixture-origin-pin": { membership: "fixture" },
-        "/api/wallet/describeAccountCoupons": { pointsBalance: 40, totalBalance: 55 }
+        "/api/wallet/describeAccountCoupons": {
+          pointsBalance,
+          totalBalance: 55
+        }
       };
       return Promise.resolve(responses[path] as T);
     },
@@ -157,6 +167,189 @@ describe("AccountRuntimeRegistry", () => {
 
     await registry.refresh("legacy");
     expect(registry.require("legacy").record.enabled).toBe(false);
+    expect(registry.listEnabled()).toEqual([]);
+  });
+
+  it.each(["charge", "release"] as const)(
+    "keeps coordination identity across disabled check and re-enable before unknown %s resolution",
+    async (action) => {
+      const store = new SqliteStore(":memory:");
+      const accounts = new SqliteAccountRepository(store);
+      accounts.ensureLegacyAccount("data/auth");
+      const repository = new SqliteJobRepository(store);
+      const admissions = new SqliteAdmissionRepository(store);
+      let pointsBalance = 40;
+      const transportFactory = vi.fn(() => transport(pointsBalance));
+      const registry = new AccountRuntimeRegistry({
+        accounts,
+        config: parseConfig({
+          LINGJING_API_KEY:
+            "fixture-local-secret-with-sufficient-length",
+          LINGJING_MAX_CONCURRENCY: "1",
+          MAX_QUEUED_REQUESTS: "0"
+        }),
+        sessionFactory: () => Promise.resolve(session()),
+        transportFactory
+      });
+      const globalCapacity = new CapacityManager(1, 0);
+      const runnerRegistry = new JobRunnerRegistry();
+      const scheduler = new AccountScheduler({
+        registry,
+        accounts,
+        admissions,
+        capacity: globalCapacity
+      });
+      const coordinator = new LingjingGenerationCoordinator({
+        repository,
+        capacity: globalCapacity,
+        scheduler,
+        admissions,
+        prepareMedia: () => Promise.reject(
+          new Error("Fixture does not prepare media")
+        ),
+        registry: runnerRegistry,
+        assetDiscoveryTimeoutMs: 30,
+        unknownCapacityHoldMs: 60_000,
+        taskPollIntervalMs: 1
+      });
+
+      await registry.ready();
+      const initial = registry.require("legacy");
+      const initialCheckedAt = initial.record.lastCheckedAt;
+      const admitted = admissions.reserveOrGet({
+        kind: "image",
+        sourceType: "image-generation",
+        model: "fixture-image",
+        apiId: "707",
+        modelCode: "fixture-model",
+        expectedAssetScene: "image-generation",
+        requestFingerprint: (
+          action === "charge" ? "a" : "b"
+        ).repeat(64),
+        idempotencyKeyHash: null,
+        spaceId: 0,
+        accountId: "legacy",
+        quotedPoints: 2,
+        windows: budgetWindows()
+      });
+      if (admitted.outcome !== "created") {
+        throw new Error("Fixture admission was not created");
+      }
+      repository.transition(admitted.job.id, ["queued"], {
+        status: "submitting",
+        submittedAt: Date.now()
+      });
+      const holdUntil = Date.now() + 60_000;
+      const unknown = repository.transition(
+        admitted.job.id,
+        ["submitting"],
+        { status: "unknown", unknownHoldUntil: holdUntil }
+      );
+      globalCapacity.restore(
+        unknown.id,
+        unknown.status,
+        holdUntil
+      );
+      initial.capacity.restore(
+        unknown.id,
+        unknown.status,
+        holdUntil
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      pointsBalance = 73;
+      accounts.update("legacy", { enabled: false });
+      const checked = await registry.refresh("legacy");
+      if (checked === null) throw new Error("Fixture runtime disappeared");
+      expect(checked).not.toBe(initial);
+      expect(checked.capacity).toBe(initial.capacity);
+      expect(checked.discoveryLock).toBe(initial.discoveryLock);
+      expect(checked.record).toMatchObject({
+        enabled: false,
+        healthStatus: "ready",
+        pointsBalance: 73
+      });
+      expect(checked.record.lastCheckedAt).toBeGreaterThan(
+        initialCheckedAt ?? 0
+      );
+      expect(transportFactory).toHaveBeenCalledTimes(2);
+      expect(registry.listEnabled()).toEqual([]);
+
+      accounts.update("legacy", { enabled: true });
+      const reenabled = await registry.refresh("legacy");
+      if (reenabled === null) {
+        throw new Error("Fixture runtime was not re-enabled");
+      }
+      expect(reenabled).not.toBe(checked);
+      expect(reenabled.capacity).toBe(initial.capacity);
+      expect(reenabled.discoveryLock).toBe(initial.discoveryLock);
+      expect(registry.listEnabled()).toEqual([reenabled]);
+      expect(() => reenabled.capacity.admit("fixture-over-admission"))
+        .toThrow("Generation capacity queue is full");
+
+      const resolved = coordinator.resolveUnknown(
+        "legacy",
+        unknown.id,
+        action
+      );
+      expect(resolved.state).toBe(
+        action === "charge" ? "charged" : "released"
+      );
+      expect(globalCapacity.counts().active).toBe(0);
+      expect(initial.capacity.counts().active).toBe(0);
+
+      coordinator.stopPollers();
+      await registry.close();
+      repository.close();
+      store.close();
+    }
+  );
+
+  it("retains bound runtime services when a refresh becomes unhealthy", async () => {
+    let current = accountRecord("legacy");
+    let failSession = false;
+    const registry = new AccountRuntimeRegistry({
+      accounts: {
+        list: () => [current],
+        findById: () => current,
+        recordObservation: (_id, observation) => {
+          current = {
+            ...current,
+            ...observation,
+            lastCheckedAt: 2,
+            updatedAt: 2
+          };
+          return current;
+        }
+      },
+      config: parseConfig({
+        LINGJING_API_KEY:
+          "fixture-local-secret-with-sufficient-length"
+      }),
+      sessionFactory: () => failSession
+        ? Promise.reject(new Error("fixture session rebuild failure"))
+        : Promise.resolve(session()),
+      transportFactory: () => transport()
+    });
+
+    await registry.ready();
+    const initial = registry.require("legacy");
+    initial.capacity.restore(
+      "job-bound",
+      "processing",
+      null
+    );
+    failSession = true;
+
+    const refreshed = await registry.refresh("legacy");
+
+    expect(refreshed).toBe(initial);
+    expect(registry.require("legacy")).toBe(initial);
+    expect(initial.record).toMatchObject({
+      healthStatus: "unhealthy",
+      lastErrorCode: "lingjing_runtime_unhealthy"
+    });
+    expect(initial.capacity.activeJobIds()).toEqual(["job-bound"]);
     expect(registry.listEnabled()).toEqual([]);
   });
 

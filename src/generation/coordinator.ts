@@ -513,13 +513,21 @@ implements GenerationCoordinator {
     jobId: string,
     action: "charge" | "release"
   ) {
+    const current = this.options.repository.findById(jobId);
+    if (
+      current === null
+      || current.accountId !== accountId
+      || current.status !== "unknown"
+    ) {
+      throw new Error("Unknown job resolution conflict");
+    }
+    const runtime = this.options.scheduler.restore(current);
     const resolved = this.options.admissions.resolveUnknown(
       accountId,
       jobId,
       action
     );
     this.options.capacity.releaseJob(jobId);
-    const runtime = this.options.scheduler.restore(resolved.job);
     runtime.capacity.releaseJob(jobId);
     this.notifier.notify(jobId);
     return resolved;

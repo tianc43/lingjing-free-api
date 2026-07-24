@@ -534,6 +534,25 @@ describe("LingjingGenerationCoordinator", () => {
     }
   );
 
+  it("validates the bound release runtime before committing unknown resolution", async () => {
+    const app = harness();
+    app.addAssetsPerSubmit(2);
+    const handle = await app.coordinator.create(fixtureRequest());
+    expect((await handle.wait(5_000)).status).toBe("unknown");
+    app.removeRuntime(handle.job.accountId);
+
+    expect(() => app.coordinator.resolveUnknown(
+      handle.job.accountId,
+      handle.job.id,
+      "release"
+    )).toThrow("Fixture runtime unavailable");
+
+    expect(app.repository.findById(handle.job.id)?.status).toBe("unknown");
+    expect(app.budgetState(handle.job.id)).toBe("charged");
+    expect(app.capacity.counts().active).toBe(1);
+    expect(app.accountCapacity.counts().active).toBe(1);
+  });
+
   it("keeps the unknown hold durable across a background discovery read failure", async () => {
     const app = createGenerationHarness({ unknownCapacityHoldMs: 1_000 });
     harnesses.push(app);

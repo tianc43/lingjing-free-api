@@ -83,11 +83,6 @@ export class AccountRuntimeRegistry {
       this.runtimes.delete(accountId);
       return null;
     }
-    const existing = this.runtimes.get(accountId);
-    if (!record.enabled && existing !== undefined) {
-      existing.record = record;
-      return existing;
-    }
     return await this.createRuntime(record);
   }
 
@@ -104,6 +99,7 @@ export class AccountRuntimeRegistry {
   }
 
   private async createRuntime(record: AccountRecord): Promise<AccountRuntime | null> {
+    const existing = this.runtimes.get(record.id);
     const sessionFactory = this.options.sessionFactory ?? createSessionProvider;
     let session: SessionProvider;
     try {
@@ -148,8 +144,11 @@ export class AccountRuntimeRegistry {
       transport,
       account,
       catalog: new CatalogService(transport, this.options.config.modelCacheTtlMs),
-      capacity: new CapacityManager(snapshot.maxConcurrency, this.options.config.maxQueuedRequests),
-      discoveryLock: new DiscoveryLock()
+      capacity: existing?.capacity ?? new CapacityManager(
+        snapshot.maxConcurrency,
+        this.options.config.maxQueuedRequests
+      ),
+      discoveryLock: existing?.discoveryLock ?? new DiscoveryLock()
     };
     this.runtimes.set(record.id, runtime);
     return runtime;
@@ -159,9 +158,14 @@ export class AccountRuntimeRegistry {
     record: AccountRecord,
     observation: ReturnType<typeof observationForUnavailableSession>
       | ReturnType<typeof observationForUnhealthyRuntime>
-  ): null {
-    this.runtimes.delete(record.id);
-    this.options.accounts.recordObservation(record.id, observation);
-    return null;
+  ): AccountRuntime | null {
+    const observed = this.options.accounts.recordObservation(
+      record.id,
+      observation
+    );
+    const existing = this.runtimes.get(record.id);
+    if (existing === undefined) return null;
+    existing.record = observed;
+    return existing;
   }
 }
