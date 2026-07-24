@@ -68,6 +68,8 @@ function currentJob(
     requestFingerprint: "d".repeat(64),
     idempotencyKeyHash: null,
     spaceId: 91_001,
+    accountId: "legacy",
+    quotedPoints: 0,
     status,
     creationCode: null,
     upstreamTaskId: null,

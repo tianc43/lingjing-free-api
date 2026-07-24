@@ -24,6 +24,8 @@ const jobFixture: JobRecord = {
   requestFingerprint: "a".repeat(64),
   idempotencyKeyHash: null,
   spaceId: 0,
+  accountId: "legacy",
+  quotedPoints: 0,
   status: "discovering",
   creationCode: null,
   upstreamTaskId: null,

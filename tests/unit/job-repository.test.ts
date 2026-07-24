@@ -21,6 +21,7 @@ import {
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { JobOutput, JobResult, NewJob } from "../../src/jobs/types.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
@@ -168,6 +169,16 @@ describe("job fingerprints", () => {
 });
 
 describe("SqliteJobRepository", () => {
+  it("keeps a supplied shared store open when the repository closes", () => {
+    const store = new SqliteStore(":memory:");
+    const repository = new SqliteJobRepository(store);
+
+    repository.close();
+    expect(() => store.read((database) => database.prepare("SELECT 1").get())).not.toThrow();
+    expect(() => repository.findById("job_missing")).toThrowError(/repository is closed/u);
+    store.close();
+  });
+
   it("rejects unhashed values at the persistence boundary", () => {
     const repository = new SqliteJobRepository(":memory:");
 
@@ -202,6 +213,7 @@ describe("SqliteJobRepository", () => {
     expect(serialized).not.toContain("fixture prompt");
     expect(serialized).not.toContain("https://input.example");
     expect(job.id).toMatch(/^job_[0-9a-f]{32}$/u);
+    expect(job).toMatchObject({ accountId: "legacy", quotedPoints: 0 });
     repository.close();
   });
 

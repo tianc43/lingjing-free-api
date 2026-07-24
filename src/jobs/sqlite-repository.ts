@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { errors } from "../errors.js";
-import { configureJobDatabase, migrateJobDatabase } from "./schema.js";
+import { SqliteStore } from "../persistence/sqlite-store.js";
 import type {
   JobListFilter,
   JobOutput,
@@ -33,6 +33,8 @@ interface JobRow {
   request_fingerprint: string;
   idempotency_key_hash: string | null;
   space_id: number;
+  account_id: string;
+  quoted_points: number;
   status: JobStatus;
   creation_code: string | null;
   upstream_task_id: string | null;
@@ -48,12 +50,6 @@ interface JobRow {
   updated_at: number;
 }
 
-interface WalCheckpointResult {
-  busy: number;
-  log: number;
-  checkpointed: number;
-}
-
 const SELECT_COLUMNS = `
   id,
   kind,
@@ -65,6 +61,8 @@ const SELECT_COLUMNS = `
   request_fingerprint,
   idempotency_key_hash,
   space_id,
+  account_id,
+  quoted_points,
   status,
   creation_code,
   upstream_task_id,
@@ -147,6 +145,8 @@ function rowToJob(row: JobRow): JobRecord {
     requestFingerprint: row.request_fingerprint,
     idempotencyKeyHash: row.idempotency_key_hash,
     spaceId: row.space_id,
+    accountId: row.account_id,
+    quotedPoints: row.quoted_points,
     status: row.status,
     creationCode: row.creation_code,
     upstreamTaskId: row.upstream_task_id,
@@ -163,100 +163,27 @@ function rowToJob(row: JobRow): JobRecord {
   };
 }
 
-function retryableSqliteLock(cause: unknown): boolean {
-  if (typeof cause !== "object" || cause === null || !("code" in cause)) {
-    return false;
-  }
-  const code = (cause as { code?: unknown }).code;
-  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
-}
-
-function parseCheckpointResult(value: unknown): WalCheckpointResult | null {
-  if (!Array.isArray(value) || value.length !== 1) return null;
-  const row: unknown = value[0];
-  if (typeof row !== "object" || row === null) return null;
-  const record = row as Record<string, unknown>;
-  if (
-    typeof record.busy !== "number"
-    || typeof record.log !== "number"
-    || typeof record.checkpointed !== "number"
-  ) {
-    return null;
-  }
-  return {
-    busy: record.busy,
-    log: record.log,
-    checkpointed: record.checkpointed
-  };
-}
-
-function checkpointWalForClose(database: Database.Database): void {
-  const retryBuffer = new Int32Array(new SharedArrayBuffer(4));
-  const attempts = 4;
-  const retryDelayMs = 25;
-  let lastResult: WalCheckpointResult | null = null;
-  let lastCause: unknown;
-
-  database.pragma(`busy_timeout = ${String(retryDelayMs)}`);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const result = parseCheckpointResult(
-        database.pragma("wal_checkpoint(TRUNCATE)")
-      );
-      if (
-        result !== null
-        && result.busy === 0
-        && result.log === result.checkpointed
-      ) {
-        return;
-      }
-      lastResult = result;
-    } catch (cause) {
-      if (!retryableSqliteLock(cause)) {
-        throw new Error(
-          "WAL checkpoint failed; repository was closed safely",
-          { cause }
-        );
-      }
-      lastCause = cause;
-    }
-    if (attempt + 1 < attempts) {
-      Atomics.wait(retryBuffer, 0, 0, retryDelayMs);
-    }
-  }
-
-  const detail = lastResult === null
-    ? "SQLite remained busy or returned an invalid result"
-    : `busy=${String(lastResult.busy)}, log=${String(lastResult.log)}, checkpointed=${String(lastResult.checkpointed)}`;
-  throw new Error(
-    `WAL checkpoint incomplete after ${String(attempts)} bounded attempts (${detail}); repository was closed safely`,
-    lastCause === undefined ? undefined : { cause: lastCause }
-  );
-}
-
 export class SqliteJobRepository {
-  private database: Database.Database | null;
+  private readonly store: SqliteStore;
+  private readonly ownsStore: boolean;
+  private closed = false;
 
-  constructor(path: string) {
-    const database = new Database(path);
-    this.database = database;
-    try {
-      configureJobDatabase(database);
-      migrateJobDatabase(database);
-    } catch (cause) {
-      this.database = null;
-      database.close();
-      throw cause;
+  constructor(pathOrStore: string | SqliteStore) {
+    if (typeof pathOrStore === "string") {
+      this.ownsStore = true;
+      this.store = new SqliteStore(pathOrStore);
+    } else {
+      this.ownsStore = false;
+      this.store = pathOrStore;
     }
   }
 
   createOrGet(input: NewJob): { created: boolean; job: JobRecord } {
-    const database = this.openDatabase();
     assertSha256(input.requestFingerprint, "requestFingerprint");
     if (input.idempotencyKeyHash !== null) {
       assertSha256(input.idempotencyKeyHash, "idempotencyKeyHash");
     }
-    return database.transaction(() => {
+    return this.immediate((database) => {
       if (input.idempotencyKeyHash !== null) {
         const existing = database.prepare(`
           SELECT ${SELECT_COLUMNS}
@@ -285,6 +212,8 @@ export class SqliteJobRepository {
           request_fingerprint,
           idempotency_key_hash,
           space_id,
+          account_id,
+          quoted_points,
           status,
           created_at,
           updated_at
@@ -299,6 +228,8 @@ export class SqliteJobRepository {
           @requestFingerprint,
           @idempotencyKeyHash,
           @spaceId,
+          'legacy',
+          0,
           'queued',
           @now,
           @now
@@ -313,34 +244,37 @@ export class SqliteJobRepository {
         throw new Error("Inserted job could not be read");
       }
       return { created: true, job: rowToJob(inserted) };
-    }).immediate();
+    });
   }
 
   findById(id: string): JobRecord | null {
-    const row = this.findRow(this.openDatabase(), id);
-    return row === undefined ? null : rowToJob(row);
+    return this.read((database) => {
+      const row = this.findRow(database, id);
+      return row === undefined ? null : rowToJob(row);
+    });
   }
 
   list(filter: JobListFilter): JobRecord[] {
-    const database = this.openDatabase();
     if (!Number.isSafeInteger(filter.limit) || filter.limit < 1) {
       throw new RangeError("Job list limit must be a positive safe integer");
     }
-    const rows = filter.status === undefined
-      ? database.prepare(`
+    return this.read((database) => {
+      const rows = filter.status === undefined
+        ? database.prepare(`
           SELECT ${SELECT_COLUMNS}
           FROM jobs
           ORDER BY created_at ASC, rowid ASC
           LIMIT ?
-        `).all(filter.limit) as JobRow[]
-      : database.prepare(`
+          `).all(filter.limit) as JobRow[]
+        : database.prepare(`
           SELECT ${SELECT_COLUMNS}
           FROM jobs
           WHERE status = ?
           ORDER BY created_at ASC, rowid ASC
           LIMIT ?
-        `).all(filter.status, filter.limit) as JobRow[];
-    return rows.map((row) => rowToJob(row));
+          `).all(filter.status, filter.limit) as JobRow[];
+      return rows.map((row) => rowToJob(row));
+    });
   }
 
   transition(
@@ -348,7 +282,6 @@ export class SqliteJobRepository {
     expectedStatuses: readonly JobStatus[],
     transition: JobTransition
   ): JobRecord {
-    const database = this.openDatabase();
     if (transition.upstreamFingerprint !== undefined && transition.upstreamFingerprint !== null) {
       assertSha256(transition.upstreamFingerprint, "upstreamFingerprint");
     }
@@ -362,7 +295,7 @@ export class SqliteJobRepository {
     ) {
       throw new TypeError("Unknown jobs require a finite hold deadline");
     }
-    return database.transaction(() => {
+    return this.immediate((database) => {
       const currentRow = this.findRow(database, id);
       if (currentRow === undefined) {
         throw new Error(`Job ${id} does not exist`);
@@ -433,11 +366,12 @@ export class SqliteJobRepository {
         throw new Error("Transitioned job could not be read");
       }
       return rowToJob(updated);
-    }).immediate();
+    });
   }
 
   recoverable(now = Date.now()): JobRecord[] {
-    const rows = this.openDatabase().prepare(`
+    return this.read((database) => {
+      const rows = database.prepare(`
       SELECT ${SELECT_COLUMNS}
       FROM jobs
       WHERE status IN ('submitting', 'discovering', 'processing')
@@ -447,36 +381,43 @@ export class SqliteJobRepository {
            AND unknown_hold_until > ?
          )
       ORDER BY updated_at ASC, rowid ASC
-    `).all(now) as JobRow[];
-    return rows.map((row) => rowToJob(row));
+      `).all(now) as JobRow[];
+      return rows.map((row) => rowToJob(row));
+    });
   }
 
   history(id: string): JobStatus[] {
-    const rows = this.openDatabase().prepare(`
+    return this.read((database) => {
+      const rows = database.prepare(`
       SELECT status
       FROM job_status_history
       WHERE job_id = ?
       ORDER BY id ASC
-    `).all(id) as Array<{ status: JobStatus }>;
-    return rows.map((row) => row.status);
+      `).all(id) as Array<{ status: JobStatus }>;
+      return rows.map((row) => row.status);
+    });
   }
 
   close(): void {
-    const database = this.database;
-    if (database === null) return;
-    this.database = null;
-    try {
-      checkpointWalForClose(database);
-    } finally {
-      database.close();
-    }
+    if (this.closed) return;
+    this.closed = true;
+    if (this.ownsStore) this.store.close();
   }
 
-  private openDatabase(): Database.Database {
-    if (this.database === null) {
+  private read<T>(operation: (database: Database.Database) => T): T {
+    this.assertOpen();
+    return this.store.read(operation);
+  }
+
+  private immediate<T>(operation: (database: Database.Database) => T): T {
+    this.assertOpen();
+    return this.store.immediate(operation);
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
       throw new Error("Job repository is closed");
     }
-    return this.database;
   }
 
   private findRow(
