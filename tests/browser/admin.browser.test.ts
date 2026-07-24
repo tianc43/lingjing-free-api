@@ -32,6 +32,7 @@ let accounts: Account[] = [];
 let nextId = 1;
 let expireNext = false;
 let failSettings = false;
+let failHealth = false;
 const output = resolve(process.cwd(), "dist", "admin");
 
 function overview() {
@@ -185,6 +186,11 @@ test.beforeAll(async () => {
       });
       return;
     }
+    if (url.pathname === "/admin/api/logout" && request.method === "POST") {
+      response.writeHead(204, { "Cache-Control": "no-store" });
+      response.end();
+      return;
+    }
     if (url.pathname === "/admin/api/accounts" && request.method === "POST") {
       const input = await body(request);
       const account: Account = {
@@ -219,6 +225,10 @@ test.beforeAll(async () => {
     }
     const check = /^\/admin\/api\/accounts\/([^/]+)\/check$/.exec(url.pathname);
     if (check !== null && request.method === "POST") {
+      if (failHealth) {
+        json(response, { error: { code: "health_unavailable", message: "Health unavailable" } }, 503);
+        return;
+      }
       const account = accounts.find((item) => item.id === check[1]);
       json(response, { account });
       return;
@@ -304,6 +314,7 @@ test.afterAll(
 test.beforeEach(() => {
   expireNext = false;
   failSettings = false;
+  failHealth = false;
   nextId = 1;
   accounts = [
     {
@@ -441,6 +452,12 @@ for (const viewport of [
     });
     await navigate("tasks");
     await expect(page.getByText("Reserved")).toBeVisible();
+    if (viewport.name === "mobile") {
+      const kind = page.locator("td[data-label='Kind']");
+      await expect(kind).toBeVisible();
+      await expect(kind).toHaveText("image");
+      await expect(page.getByRole("columnheader", { name: "Kind" })).toHaveCount(1);
+    }
     await expect(
       page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -497,4 +514,22 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
   await expect(page.getByText("Settings unavailable")).toBeVisible();
   await page.getByRole("link", { name: "Accounts" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
+});
+
+test("logout clears an app action failure before returning to sign in", async ({ page }) => {
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("Administrator password").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  failHealth = true;
+  await page.getByRole("button", { name: "Check health Seed account" }).click();
+  await expect(page.getByText("Health unavailable")).toBeVisible();
+  await page.evaluate(() => { history.pushState({}, "", "/admin/settings"); dispatchEvent(new PopStateEvent("popstate")); });
+  await expect(page.getByText("Health unavailable")).toHaveCount(0);
+  await page.getByRole("link", { name: "Accounts" }).click();
+  await page.getByRole("button", { name: "Check health Seed account" }).click();
+  await expect(page.getByText("Health unavailable")).toBeVisible();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "Admin sign in" })).toBeVisible();
+  await expect(page.getByText("Health unavailable")).toHaveCount(0);
+  await expect(page.getByLabel("Administrator password")).toHaveAttribute("aria-invalid", "false");
 });

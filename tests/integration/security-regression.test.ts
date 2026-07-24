@@ -435,5 +435,5 @@ describe("security regression", () => {
     expect(inputs.some((input) => input.name === "captured-test.log"))
       .toBe(true);
     expect(scanSecrets(inputs)).toEqual([]);
-  }, 30_000);
+  }, 60_000);
 });

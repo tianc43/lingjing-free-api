@@ -82,7 +82,7 @@ export function App() {
     setPage(next);
   };
   useEffect(() => {
-    const listener = () => setPage(pageFromPath());
+    const listener = () => { setError(null); setPage(pageFromPath()); };
     addEventListener("popstate", listener);
     return () => removeEventListener("popstate", listener);
   }, []);
@@ -143,6 +143,12 @@ export function App() {
       setError("Could not copy the login command. Copy it manually.");
     }
   };
+  const logout = () => void api.logout().finally(() => {
+    setAuthenticated(false);
+    setError(null);
+    setNotice("");
+    setLoginCommand("");
+  });
   if (!authenticated) return <LoginPage onLogin={login} error={error} />;
   if (initializing) return <Skeleton />;
 
@@ -154,7 +160,7 @@ export function App() {
         ? <><ResourceFailure error={resourceErrors.jobs} onRetry={() => void loadJobs()} />{resourceLoading.jobs && jobs.length === 0 ? <Skeleton /> : <TasksPage accounts={accounts} jobs={jobs} />}</>
         : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage accounts={accounts} settings={settings} />}</>;
 
-  return <AppShell page={page} onNavigate={navigate} onLogout={() => void api.logout().finally(() => setAuthenticated(false))}>
+  return <AppShell page={page} onNavigate={navigate} onLogout={logout}>
     {error !== null && <section className="retry-state" role="alert"><p>{error}</p></section>}
     {loginCommand && <aside className="command-notice" aria-live="polite"><code>{loginCommand}</code><button aria-label="Copy login command" className="quiet-button" onClick={() => void copyCommand()}>Copy</button><span>{notice}</span></aside>}
     {!loginCommand && notice && <p className="command-notice" aria-live="polite">{notice}</p>}

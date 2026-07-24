@@ -74,3 +74,18 @@ asset isolation.
   Tasks screenshot), lint, typecheck, build/import, and default-parallel
   suite (53 files, 572 tests). One initial parallel temp-file cleanup flake
   passed when focused and on the required full rerun.
+
+## Closing review corrections
+
+- Kept the mobile third-column optimization off `.tasks-table`; its Kind cell
+  and semantic column header are now covered in the populated 390px browser
+  regression.
+- Moved the production-build regression into a project-contained temporary
+  output. Vite resolves the final `outDir` before cleaning only its own
+  `index.html` and `assets`, while TypeScript emits paired server modules into
+  the same isolated temporary `dist` tree.
+- Added browser coverage that clears a real App-level health failure through
+  both popstate and direct logout before rendering the password field again.
+- Re-ran the default parallel suite after raising only the two independent
+  long-build regressions to 60 seconds: 53 files and 572 tests passed, with no
+  shared `dist` mutation or global serialization.
