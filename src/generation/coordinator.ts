@@ -205,9 +205,6 @@ implements GenerationCoordinator {
         ownsPrepared = false;
         return this.handle(admission.job);
       }
-      if (admission.lease === null) {
-        throw new Error("Created generation admission has no capacity lease");
-      }
 
       const submitReservation =
         this.options.registry.reserveSubmitCriticalSection();
@@ -220,7 +217,7 @@ implements GenerationCoordinator {
           admission.model,
           admission.job.spaceId,
           prepared,
-          admission.lease as CapacityLease,
+          admission.lease,
           submitReservation
         )
       );

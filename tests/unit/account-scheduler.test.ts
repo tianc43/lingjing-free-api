@@ -157,6 +157,7 @@ function schedulerFor(
   runtimes: AccountRuntime[],
   options: {
     usage?: Record<string, { dayUsedPoints: number; monthUsedPoints: number }>;
+    existing?: JobRecord | null;
     reserve?: (
       accountId: string,
       input: AdmissionInput
@@ -165,11 +166,15 @@ function schedulerFor(
   } = {}
 ): {
   scheduler: AccountScheduler;
+  findByIdempotencyKeyHash: ReturnType<typeof vi.fn>;
   reserveOrGet: ReturnType<typeof vi.fn>;
   failAndRelease: ReturnType<typeof vi.fn>;
   globalCapacity: CapacityManager;
 } {
   const records = new Map(runtimes.map((item) => [item.record.id, item.record]));
+  const findByIdempotencyKeyHash = vi.fn(
+    () => options.existing ?? null
+  );
   const reserveOrGet = vi.fn((input: AdmissionInput): AdmissionResult => (
     options.reserve?.(input.accountId, input)
       ?? {
@@ -196,10 +201,15 @@ function schedulerFor(
           monthUsedPoints: 0
         }
       },
-      admissions: { reserveOrGet, failAndRelease },
+      admissions: {
+        findByIdempotencyKeyHash,
+        reserveOrGet,
+        failAndRelease
+      },
       capacity: globalCapacity,
       now: () => NOW
     }),
+    findByIdempotencyKeyHash,
     reserveOrGet,
     failAndRelease,
     globalCapacity
@@ -238,8 +248,9 @@ describe("AccountScheduler", () => {
 
     const admitted = await scheduler.admit(admissionInput);
 
+    if (!admitted.created) throw new Error("Expected a new admission");
     expect(admitted.runtime.record.id).toBe("acct_older");
-    admitted.lease?.release();
+    admitted.lease.release();
   });
 
   it("prefers a lower numeric priority before current load", async () => {
@@ -250,8 +261,9 @@ describe("AccountScheduler", () => {
 
     const admitted = await scheduler.admit(admissionInput);
 
+    if (!admitted.created) throw new Error("Expected a new admission");
     expect(admitted.runtime.record.id).toBe("acct_low");
-    admitted.lease?.release();
+    admitted.lease.release();
   });
 
   it.each([
@@ -381,30 +393,98 @@ describe("AccountScheduler", () => {
 
     const admitted = await scheduler.admit(admissionInput);
 
+    if (!admitted.created) throw new Error("Expected a new admission");
     expect(admitted.runtime.record.id).toBe("acct_second");
     expect(reserveOrGet).toHaveBeenCalledTimes(2);
     expect(first.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
-    admitted.lease?.release();
+    admitted.lease.release();
   });
 
-  it("releases all fresh admissions for an idempotent replay", async () => {
-    const first = runtime(record("acct_first"));
-    const original = runtime(record("acct_original"));
+  it("replays before candidate work when the bound runtime is unavailable", async () => {
+    const resolve = vi.fn(() => Promise.resolve(model));
+    const describe = vi.fn(() => Promise.resolve(snapshot()));
+    const alternate = runtime(record("acct_alternate"), { resolve, describe });
     const existing = job("acct_original", { status: "processing" });
-    const { scheduler, globalCapacity } = schedulerFor([first, original], {
-      reserve: () => ({ outcome: "existing", job: existing })
+    const {
+      scheduler,
+      findByIdempotencyKeyHash,
+      reserveOrGet,
+      globalCapacity
+    } = schedulerFor([alternate], {
+      existing
     });
 
     const admitted = await scheduler.admit(admissionInput);
 
-    expect(admitted).toMatchObject({
+    expect(admitted).toEqual({
       created: false,
       lease: null,
-      job: { id: existing.id, accountId: "acct_original" },
-      runtime: { record: { id: "acct_original" } }
+      job: existing,
+      runtime: null,
+      model: null
     });
+    expect(findByIdempotencyKeyHash).toHaveBeenCalledWith(IDEMPOTENCY_HASH);
+    expect(reserveOrGet).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(describe).not.toHaveBeenCalled();
     expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
-    expect(first.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    expect(alternate.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+  });
+
+  it("replays with zero eligible runtimes using the persisted apiId fingerprint", async () => {
+    const inputContentHashes = ["c".repeat(64)];
+    const existing = job("acct_original", {
+      status: "processing",
+      requestFingerprint: createRequestFingerprint({
+        model: model.apiId,
+        parameters: request.values,
+        inputContentHashes
+      })
+    });
+    const {
+      scheduler,
+      reserveOrGet,
+      globalCapacity
+    } = schedulerFor([], { existing });
+
+    const admitted = await scheduler.admit({
+      ...admissionInput,
+      request: { ...request, model: model.alias },
+      requestFingerprint: createRequestFingerprint({
+        model: model.alias,
+        parameters: request.values,
+        inputContentHashes
+      }),
+      inputContentHashes
+    });
+
+    expect(admitted).toEqual({
+      created: false,
+      lease: null,
+      job: existing,
+      runtime: null,
+      model: null
+    });
+    expect(reserveOrGet).not.toHaveBeenCalled();
+    expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+  });
+
+  it("rejects a conflicting replay before candidate work", async () => {
+    const existing = job("acct_original", {
+      requestFingerprint: "c".repeat(64)
+    });
+    const {
+      scheduler,
+      reserveOrGet,
+      globalCapacity
+    } = schedulerFor([], { existing });
+
+    await expect(scheduler.admit(admissionInput)).rejects.toMatchObject({
+      code: "idempotency_conflict"
+    });
+
+    expect(reserveOrGet).not.toHaveBeenCalled();
+    expect(globalCapacity.counts()).toMatchObject({ active: 0, admitted: 0 });
   });
 
   it("returns one lease that releases global and selected account capacity", async () => {

@@ -19,20 +19,28 @@ import type { SqliteAccountRepository } from "./sqlite-account-repository.js";
 import type { SqliteAdmissionRepository } from "./sqlite-admission-repository.js";
 import type { AccountRecord } from "./types.js";
 
-export interface AccountAdmission {
-  runtime: AccountRuntime;
-  model: NormalizedModel;
-  job: JobRecord;
-  lease: CapacityLease | null;
-  created: boolean;
-}
+export type AccountAdmission =
+  | {
+    runtime: AccountRuntime;
+    model: NormalizedModel;
+    job: JobRecord;
+    lease: CapacityLease;
+    created: true;
+  }
+  | {
+    runtime: null;
+    model: null;
+    job: JobRecord;
+    lease: null;
+    created: false;
+  };
 
 export interface AccountSchedulerOptions {
   registry: Pick<AccountRuntimeRegistry, "listEnabled" | "require">;
   accounts: Pick<SqliteAccountRepository, "findById" | "usage">;
   admissions: Pick<
     SqliteAdmissionRepository,
-    "reserveOrGet" | "failAndRelease"
+    "findByIdempotencyKeyHash" | "reserveOrGet" | "failAndRelease"
   >;
   capacity: CapacityManager;
   now?: () => number;
@@ -147,6 +155,28 @@ export class AccountScheduler {
     const globalAdmission = input.globalAdmission ?? this.start();
     let transferred = false;
     try {
+      if (input.idempotencyKeyHash !== null) {
+        const existing = this.options.admissions.findByIdempotencyKeyHash(
+          input.idempotencyKeyHash
+        );
+        if (existing !== null) {
+          if (
+            existing.requestFingerprint
+            !== this.fingerprintForApiId(input, existing.apiId)
+          ) {
+            throw errors.idempotencyConflict();
+          }
+          globalAdmission.release();
+          transferred = true;
+          return {
+            runtime: null,
+            model: null,
+            job: existing,
+            lease: null,
+            created: false
+          };
+        }
+      }
       const evaluation = await this.candidates(input.request);
       const { candidates } = evaluation;
       if (candidates.length === 0) {
@@ -154,13 +184,10 @@ export class AccountScheduler {
       }
 
       for (const candidate of candidates) {
-        const requestFingerprint = input.inputContentHashes === undefined
-          ? input.requestFingerprint
-          : createRequestFingerprint({
-              model: candidate.model.apiId,
-              parameters: input.request.values,
-              inputContentHashes: input.inputContentHashes
-            });
+        const requestFingerprint = this.fingerprintForApiId(
+          input,
+          candidate.model.apiId
+        );
         const result = this.options.admissions.reserveOrGet({
           kind: input.request.kind,
           sourceType: input.request.sourceType,
@@ -179,8 +206,8 @@ export class AccountScheduler {
           globalAdmission.release();
           transferred = true;
           return {
-            runtime: this.restore(result.job),
-            model: candidate.model,
+            runtime: null,
+            model: null,
             job: result.job,
             lease: null,
             created: false
@@ -239,6 +266,23 @@ export class AccountScheduler {
     for (const runtime of this.options.registry.listEnabled()) {
       runtime.capacity.expireUnknown(now);
     }
+  }
+
+  private fingerprintForApiId(
+    input: {
+      request: GenerationRequest;
+      requestFingerprint: string;
+      inputContentHashes?: readonly string[];
+    },
+    apiId: string
+  ): string {
+    return input.inputContentHashes === undefined
+      ? input.requestFingerprint
+      : createRequestFingerprint({
+          model: apiId,
+          parameters: input.request.values,
+          inputContentHashes: input.inputContentHashes
+        });
   }
 
   private async candidates(request: GenerationRequest): Promise<{

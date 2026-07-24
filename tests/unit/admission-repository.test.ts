@@ -93,6 +93,35 @@ describe("budgetWindows", () => {
 });
 
 describe("SqliteAdmissionRepository", () => {
+  it("looks up a persisted job by idempotency hash without admission data", () => {
+    const now = Date.parse("2026-07-24T03:00:00Z");
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath, {
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    const store = new SqliteStore(databasePath);
+    const admissions = new SqliteAdmissionRepository(store, () => now);
+    const input = inputFor(accountId, "d");
+    const created = admissions.reserveOrGet(input);
+    if (created.outcome !== "created") {
+      throw new Error("Expected fixture admission to be created");
+    }
+    if (input.idempotencyKeyHash === null) {
+      throw new Error("Expected fixture idempotency hash");
+    }
+    try {
+      expect(
+        admissions.findByIdempotencyKeyHash(input.idempotencyKeyHash)
+      ).toEqual(created.job);
+      expect(
+        admissions.findByIdempotencyKeyHash("e".repeat(64))
+      ).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
   it("rejects non-canonical finite windows so they cannot bypass a daily limit", () => {
     const now = Date.parse("2026-07-24T03:00:00Z");
     const databasePath = temporaryDatabasePath();

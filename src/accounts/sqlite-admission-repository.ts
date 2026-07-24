@@ -129,6 +129,18 @@ export class SqliteAdmissionRepository {
     private readonly now: () => number = Date.now
   ) {}
 
+  findByIdempotencyKeyHash(idempotencyKeyHash: string): JobRecord | null {
+    assertSha256(idempotencyKeyHash, "idempotencyKeyHash");
+    return this.store.read((database) => {
+      const row = database.prepare(`
+        SELECT ${JOB_SELECT_COLUMNS}
+        FROM jobs
+        WHERE idempotency_key_hash = ?
+      `).get(idempotencyKeyHash) as JobRow | undefined;
+      return row === undefined ? null : jobFromRow(row);
+    });
+  }
+
   reserveOrGet(input: AdmissionInput): AdmissionResult {
     const windows = budgetWindows(this.now());
     assertAdmissionInput(input, windows);

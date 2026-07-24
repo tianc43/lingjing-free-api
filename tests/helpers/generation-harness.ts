@@ -136,6 +136,9 @@ export interface GenerationHarness {
   transport: LingjingTransport;
   selectedAccountId: string;
   accountCapacity: CapacityManager;
+  removeRuntime(accountId: string): void;
+  clearRuntimes(): void;
+  budgetEntryCount(jobId: string): number;
   boundActions: string[];
   chargeCount: () => number;
   releaseCount: () => number;
@@ -463,11 +466,18 @@ export function createGenerationHarness(options: {
   const legacyRuntime = runtimeFor(legacy.id, legacyTransport);
   const selectedRuntime = runtimeFor(selected.id, selectedTransport);
   const runtimes = [legacyRuntime, selectedRuntime];
+  const availableRuntimes = new Map(
+    runtimes.map((runtime) => [runtime.record.id, runtime])
+  );
   const admissionsRepository = new SqliteAdmissionRepository(
     store,
     options.now ?? Date.now
   );
   const admissions = {
+    findByIdempotencyKeyHash:
+      admissionsRepository.findByIdempotencyKeyHash.bind(
+        admissionsRepository
+      ),
     reserveOrGet: admissionsRepository.reserveOrGet.bind(admissionsRepository),
     charge: (jobId: string) => {
       chargeCalls += 1;
@@ -497,11 +507,9 @@ export function createGenerationHarness(options: {
   };
   const scheduler = new AccountScheduler({
     registry: {
-      listEnabled: () => runtimes,
+      listEnabled: () => [...availableRuntimes.values()],
       require: (accountId: string) => {
-        const found = runtimes.find(
-          (runtime) => runtime.record.id === accountId
-        );
+        const found = availableRuntimes.get(accountId);
         if (found === undefined) throw new Error("Fixture runtime unavailable");
         return found;
       }
@@ -541,6 +549,18 @@ export function createGenerationHarness(options: {
     transport: selectedRuntime.transport,
     selectedAccountId: selected.id,
     accountCapacity: selectedRuntime.capacity,
+    removeRuntime: (accountId) => {
+      availableRuntimes.delete(accountId);
+    },
+    clearRuntimes: () => {
+      availableRuntimes.clear();
+    },
+    budgetEntryCount: (jobId) => store.read((database) => {
+      const row = database.prepare(`
+        SELECT COUNT(*) AS count FROM budget_entries WHERE job_id = ?
+      `).get(jobId) as { count: number };
+      return row.count;
+    }),
     boundActions,
     chargeCount: () => chargeCalls,
     releaseCount: () => releaseCalls,

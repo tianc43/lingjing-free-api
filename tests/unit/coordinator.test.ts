@@ -114,6 +114,98 @@ describe("LingjingGenerationCoordinator", () => {
     await first.wait(5_000);
   });
 
+  it("replays when the bound runtime is unavailable but another is ready", async () => {
+    const app = harness();
+    const first = await app.coordinator.create(fixtureRequest({
+      idempotencyKey: "unavailable-bound-runtime"
+    }));
+    await first.wait(5_000);
+    app.removeRuntime(first.job.accountId);
+    const replayMedia = trackedMedia();
+    const eventCount = app.events.length;
+
+    const replay = await app.coordinator.create(fixtureRequest({
+      media: [{
+        source: { type: "prepared", media: replayMedia },
+        kind: "image"
+      }],
+      idempotencyKey: "unavailable-bound-runtime"
+    }));
+
+    expect(replay.job.id).toBe(first.job.id);
+    expect(replay.job.accountId).toBe(first.job.accountId);
+    expect(app.events.slice(eventCount)).toEqual(["prepare:admitted=1"]);
+    expect(app.budgetEntryCount(first.job.id)).toBe(1);
+    expect(app.registry.startCountFor(first.job.id)).toBe(1);
+    expect(app.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    expect(app.accountCapacity.counts()).toMatchObject({
+      active: 0,
+      admitted: 0
+    });
+    expect(replayMedia.disposeCount()).toBe(1);
+  });
+
+  it("replays when no account runtime is eligible", async () => {
+    const app = harness();
+    const first = await app.coordinator.create(fixtureRequest({
+      idempotencyKey: "zero-eligible-runtimes"
+    }));
+    await first.wait(5_000);
+    app.clearRuntimes();
+    const replayMedia = trackedMedia();
+    const eventCount = app.events.length;
+
+    const replay = await app.coordinator.create(fixtureRequest({
+      media: [{
+        source: { type: "prepared", media: replayMedia },
+        kind: "image"
+      }],
+      idempotencyKey: "zero-eligible-runtimes"
+    }));
+
+    expect(replay.job.id).toBe(first.job.id);
+    expect(replay.job.accountId).toBe(first.job.accountId);
+    expect(app.events.slice(eventCount)).toEqual(["prepare:admitted=1"]);
+    expect(app.budgetEntryCount(first.job.id)).toBe(1);
+    expect(app.registry.startCountFor(first.job.id)).toBe(1);
+    expect(app.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    expect(app.accountCapacity.counts()).toMatchObject({
+      active: 0,
+      admitted: 0
+    });
+    expect(replayMedia.disposeCount()).toBe(1);
+  });
+
+  it("rejects a conflicting replay before runtime eligibility", async () => {
+    const app = harness();
+    const first = await app.coordinator.create(fixtureRequest({
+      idempotencyKey: "preflight-conflict"
+    }));
+    await first.wait(5_000);
+    app.clearRuntimes();
+    const replayMedia = trackedMedia();
+    const eventCount = app.events.length;
+
+    await expect(app.coordinator.create(fixtureRequest({
+      values: { prompt: "changed replay input" },
+      media: [{
+        source: { type: "prepared", media: replayMedia },
+        kind: "image"
+      }],
+      idempotencyKey: "preflight-conflict"
+    }))).rejects.toMatchObject({ code: "idempotency_conflict" });
+
+    expect(app.events.slice(eventCount)).toEqual(["prepare:admitted=1"]);
+    expect(app.budgetEntryCount(first.job.id)).toBe(1);
+    expect(app.registry.startCountFor(first.job.id)).toBe(1);
+    expect(app.capacity.counts()).toMatchObject({ active: 0, admitted: 0 });
+    expect(app.accountCapacity.counts()).toMatchObject({
+      active: 0,
+      admitted: 0
+    });
+    expect(replayMedia.disposeCount()).toBe(1);
+  });
+
   it("binds every upstream action to the scheduler-selected account", async () => {
     const app = harness();
 

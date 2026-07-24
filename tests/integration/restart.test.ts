@@ -144,8 +144,8 @@ function coordinatorFor(
         if (!result.created) {
           input.globalAdmission?.release();
           return {
-            runtime,
-            model: fixtureModel,
+            runtime: null,
+            model: null,
             job: result.job,
             lease: null,
             created: false
