@@ -116,7 +116,14 @@ const VERSION_THREE_SQL = `
 
 const VERSION_FOUR_SQL = `
   UPDATE jobs
-  SET quote_known = CASE WHEN quoted_points <> 0 THEN 1 ELSE 0 END;
+  SET quote_known = 0
+  WHERE quoted_points = 0
+    AND quote_known = 1
+    AND created_at < (
+      SELECT applied_at
+      FROM schema_migrations
+      WHERE version = 3
+    );
 
   UPDATE budget_entries
   SET state = 'reserved'

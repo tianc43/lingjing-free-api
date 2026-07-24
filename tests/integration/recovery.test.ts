@@ -300,6 +300,11 @@ function createVersionThreeDatabase(): string {
         2, 2, 'legacy', 0
       ),
       (
+        'job_v3_known_zero', 'image', 'image-generation', 'fixture', '707',
+        'image-generation', '${"g".repeat(64)}', 0, 'completed', NULL, NULL,
+        4, 4, 'legacy', 0
+      ),
+      (
         'job_v3_submitted_failed', 'image', 'image-generation', 'fixture', '707',
         'image-generation', '${"b".repeat(64)}', 0, 'failed', 3, 4,
         3, 4, 'legacy', 7
@@ -401,6 +406,7 @@ describe("startup recovery", () => {
         SELECT MAX(version) AS version FROM schema_migrations
       `).get())).toEqual({ version: 4 });
       expect(repository.findById("job_v3_unknown_quote")?.quotedPoints).toBeNull();
+      expect(repository.findById("job_v3_known_zero")?.quotedPoints).toBe(0);
       expect(store.read((database) => database.prepare(`
         SELECT dflt_value FROM pragma_table_info('jobs')
         WHERE name = 'quote_known'
