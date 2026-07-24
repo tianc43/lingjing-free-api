@@ -44,13 +44,31 @@ describe("quotedPoints", () => {
     }), { duration: 10 })).toBe(20);
   });
 
-  it("does not fall back to a parameter table when fixed pricing is present but untrusted", () => {
+  it("uses a parameter table instead of an unmarked point number", () => {
+    expect(quotedPoints(model({
+      pricing: { points: 7 },
+      priceQuerySchema: {
+        duration: { source: "duration", prices: { "10": 20 } }
+      }
+    }), { duration: 10 })).toBe(20);
+  });
+
+  it("keeps an explicitly fixed total when a parameter schema also exists", () => {
+    expect(quotedPoints(model({
+      pricing: { billing_type: "per-task", unit: "points", points: 7 },
+      priceQuerySchema: {
+        duration: { source: "duration", prices: { "10": 20 } }
+      }
+    }), { duration: 10 })).toBe(7);
+  });
+
+  it("uses a parameter table when competing fixed pricing is untrusted", () => {
     expect(quotedPoints(model({
       pricing: { amount: 7, unit: "USD" },
       priceQuerySchema: {
         duration: { source: "duration", prices: { "10": 20 } }
       }
-    }), { duration: 10 })).toBeNull();
+    }), { duration: 10 })).toBe(20);
   });
 
   it.each([

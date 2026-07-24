@@ -27,6 +27,23 @@ function pointUnit(value: unknown): boolean {
   return typeof value === "string" && POINT_UNITS.has(value.trim().toLowerCase());
 }
 
+function explicitlyFixedTotal(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.billingType !== undefined
+    && record.billing_type !== undefined
+    && record.billingType !== record.billing_type
+  ) {
+    return false;
+  }
+  const billingType = record.billingType ?? record.billing_type;
+  return typeof billingType === "string"
+    && FIXED_BILLING_TYPES.has(billingType.trim().toLowerCase());
+}
+
 function fixedQuote(value: unknown): number | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
@@ -94,6 +111,11 @@ export function quotedPoints(
   model: NormalizedModel,
   values: Record<string, unknown>
 ): number | null {
+  if (model.priceQuerySchema !== null) {
+    return explicitlyFixedTotal(model.pricing)
+      ? fixedQuote(model.pricing)
+      : parameterQuote(model.priceQuerySchema, values);
+  }
   if (model.pricing !== null) return fixedQuote(model.pricing);
   return parameterQuote(model.priceQuerySchema, values);
 }
