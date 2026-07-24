@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
+import { budgetWindows } from "../accounts/budget.js";
 import { errors } from "../errors.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
 import type {
@@ -239,6 +240,19 @@ export class SqliteJobRepository {
         INSERT INTO job_status_history(job_id, status, created_at)
         VALUES (?, 'queued', ?)
       `).run(id, now);
+      const windows = budgetWindows(now);
+      database.prepare(`
+        INSERT INTO budget_entries (
+          account_id, job_id, quoted_points, state, day_window_start,
+          month_window_start, created_at, updated_at
+        ) VALUES ('legacy', ?, 0, 'charged', ?, ?, ?, ?)
+      `).run(
+        id,
+        windows.dayWindowStart,
+        windows.monthWindowStart,
+        now,
+        now
+      );
       const inserted = this.findRow(database, id);
       if (inserted === undefined) {
         throw new Error("Inserted job could not be read");

@@ -21,6 +21,8 @@ import {
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { JobOutput, JobResult, NewJob } from "../../src/jobs/types.js";
+import { budgetWindows } from "../../src/accounts/budget.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 
 const execFileAsync = promisify(execFile);
@@ -215,6 +217,43 @@ describe("SqliteJobRepository", () => {
     expect(job.id).toMatch(/^job_[0-9a-f]{32}$/u);
     expect(job).toMatchObject({ accountId: "legacy", quotedPoints: 0 });
     repository.close();
+  });
+
+  it("creates one charged zero-point legacy budget entry for a compatibility job", () => {
+    const store = new SqliteStore(":memory:");
+    const repository = new SqliteJobRepository(store);
+    const admissions = new SqliteAdmissionRepository(store);
+    const first = repository.createOrGet({
+      ...fixtureNewJob,
+      idempotencyKeyHash: "8".repeat(64)
+    });
+    const replay = repository.createOrGet({
+      ...fixtureNewJob,
+      idempotencyKeyHash: "8".repeat(64)
+    });
+
+    expect(store.read((database) => database.prepare(`
+      SELECT account_id, quoted_points, state, day_window_start, month_window_start
+      FROM budget_entries WHERE job_id = ?
+    `).get(first.job.id))).toEqual({
+      account_id: "legacy",
+      quoted_points: 0,
+      state: "charged",
+      day_window_start: budgetWindows(first.job.createdAt).dayWindowStart,
+      month_window_start: budgetWindows(first.job.createdAt).monthWindowStart
+    });
+    expect(store.read((database) => database.prepare(`
+      SELECT COUNT(*) AS count FROM budget_entries WHERE job_id = ?
+    `).get(first.job.id))).toEqual({ count: 1 });
+    expect(replay.created).toBe(false);
+
+    admissions.charge(first.job.id);
+    admissions.releasePreSubmit(first.job.id);
+    expect(store.read((database) => database.prepare(`
+      SELECT state FROM budget_entries WHERE job_id = ?
+    `).get(first.job.id))).toEqual({ state: "charged" });
+    repository.close();
+    store.close();
   });
 
   it("keeps raw request content and idempotency keys out of the SQLite file", () => {

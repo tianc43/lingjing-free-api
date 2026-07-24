@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { errors } from "../errors.js";
 import type { JobRecord, JobStatus } from "../jobs/types.js";
 import type { SqliteStore } from "../persistence/sqlite-store.js";
+import { budgetWindows } from "./budget.js";
 import type { AdmissionInput, AdmissionResult } from "./types.js";
 
 interface JobRow {
@@ -90,7 +91,7 @@ function jobFromRow(row: JobRow): JobRecord {
   };
 }
 
-function assertAdmissionInput(input: AdmissionInput): void {
+function assertAdmissionInput(input: AdmissionInput, canonicalWindows: AdmissionInput["windows"]): void {
   assertSha256(input.requestFingerprint, "requestFingerprint");
   if (input.idempotencyKeyHash !== null) {
     assertSha256(input.idempotencyKeyHash, "idempotencyKeyHash");
@@ -104,13 +105,23 @@ function assertAdmissionInput(input: AdmissionInput): void {
   if (!Number.isFinite(input.windows.dayWindowStart) || !Number.isFinite(input.windows.monthWindowStart)) {
     throw new TypeError("Budget windows must be finite");
   }
+  if (
+    input.windows.dayWindowStart !== canonicalWindows.dayWindowStart
+    || input.windows.monthWindowStart !== canonicalWindows.monthWindowStart
+  ) {
+    throw new RangeError("Budget windows must match canonical Asia/Shanghai windows");
+  }
 }
 
 export class SqliteAdmissionRepository {
-  constructor(private readonly store: SqliteStore) {}
+  constructor(
+    private readonly store: SqliteStore,
+    private readonly now: () => number = Date.now
+  ) {}
 
   reserveOrGet(input: AdmissionInput): AdmissionResult {
-    assertAdmissionInput(input);
+    const windows = budgetWindows(this.now());
+    assertAdmissionInput(input, windows);
     return this.store.immediate((database) => {
       const existing = this.findExisting(database, input);
       if (existing !== undefined) return { outcome: "existing", job: jobFromRow(existing) };
@@ -134,7 +145,7 @@ export class SqliteAdmissionRepository {
             THEN quoted_points ELSE 0 END), 0) AS month_used_points
         FROM budget_entries
         WHERE account_id = @accountId
-      `).get({ accountId: input.accountId, ...input.windows }) as {
+      `).get({ accountId: input.accountId, ...windows }) as {
         day_used_points: number;
         month_used_points: number;
       };
@@ -171,8 +182,8 @@ export class SqliteAdmissionRepository {
         input.accountId,
         id,
         input.quotedPoints,
-        input.windows.dayWindowStart,
-        input.windows.monthWindowStart,
+        windows.dayWindowStart,
+        windows.monthWindowStart,
         now,
         now
       );

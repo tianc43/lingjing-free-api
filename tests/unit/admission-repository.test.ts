@@ -87,6 +87,28 @@ describe("budgetWindows", () => {
 });
 
 describe("SqliteAdmissionRepository", () => {
+  it("rejects non-canonical finite windows so they cannot bypass a daily limit", () => {
+    const now = Date.parse("2026-07-24T03:00:00Z");
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath);
+    const store = new SqliteStore(databasePath);
+    const accounts = new SqliteAccountRepository(store);
+    const admissions = new SqliteAdmissionRepository(store, () => now);
+    const windows = budgetWindows(now);
+    const first = admissions.reserveOrGet({ ...inputFor(accountId, "e"), windows });
+    if (first.outcome !== "created") throw new Error("Expected initial admission to be created");
+
+    expect(() => admissions.reserveOrGet({
+      ...inputFor(accountId, "f"),
+      windows: {
+        dayWindowStart: windows.dayWindowStart + 1,
+        monthWindowStart: windows.monthWindowStart + 1
+      }
+    })).toThrowError(/canonical/u);
+    expect(accounts.usage(accountId, windows).dayUsedPoints).toBe(7);
+    store.close();
+  });
+
   it("allows one of two simultaneous seven-point reservations under a ten-point limit", async () => {
     const databasePath = temporaryDatabasePath();
     const directory = dirname(databasePath);
