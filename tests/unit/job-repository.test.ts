@@ -215,11 +215,11 @@ describe("SqliteJobRepository", () => {
     expect(serialized).not.toContain("fixture prompt");
     expect(serialized).not.toContain("https://input.example");
     expect(job.id).toMatch(/^job_[0-9a-f]{32}$/u);
-    expect(job).toMatchObject({ accountId: "legacy", quotedPoints: 0 });
+    expect(job).toMatchObject({ accountId: "legacy", quotedPoints: null });
     repository.close();
   });
 
-  it("creates one charged zero-point legacy budget entry for a compatibility job", () => {
+  it("creates one reserved unknown-quote legacy budget entry for a compatibility job", () => {
     const store = new SqliteStore(":memory:");
     const repository = new SqliteJobRepository(store);
     const admissions = new SqliteAdmissionRepository(store);
@@ -238,14 +238,26 @@ describe("SqliteJobRepository", () => {
     `).get(first.job.id))).toEqual({
       account_id: "legacy",
       quoted_points: 0,
-      state: "charged",
+      state: "reserved",
       day_window_start: budgetWindows(first.job.createdAt).dayWindowStart,
       month_window_start: budgetWindows(first.job.createdAt).monthWindowStart
     });
+    expect(first.job).toMatchObject({
+      accountId: "legacy",
+      quotedPoints: null,
+      status: "queued"
+    });
+    expect(store.read((database) => database.prepare(`
+      SELECT quote_known FROM jobs WHERE id = ?
+    `).get(first.job.id))).toEqual({ quote_known: 0 });
     expect(store.read((database) => database.prepare(`
       SELECT COUNT(*) AS count FROM budget_entries WHERE job_id = ?
     `).get(first.job.id))).toEqual({ count: 1 });
     expect(replay.created).toBe(false);
+    expect(replay.job.id).toBe(first.job.id);
+    expect(store.read((database) => database.prepare(`
+      SELECT COUNT(*) AS count FROM jobs WHERE idempotency_key_hash = ?
+    `).get("8".repeat(64)))).toEqual({ count: 1 });
 
     admissions.charge(first.job.id);
     admissions.releasePreSubmit(first.job.id);

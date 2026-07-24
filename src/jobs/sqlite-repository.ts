@@ -217,6 +217,7 @@ export class SqliteJobRepository {
           space_id,
           account_id,
           quoted_points,
+          quote_known,
           status,
           created_at,
           updated_at
@@ -233,6 +234,7 @@ export class SqliteJobRepository {
           @spaceId,
           'legacy',
           0,
+          0,
           'queued',
           @now,
           @now
@@ -247,7 +249,7 @@ export class SqliteJobRepository {
         INSERT INTO budget_entries (
           account_id, job_id, quoted_points, state, day_window_start,
           month_window_start, created_at, updated_at
-        ) VALUES ('legacy', ?, 0, 'charged', ?, ?, ?, ?)
+        ) VALUES ('legacy', ?, 0, 'reserved', ?, ?, ?, ?)
       `).run(
         id,
         windows.dayWindowStart,

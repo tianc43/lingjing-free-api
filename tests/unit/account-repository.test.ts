@@ -8,6 +8,7 @@ import type {
   CreateAccountInput,
   UpdateAccountInput
 } from "../../src/accounts/types.js";
+import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
@@ -66,6 +67,26 @@ function createVersionOneDatabase(): string {
       'image', ?, NULL, 0, 'queued', 1, 1
     )
   `).run("a".repeat(64));
+  database.prepare(`
+    INSERT INTO jobs (
+      id, kind, source_type, model, api_id, model_code,
+      expected_asset_scene, request_fingerprint, idempotency_key_hash,
+      space_id, status, created_at, updated_at
+    ) VALUES (
+      'job_failed', 'image', 'image-generation', 'fixture', '707', NULL,
+      'image', ?, NULL, 0, 'failed', 2, 2
+    )
+  `).run("b".repeat(64));
+  database.prepare(`
+    INSERT INTO jobs (
+      id, kind, source_type, model, api_id, model_code,
+      expected_asset_scene, request_fingerprint, idempotency_key_hash,
+      space_id, status, created_at, updated_at
+    ) VALUES (
+      'job_submitted', 'image', 'image-generation', 'fixture', '707', NULL,
+      'image', ?, NULL, 0, 'submitting', 3, 3
+    )
+  `).run("c".repeat(64));
   database.close();
   return path;
 }
@@ -80,6 +101,7 @@ describe("SqliteAccountRepository", () => {
   it("migrates version one jobs and creates the legacy account idempotently", () => {
     const store = new SqliteStore(createVersionOneDatabase());
     const accounts = new SqliteAccountRepository(store);
+    const jobs = new SqliteJobRepository(store);
 
     try {
       expect(accounts.ensureLegacyAccount("data/auth")).toMatchObject({
@@ -92,19 +114,40 @@ describe("SqliteAccountRepository", () => {
       });
       expect(accounts.ensureLegacyAccount("data/ignored").authDirectory).toBe("data/auth");
       expect(store.read((database) => database.prepare(`
-        SELECT account_id, quoted_points, quote_known
-        FROM jobs WHERE id = 'job_existing'
-      `).get())).toEqual({
-        account_id: "legacy",
-        quoted_points: 0,
-        quote_known: 1
-      });
+        SELECT id, account_id, quoted_points, quote_known
+        FROM jobs ORDER BY id
+      `).all())).toEqual([
+        {
+          id: "job_existing",
+          account_id: "legacy",
+          quoted_points: 0,
+          quote_known: 0
+        },
+        {
+          id: "job_failed",
+          account_id: "legacy",
+          quoted_points: 0,
+          quote_known: 0
+        },
+        {
+          id: "job_submitted",
+          account_id: "legacy",
+          quoted_points: 0,
+          quote_known: 0
+        }
+      ]);
+      expect(jobs.findById("job_existing")?.quotedPoints).toBeNull();
       expect(store.read((database) => database.prepare(
         "SELECT MAX(version) AS version FROM schema_migrations"
       ).get())).toEqual({ version: 3 });
       expect(store.read((database) => database.prepare(`
-        SELECT state, quoted_points FROM budget_entries WHERE job_id = 'job_existing'
-      `).get())).toEqual({ state: "charged", quoted_points: 0 });
+        SELECT job_id, state, quoted_points
+        FROM budget_entries ORDER BY job_id
+      `).all())).toEqual([
+        { job_id: "job_existing", state: "reserved", quoted_points: 0 },
+        { job_id: "job_failed", state: "released", quoted_points: 0 },
+        { job_id: "job_submitted", state: "charged", quoted_points: 0 }
+      ]);
     } finally {
       store.close();
     }

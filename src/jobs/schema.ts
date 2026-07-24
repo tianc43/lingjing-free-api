@@ -110,8 +110,44 @@ const VERSION_TWO_SQL = `
 `;
 
 const VERSION_THREE_SQL = `
-  ALTER TABLE jobs ADD COLUMN quote_known INTEGER NOT NULL DEFAULT 1
+  ALTER TABLE jobs ADD COLUMN quote_known INTEGER NOT NULL DEFAULT 0
   CHECK (quote_known IN (0, 1));
+
+  UPDATE jobs
+  SET quote_known = CASE WHEN quoted_points <> 0 THEN 1 ELSE 0 END;
+
+  UPDATE budget_entries
+  SET state = 'reserved'
+  WHERE state = 'charged'
+    AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE jobs.id = budget_entries.job_id
+        AND jobs.status = 'queued'
+    );
+
+  UPDATE budget_entries
+  SET state = 'released'
+  WHERE state IN ('reserved', 'charged')
+    AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE jobs.id = budget_entries.job_id
+        AND jobs.status = 'failed'
+    );
+
+  UPDATE budget_entries
+  SET state = 'charged'
+  WHERE state = 'reserved'
+    AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE jobs.id = budget_entries.job_id
+        AND jobs.status IN (
+          'submitting',
+          'discovering',
+          'processing',
+          'unknown',
+          'completed'
+        )
+    );
 `;
 
 export function configureJobDatabase(database: Database.Database): void {
@@ -180,7 +216,19 @@ export function migrateJobDatabase(database: Database.Database): void {
           account_id, job_id, quoted_points, state, day_window_start,
           month_window_start, created_at, updated_at
         )
-        SELECT account_id, id, 0, 'charged', 0, 0, created_at, updated_at
+        SELECT
+          account_id,
+          id,
+          0,
+          CASE
+            WHEN status = 'queued' THEN 'reserved'
+            WHEN status = 'failed' THEN 'released'
+            ELSE 'charged'
+          END,
+          0,
+          0,
+          created_at,
+          updated_at
         FROM jobs
       `).run();
       database.prepare(
