@@ -683,6 +683,8 @@ git commit -m "feat: schedule generation across budgeted accounts"
 - Modify: `src/app.ts`
 - Modify: `src/api/types.ts`
 - Modify: `src/errors.ts`
+- Modify: `package.json`
+- Modify: `package-lock.json`
 - Test: `tests/unit/admin-session.test.ts`
 - Test: `tests/integration/admin-api.test.ts`
 - Test: `tests/integration/security-regression.test.ts`
@@ -746,6 +748,12 @@ Expected: FAIL because the admin session store does not exist.
 Use `timingSafeEqual` on fixed SHA-256 password digests. Store only random
 session IDs, CSRF tokens, and expiry. Prune expired entries on login and
 authentication. Never log submitted passwords or tokens.
+
+Install and register the cookie parser used by these routes:
+
+```powershell
+npm install @fastify/cookie
+```
 
 - [ ] **Step 4: Write admin API integration tests that fail**
 
@@ -906,7 +914,7 @@ Expected: FAIL because no admin bundle or static routes exist.
 Install exact project-compatible dependencies:
 
 ```powershell
-npm install react react-dom @fastify/static @fastify/cookie
+npm install react react-dom @fastify/static
 npm install --save-dev vite @vitejs/plugin-react @types/react @types/react-dom
 ```
 
