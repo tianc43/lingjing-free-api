@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/live/**/*.live.test.ts"],
+    fileParallelism: false,
     restoreMocks: true,
     clearMocks: true,
     testTimeout: 1_200_000,

@@ -256,6 +256,15 @@ describe("live acceptance safety helpers", () => {
           },
           {
             idx: "5",
+            key: "mode",
+            displayName: "Mode",
+            required: true,
+            kind: "enum",
+            defaultValue: "normal",
+            options: ["normal"]
+          },
+          {
+            idx: "6",
             key: "watermark",
             displayName: "Watermark",
             required: true,
@@ -274,6 +283,50 @@ describe("live acceptance safety helpers", () => {
       resolution: "720p",
       response_mode: "wait",
       parameters: { watermark: false }
+    });
+  });
+
+  it("leaves defaulted video controls to the current catalog schema", () => {
+    const selected = selectLiveGeneration([
+      model({
+        sourceType: "text-to-video",
+        alias: "fixture-defaulted-video",
+        pricing: { points: 13 },
+        parameters: [
+          {
+            idx: "1",
+            key: "prompt",
+            displayName: "Prompt",
+            required: true,
+            kind: "string"
+          },
+          {
+            idx: "2",
+            key: "duration",
+            displayName: "Duration",
+            required: true,
+            kind: "enum",
+            defaultValue: "5",
+            options: ["5", "10"]
+          },
+          {
+            idx: "3",
+            key: "mode",
+            displayName: "Mode",
+            required: true,
+            kind: "enum",
+            defaultValue: "normal",
+            options: ["normal"]
+          }
+        ]
+      })
+    ], "video", "fixture-safe-defaulted-video-request");
+
+    expect(selected.request).toEqual({
+      model: "fixture-defaulted-video",
+      prompt: "fixture-safe-defaulted-video-request",
+      mode: "text-to-video",
+      response_mode: "wait"
     });
   });
 

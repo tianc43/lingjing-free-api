@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
   assertSufficientLiveBalance,
+  downloadLiveOutput,
   liveVideoTestEnabled,
   reportLiveBalanceDelta,
   reportLiveJob,
   reportLiveSelection,
   selectLiveGeneration,
   startLiveRuntime,
-  validateLiveOutputUrl,
   type LiveRuntime
 } from "./live-helpers.js";
 
@@ -83,7 +83,7 @@ liveVideo("Lingjing live text-to-video generation", () => {
     const selection = selectLiveGeneration(
       models,
       "video",
-      "Static camera, a single white cloud moves slowly across a blue sky"
+      "纹身师在工作室里为手臂绘制黑白龙形纹身，镜头缓慢推进，线条逐步显现，真实电影质感，稳定运镜，无文字"
     );
     assertSufficientLiveBalance(
       starting.pointsBalance,
@@ -111,7 +111,11 @@ liveVideo("Lingjing live text-to-video generation", () => {
       throw new Error("Live video generation submit count was not one");
     }
     reportLiveJob(result.jobId, "completed");
-    await validateLiveOutputUrl(result.url, "video");
+    await acceptance.assertLegacyAdminUsage(
+      result.jobId,
+      selection.estimatedDebit
+    );
+    await downloadLiveOutput(result.url, "video", result.jobId);
 
     const ending = await acceptance.runtime.dependencies.account.describe();
     if (ending.pointsBalance > starting.pointsBalance) {

@@ -3,5 +3,6 @@ dist/
 coverage/
 .env
 data/
+outputs/
 playwright-report/
 test-results/

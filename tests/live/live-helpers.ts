@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { Agent, fetch as undiciFetch, type Dispatcher } from "undici";
 import type {
   InjectOptions,
@@ -24,7 +26,12 @@ import {
   defaultAddressResolver,
   type AddressResolver
 } from "../../src/media/address-policy.js";
-import { createPinnedLookup } from "../../src/media/remote-fetcher.js";
+import {
+  createPinnedLookup,
+  RemoteMediaFetcher
+} from "../../src/media/remote-fetcher.js";
+import { createTempBudget } from "../../src/media/temp-budget.js";
+import type { PreparedMedia } from "../../src/media/types.js";
 import { createSessionProvider } from "../../src/session/create-provider.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
@@ -96,6 +103,10 @@ export interface LiveRuntime {
   runtime: RunningServer;
   inject(options: InjectOptions): Promise<LightMyRequestResponse>;
   submitCount(): number;
+  assertLegacyAdminUsage(
+    jobId: string,
+    quotedPoints: number
+  ): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -388,13 +399,14 @@ function compatibleVideoRequest(
       continue;
     }
     if (["duration", "resolution", "ratio"].includes(parameter.key)) {
+      if (parameter.defaultValue !== undefined) continue;
       const value = parameter.required
         ? requiredValue(parameter)
         : parameterValue(parameter);
       if (value !== undefined) request[parameter.key] = value;
       continue;
     }
-    if (parameter.required) {
+    if (parameter.required && parameter.defaultValue === undefined) {
       parameters[parameter.key] = requiredValue(parameter);
     }
   }
@@ -697,6 +709,88 @@ export async function validateLiveOutputUrl(
   }
 }
 
+async function mediaPrefix(
+  media: PreparedMedia,
+  length = 12
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of media.openRead(0, length - 1)) {
+    const value = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk as Uint8Array | string);
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  return Buffer.concat(chunks, size);
+}
+
+function mediaExtension(kind: LiveKind, prefix: Buffer): string {
+  if (kind === "image") {
+    if (
+      prefix.subarray(0, 8).equals(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      )
+    ) return "png";
+    if (
+      prefix[0] === 0xff
+      && prefix[1] === 0xd8
+      && prefix[2] === 0xff
+    ) return "jpg";
+    if (
+      prefix.subarray(0, 4).toString("ascii") === "RIFF"
+      && prefix.subarray(8, 12).toString("ascii") === "WEBP"
+    ) return "webp";
+    if (prefix.subarray(0, 3).toString("ascii") === "GIF") return "gif";
+  } else {
+    if (prefix.subarray(4, 8).toString("ascii") === "ftyp") return "mp4";
+    if (
+      prefix.subarray(0, 4).equals(
+        Buffer.from([0x1a, 0x45, 0xdf, 0xa3])
+      )
+    ) return "webm";
+  }
+  throw new Error("Live output media structure is invalid");
+}
+
+export async function downloadLiveOutput(
+  value: string,
+  kind: LiveKind,
+  jobId: string
+): Promise<void> {
+  if (!/^job_[0-9a-f]{32}$/iu.test(jobId)) {
+    throw new Error("Live output job ID is invalid");
+  }
+  const maxBytes = kind === "image" ? 20_971_520 : 209_715_200;
+  const tempDirectory = resolve("outputs", ".tmp");
+  await mkdir(tempDirectory, { recursive: true });
+  const media = await new RemoteMediaFetcher({
+    tempDirectory,
+    tempBudget: createTempBudget(maxBytes),
+    requestBudget: createTempBudget(maxBytes)
+  }).fetch(safeHttpsUrl(value), { kind, maxBytes });
+  try {
+    if (
+      media.size === 0
+      || !media.contentType.toLowerCase().startsWith(`${kind}/`)
+    ) {
+      throw new Error("Live output media metadata is invalid");
+    }
+    const extension = mediaExtension(kind, await mediaPrefix(media));
+    const outputDirectory = resolve("outputs");
+    await mkdir(outputDirectory, { recursive: true });
+    await pipeline(
+      media.openRead(),
+      createWriteStream(
+        join(outputDirectory, `task6-${kind}-${jobId}.${extension}`),
+        { flags: "wx", mode: 0o600 }
+      )
+    );
+  } finally {
+    await media.dispose();
+  }
+}
+
 async function availablePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolveListen, reject) => {
@@ -720,7 +814,8 @@ function liveEnvironment(
   env: LiveEnvironment,
   directory: string,
   port: number,
-  apiKey: string
+  apiKey: string,
+  adminPassword: string
 ): LiveEnvironment {
   const sessionMode = env.SESSION_MODE === "cookie-file"
     ? "cookie-file"
@@ -731,6 +826,7 @@ function liveEnvironment(
     HOST: "127.0.0.1",
     PORT: String(port),
     LINGJING_API_KEY: apiKey,
+    LINGJING_ADMIN_PASSWORD: adminPassword,
     SESSION_MODE: sessionMode,
     LINGJING_STORAGE_STATE: resolve(
       env.LINGJING_STORAGE_STATE
@@ -744,10 +840,20 @@ function liveEnvironment(
       env.LINGJING_SESSION_PROFILE
         ?? "./data/auth/session-profile.json"
     ),
-    DB_PATH: join(directory, "jobs.sqlite"),
+    DB_PATH: liveDatabasePath(env, directory),
     LOG_LEVEL: "silent",
     DOCS_ENABLED: "false"
   };
+}
+
+export function liveDatabasePath(
+  env: LiveEnvironment,
+  directory: string
+): string {
+  const persistentPath = env.LIVE_ACCEPTANCE_DB_PATH?.trim();
+  return persistentPath === undefined || persistentPath.length === 0
+    ? join(directory, "jobs.sqlite")
+    : persistentPath;
 }
 
 export async function startLiveRuntime(
@@ -755,13 +861,15 @@ export async function startLiveRuntime(
 ): Promise<LiveRuntime> {
   const directory = await mkdtemp(join(tmpdir(), "lingjing-live-"));
   const apiKey = randomBytes(32).toString("hex");
+  const adminPassword = randomBytes(32).toString("hex");
   let runtime: RunningServer | undefined;
   try {
     const runtimeEnvironment = liveEnvironment(
       env,
       directory,
       await availablePort(),
-      apiKey
+      apiKey,
+      adminPassword
     );
     const config = parseConfig(runtimeEnvironment);
     const transportSession = await createSessionProvider(config);
@@ -783,6 +891,53 @@ export async function startLiveRuntime(
         }
       }) ?? Promise.reject(new Error("Live runtime is unavailable")),
       submitCount: () => counted.submitCount(),
+      assertLegacyAdminUsage: async (jobId, quotedPoints) => {
+        const activeRuntime = runtime;
+        if (activeRuntime === undefined) {
+          throw new Error("Live runtime is unavailable");
+        }
+        const job = activeRuntime.repository.findById(jobId);
+        if (
+          job?.accountId !== "legacy"
+          || job.quotedPoints !== quotedPoints
+        ) {
+          throw new Error("Live job binding or quote did not persist");
+        }
+        const login = await activeRuntime.app.inject({
+          method: "POST",
+          url: "/admin/api/login",
+          payload: { password: adminPassword }
+        });
+        const setCookie = login.headers["set-cookie"];
+        const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)
+          ?.split(";")[0];
+        if (login.statusCode !== 200 || cookie === undefined) {
+          throw new Error("Live administrator verification could not log in");
+        }
+        const detail = await activeRuntime.app.inject({
+          url: `/admin/api/jobs/${jobId}`,
+          headers: { cookie }
+        });
+        const view = detail.json<{
+          job?: {
+            account_name?: unknown;
+            quoted_points?: unknown;
+            budget_state?: unknown;
+            status?: unknown;
+          };
+        }>().job;
+        if (
+          detail.statusCode !== 200
+          || view?.account_name !== "Legacy account"
+          || view.quoted_points !== quotedPoints
+          || view.budget_state !== "charged"
+          || view.status !== "completed"
+        ) {
+          throw new Error(
+            "Live job usage was not visible in the administrator API"
+          );
+        }
+      },
       close: () => {
         closePromise ??= runtime?.stop().finally(() => {
           removeTestDirectory(directory);

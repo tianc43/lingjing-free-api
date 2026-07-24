@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
   assertSufficientLiveBalance,
+  downloadLiveOutput,
   liveTestEnabled,
   reportLiveBalanceDelta,
   reportLiveJob,
   reportLiveSelection,
   selectLiveGeneration,
   startLiveRuntime,
-  validateLiveOutputUrl,
   type LiveRuntime
 } from "./live-helpers.js";
 
@@ -83,7 +83,7 @@ live("Lingjing live image generation", () => {
     const selection = selectLiveGeneration(
       models,
       "image",
-      "A quiet blue circle centered on a plain white background"
+      "黑白写实风格的龙形纹身图案设计，干净白色背景，清晰线稿和细节，适合作为纹身手稿，无文字"
     );
     assertSufficientLiveBalance(
       starting.pointsBalance,
@@ -111,7 +111,11 @@ live("Lingjing live image generation", () => {
       throw new Error("Live image generation submit count was not one");
     }
     reportLiveJob(result.jobId, "completed");
-    await validateLiveOutputUrl(result.url, "image");
+    await acceptance.assertLegacyAdminUsage(
+      result.jobId,
+      selection.estimatedDebit
+    );
+    await downloadLiveOutput(result.url, "image", result.jobId);
 
     const ending = await acceptance.runtime.dependencies.account.describe();
     if (ending.pointsBalance > starting.pointsBalance) {

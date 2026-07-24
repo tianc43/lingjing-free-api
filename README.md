@@ -1,12 +1,12 @@
 # Lingjing Free API
 
-把已登录的灵境网页会话封装为一个本机、单用户的 OpenAI 风格 HTTP 适配器，提供图片生成、视频生成、任务查询和 Chat Completions 兼容入口。
+把一个或多个已登录的灵境网页会话封装为本机、单操作者的 OpenAI 风格 HTTP 适配器，提供图片生成、视频生成、任务查询、Chat Completions 兼容入口和同源管理控制台。
 
 ## 项目边界
 
 本项目调用的是灵境网页端接口，不是京东云官方开放 API，也不代表官方支持的集成方式。**订阅不等于官方 API**：网页会员、点数或套餐只说明账号可在网页产品中使用相应能力，不会自动获得稳定的 API 合约、SLA、商用授权或免额外计费。网页接口、字段、模型目录和风控规则可能随时变化，详见 [docs/protocol.md](docs/protocol.md)。
 
-请遵守服务条款、内容规范和所在地法律。每次生成都可能消耗真实点数；本项目不会绕过计费、权限或内容审核。版本一只面向可信机器上的**单用户**运行，不是多租户网关。
+请遵守服务条款、内容规范和所在地法律。每次生成都可能消耗真实点数；本项目不会绕过计费、权限或内容审核。当前版本只面向可信机器上的**单操作者**运行；多个上游账号仍共用一个单用户 API 边界，不是多租户网关。
 
 ## 环境要求
 
@@ -33,6 +33,12 @@ Windows PowerShell 可用 `Copy-Item .env.example .env` 代替 `cp`；密钥生�
 - `data/auth/session-profile.json`：账号定位所需的最小配置。
 
 浏览器登录只能在本机运行，版本一 Docker 镜像内不包含登录 GUI。会话过期、CSRF 失效或切换账号时，在停止写入竞争后重新执行 `npm run login`；服务会在下次加载时采用新文件。
+
+首次升级会把现有 `data/auth` 记录为 `legacy` 账号，不移动或重写会话文件。管理控制台创建的新账号默认禁用，其会话位于 `data/accounts/<account-id>/`；按控制台返回的固定命令登录：
+
+```powershell
+npm run login -- --account-id acct_0123456789abcdef01234567
+```
 
 ## 配置与启动
 
@@ -62,7 +68,16 @@ docker compose up -d --wait
 docker compose ps
 ```
 
-生产 Compose 只发布 `127.0.0.1:8000`，只把 `./data` 挂载到 `/app/data`，容器以非 root `node` 用户运行，并启用 `cap_drop: ALL` 与 `no-new-privileges`。不要把 `docker-compose.test.yml` 用于生产；它只有全假凭据、隔离网络和可删除的 smoke 数据卷。
+Windows PowerShell 的完整管理控制台启动流程如下。`change-me` 仅为扫描安全的占位符，实际运行前必须换成独立的强密码，且不能与 `LINGJING_API_KEY` 或灵境网页凭据复用：
+
+```powershell
+$env:LINGJING_ADMIN_PASSWORD = 'change-me'
+docker compose up -d --build
+Start-Process 'http://127.0.0.1:8000/admin/'
+npm run login -- --account-id acct_0123456789abcdef01234567
+```
+
+生产 Compose 的同一镜像包含 `dist/index.js` 与 `dist/admin`，只发布 `127.0.0.1:8000`，只把 `./data` 挂载到 `/app/data`，容器以非 root `node` 用户运行，并启用 `cap_drop: ALL` 与 `no-new-privileges`。`LINGJING_DATA_DIRECTORY=/app/data` 使 SQLite 之外的账号会话也落在该持久化挂载中。不要把 `docker-compose.test.yml` 用于生产；它只有全假凭据、隔离网络和可删除的 smoke 数据卷。
 
 停止服务：
 
@@ -70,9 +85,25 @@ docker compose ps
 docker compose down
 ```
 
+## 管理控制台、预算与账号登录
+
+设置非空 `LINGJING_ADMIN_PASSWORD` 后，访问 `http://127.0.0.1:8000/admin/`。管理员密码只创建管理会话，不能调用生成 API；`LINGJING_API_KEY` 只保护兼容 API，也不能登录管理控制台。管理员登录使用 `HttpOnly`、`SameSite=Strict` Cookie，修改操作还要求同源 CSRF；进程重启后需要重新登录。
+
+控制台可以创建、编辑、检查、启用和禁用账号。禁用只阻止新任务，不中断已经提交的任务；删除、角色、导出和告警不在当前 MVP。新账号在本机完成 `npm run login -- --account-id <id>` 后，再从控制台检查并启用。状态为 `needs_login` 时按 [故障排查](docs/troubleshooting.md) 重新登录，不要上传或粘贴 Cookie。
+
+每日和每月预算按模型元数据中可信的 quoted points（报价点数）记账，而不是按余额差推算：
+
+- `0` 表示 unlimited（不限额），不是“禁止生成”；
+- 日/月窗口使用 `Asia/Shanghai` 日历边界，分别在上海时间每日 00:00 和每月 1 日 00:00 重置；
+- 新任务先预留完整报价；幂等重放复用同一预留；
+- 可证明在上游提交前失败时释放预留；一旦提交可能发生，就计为 charged 且不退款；
+- `unknown` 保留预留/计费状态，直到任务终态或管理员明确裁决。
+
+SQLite 中持久保存账号配置、quoted usage、任务账号绑定和预算条目；重启不会清零。备份与恢复必须同时覆盖 SQLite 和 `data/auth`、`data/accounts` 会话目录，见 [安全说明](docs/security.md) 与 [故障排查](docs/troubleshooting.md)。
+
 ## 鉴权与公共路由
 
-除 `/healthz` 和 `/ping` 外，所有路由都要求：
+除 `/healthz`、`/ping` 和独立认证的 `/admin/` 外，兼容 API 路由都要求：
 
 ```text
 Authorization: Bearer $LINGJING_API_KEY
@@ -256,7 +287,7 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 
 `tests/live` 是显式开启的真实账号验收。默认运行 `npm run test:live` 时四个 live 套件全部 skip，不创建运行时、不读取认证内容，也不访问京东云；不要在普通 CI 中设置 live 标志。
 
-真实验收前必须先由用户运行 `npm run login`，并确保本地忽略的 `data/auth/storage-state.json` 与 `data/auth/session-profile.json` 有效。测试只通过现有 SessionProvider 读取这些文件，不会打印 Cookie、账号标识或认证文件内容。
+真实验收前必须先由用户运行 `npm run login`，并确保本地忽略的 `data/auth/storage-state.json` 与 `data/auth/session-profile.json` 有效。测试只通过现有 SessionProvider 读取这些文件，不会打印 Cookie、账号标识或认证文件内容。成功媒体会下载到已忽略的 `outputs/`，并验证 Content-Type、字节上限和 PNG/JPEG/WebP/GIF 或 MP4/WebM 文件签名。
 
 Windows PowerShell 的执行顺序：
 
@@ -272,9 +303,9 @@ Remove-Item Env:LIVE_VIDEO_TEST
 Remove-Item Env:LIVE_TEST
 ```
 
-图片测试只有在 `LIVE_TEST=1` 时运行；视频还必须同时满足 `LIVE_VIDEO_TEST=1`。每次生成前都会重新读取余额、当前模型元数据和报价，动态构造模型必填参数；若没有可确认报价、参数不兼容或余额不足，会在提交前安全失败，不会改用其他收费系统。图片和视频测试各自包装真实 transport，并断言计费提交 `submitOnce` 恰好发生一次。
+图片测试只有在 `LIVE_TEST=1` 时运行；视频还必须同时满足 `LIVE_VIDEO_TEST=1`。每次生成前都会重新读取余额、当前模型元数据和报价，动态构造模型必填参数；若没有可确认报价、参数不兼容或余额不足，会在提交前安全失败，不会改用其他收费系统。图片和视频测试各自包装真实 transport，并断言计费提交 `submitOnce` 恰好发生一次；完成后还会确认任务绑定到 `legacy`，且 quoted usage 可从管理 API 读取。
 
-live 输出仅允许模型 display name、带引号的预计点数、本地 job ID、脱敏状态和数字余额变化。Prompt、生成 URL、上游 task ID、账号身份和 Cookie 都不会写入输出或验收记录。生成 URL 只做 HEAD 或最多 64 KiB 的 bounded GET 可达性验证。
+live 输出仅允许模型 display name、带引号的预计点数、本地 job ID、脱敏状态和数字余额变化。Prompt、生成 URL、上游 task ID、账号身份和 Cookie 都不会写入输出或验收记录。媒体下载使用固定 DNS、逐跳重定向检查和字节上限，文件仅写入已忽略的 `outputs/`。
 
 ### 真实验收记录
 
@@ -288,12 +319,12 @@ live 输出仅允许模型 display name、带引号的预计点数、本地 job 
 ## 安全、隐私与运维
 
 - 只绑定 loopback，不直接暴露公网；确需反向代理时，由代理完成 TLS、访问控制和请求大小限制。
-- 灵境 Cookie 与下游 `LINGJING_API_KEY` 完全分离，禁止复用、提交到 Git 或写入 Compose。
+- 灵境 Cookie、下游 `LINGJING_API_KEY` 与 `LINGJING_ADMIN_PASSWORD` 三者完全分离，禁止复用、提交到 Git 或内联写入 Compose。
 - Prompt、上传媒体、生成结果 URL、账号余额和 SQLite 均可能是敏感数据；按本机秘密处理。
 - 日志会脱敏凭据、查询串、Prompt 和媒体，但仍不要把 debug 日志随意外发。
 - 远程媒体只允许公网 HTTP(S)，解析地址会固定并拦截本机、私网、保留地址和危险重定向。
 - `/app/data` 是容器唯一持久化凭据/数据库挂载；定期备份并限制宿主机权限。
-- 本项目没有用户隔离、租户配额、审计授权或共享会话隔离，只适合单用户。
+- 多个上游账号共享同一个下游 API 边界；本项目没有下游用户隔离、租户配额或 RBAC，只适合单操作者。
 
 完整说明：
 
