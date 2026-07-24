@@ -191,6 +191,9 @@ describe("video generation API", () => {
           ));
         }),
         resume: vi.fn(),
+        resolveUnknown: vi.fn(() => {
+          throw new Error("Unexpected unknown resolution");
+        }),
         stopPollers: vi.fn()
       },
       media: {

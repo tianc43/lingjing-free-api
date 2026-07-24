@@ -181,6 +181,25 @@ function authenticatedSession(
   return session;
 }
 
+function accountMutation<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (cause) {
+    if (cause instanceof TypeError || cause instanceof RangeError) {
+      throw errors.invalidRequest("Invalid account");
+    }
+    if (
+      cause instanceof Error
+      && "code" in cause
+      && cause.code === "SQLITE_CONSTRAINT_UNIQUE"
+      && cause.message === "UNIQUE constraint failed: accounts.name"
+    ) {
+      throw errors.accountNameConflict();
+    }
+    throw cause;
+  }
+}
+
 export async function registerAdminRoutes(
   app: FastifyInstance,
   dependencies: AdminDependencies
@@ -318,17 +337,18 @@ export async function registerAdminRoutes(
           201: createAccountResponseSchema,
           400: errorResponseSchema,
           401: errorResponseSchema,
-          403: errorResponseSchema
+          403: errorResponseSchema,
+          409: errorResponseSchema
         }
       })
     }, (request, reply) => {
       const body = createAccountBodySchema.parse(request.body);
-      const account = dependencies.accounts.create({
+      const account = accountMutation(() => dependencies.accounts.create({
         name: body.name,
         priority: body.priority,
         dailyPointLimit: body.daily_point_limit,
         monthlyPointLimit: body.monthly_point_limit
-      });
+      }));
       return noStore(reply).code(201).send({
         account: accountView(dependencies, account, allJobs(dependencies)),
         login_command: `npm run login -- --account-id ${account.id}`
@@ -345,14 +365,15 @@ export async function registerAdminRoutes(
           400: errorResponseSchema,
           401: errorResponseSchema,
           403: errorResponseSchema,
-          404: errorResponseSchema
+          404: errorResponseSchema,
+          409: errorResponseSchema
         }
       })
     }, (request, reply) => {
       const { id } = accountParamsSchema.parse(request.params);
       findAccount(dependencies, id);
       const body = updateAccountBodySchema.parse(request.body);
-      const account = dependencies.accounts.update(id, {
+      const account = accountMutation(() => dependencies.accounts.update(id, {
         ...(body.name === undefined ? {} : { name: body.name }),
         ...(body.priority === undefined ? {} : { priority: body.priority }),
         ...(body.daily_point_limit === undefined
@@ -361,7 +382,7 @@ export async function registerAdminRoutes(
         ...(body.monthly_point_limit === undefined
           ? {}
           : { monthlyPointLimit: body.monthly_point_limit })
-      });
+      }));
       return noStore(reply).send({
         account: accountView(dependencies, account, allJobs(dependencies))
       });
@@ -460,7 +481,7 @@ export async function registerAdminRoutes(
       findAccount(dependencies, id);
       const body = resolveUnknownBodySchema.parse(request.body);
       try {
-        const resolved = dependencies.admissions.resolveUnknown(
+        const resolved = dependencies.coordinator.resolveUnknown(
           id,
           body.job_id,
           body.action

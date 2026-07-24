@@ -179,6 +179,10 @@ export class CapacityManager {
     return [...this.activeLeases.keys()];
   }
 
+  releaseJob(jobId: string): void {
+    this.activeLeases.get(jobId)?.release();
+  }
+
   counts(): CapacityCounts {
     return {
       active: this.activeLeases.size,

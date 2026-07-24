@@ -128,6 +128,38 @@ describe("AccountRuntimeRegistry", () => {
     store.close();
   });
 
+  it("retains a usable disabled runtime but excludes it from new admissions", async () => {
+    let disabled = { ...accountRecord("legacy"), enabled: false };
+    const registry = new AccountRuntimeRegistry({
+      accounts: {
+        list: () => [disabled],
+        findById: () => disabled,
+        recordObservation: (_id, observation) => {
+          disabled = {
+            ...disabled,
+            ...observation,
+            lastCheckedAt: 1,
+            updatedAt: 1
+          };
+          return disabled;
+        }
+      },
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length"
+      }),
+      sessionFactory: () => Promise.resolve(session()),
+      transportFactory: () => transport()
+    });
+
+    await registry.ready();
+    expect(registry.require("legacy").record.enabled).toBe(false);
+    expect(registry.listEnabled()).toEqual([]);
+
+    await registry.refresh("legacy");
+    expect(registry.require("legacy").record.enabled).toBe(false);
+    expect(registry.listEnabled()).toEqual([]);
+  });
+
   it("keeps a healthy runtime when another transport factory fails", async () => {
     const legacy = accountRecord("legacy");
     const second = accountRecord("acct_0123456789abcdef01234567");

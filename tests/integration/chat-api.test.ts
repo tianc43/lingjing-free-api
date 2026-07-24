@@ -163,6 +163,9 @@ describe("chat completions API", () => {
           return Promise.resolve(handle(finalJob));
         }),
         resume: vi.fn(),
+        resolveUnknown: vi.fn(() => {
+          throw new Error("Unexpected unknown resolution");
+        }),
         stopPollers: vi.fn()
       }
     });

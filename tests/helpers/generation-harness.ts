@@ -139,6 +139,7 @@ export interface GenerationHarness {
   removeRuntime(accountId: string): void;
   clearRuntimes(): void;
   budgetEntryCount(jobId: string): number;
+  budgetState(jobId: string): "reserved" | "charged" | "released" | null;
   boundActions: string[];
   chargeCount: () => number;
   releaseCount: () => number;
@@ -503,7 +504,10 @@ export function createGenerationHarness(options: {
         expectedStatuses,
         errorCode
       );
-    }
+    },
+    resolveUnknown: admissionsRepository.resolveUnknown.bind(
+      admissionsRepository
+    )
   };
   const scheduler = new AccountScheduler({
     registry: {
@@ -561,6 +565,7 @@ export function createGenerationHarness(options: {
       `).get(jobId) as { count: number };
       return row.count;
     }),
+    budgetState: (jobId) => admissionsRepository.budgetState(jobId),
     boundActions,
     chargeCount: () => chargeCalls,
     releaseCount: () => releaseCalls,

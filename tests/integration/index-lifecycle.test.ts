@@ -1,8 +1,17 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { budgetWindows } from "../../src/accounts/budget.js";
+import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
+import { parseConfig } from "../../src/config.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { startServer, type RunningServer } from "../../src/index.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
@@ -10,6 +19,8 @@ import type {
   LingjingTransport,
   ReadRequest
 } from "../../src/lingjing/types.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
+import { accountSessionPaths } from "../../src/session/create-provider.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
 async function availablePort(): Promise<number> {
@@ -102,11 +113,179 @@ describe("server lifecycle", () => {
       SESSION_MODE: "browser-state",
       LINGJING_STORAGE_STATE: storageStatePath,
       LINGJING_SESSION_PROFILE: profilePath,
+      DATA_DIRECTORY: join(directory as string, "data"),
       DB_PATH: dbPath,
       LOG_LEVEL: "silent",
       DOCS_ENABLED: "false"
     };
   }
+
+  it("boots with a disabled legacy account and re-enables it through administration", async () => {
+    directory = mkdtempSync(join(tmpdir(), "lingjing-index-test-"));
+    const dbPath = join(directory, "jobs.sqlite");
+    const env = await fixtureEnvironment(dbPath);
+    env.LINGJING_ADMIN_PASSWORD = "fixture-admin-password";
+    const store = new SqliteStore(dbPath);
+    const accounts = new SqliteAccountRepository(store);
+    accounts.ensureLegacyAccount("data/auth");
+    accounts.update("legacy", { enabled: false });
+    store.close();
+
+    runtime = await startServer(env, {
+      transport: withAccountRuntime()
+    });
+    expect(runtime.dependencies.runtimes.listEnabled()).toEqual([]);
+    const login = await runtime.app.inject({
+      method: "POST",
+      url: "/admin/api/login",
+      payload: { password: "fixture-admin-password" }
+    });
+    const loginBody = login.json<{ csrf_token: string }>();
+    const setCookie = login.headers["set-cookie"];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)
+      ?.split(";")[0];
+    if (cookie === undefined) throw new Error("Admin cookie was not set");
+
+    const enabled = await runtime.app.inject({
+      method: "POST",
+      url: "/admin/api/accounts/legacy/enable",
+      headers: {
+        cookie,
+        "x-csrf-token": loginBody.csrf_token
+      }
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json()).toMatchObject({
+      account: { id: "legacy", enabled: true, health_status: "ready" }
+    });
+    expect(runtime.dependencies.runtimes.listEnabled()).toHaveLength(1);
+  });
+
+  it("restores processing work on its disabled bound account after restart", async () => {
+    directory = mkdtempSync(join(tmpdir(), "lingjing-index-test-"));
+    const dbPath = join(directory, "jobs.sqlite");
+    const env = await fixtureEnvironment(dbPath);
+    const config = parseConfig(env);
+    const store = new SqliteStore(dbPath);
+    const repository = new SqliteJobRepository(store);
+    const accounts = new SqliteAccountRepository(store);
+    accounts.ensureLegacyAccount("data/auth");
+    const account = accounts.create({
+      name: "Disabled recovery account",
+      priority: 1,
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    const sessionPaths = accountSessionPaths(config, account.id);
+    mkdirSync(dirname(sessionPaths.storageStatePath), { recursive: true });
+    copyFileSync(config.storageStatePath, sessionPaths.storageStatePath);
+    copyFileSync(config.sessionProfilePath, sessionPaths.sessionProfilePath);
+    accounts.update(account.id, { enabled: true });
+    accounts.recordObservation(account.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-subject",
+      pointsBalance: 100,
+      totalBalance: 100,
+      maxConcurrency: 1
+    });
+    const admissions = new SqliteAdmissionRepository(store);
+    const admitted = admissions.reserveOrGet({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-image",
+      apiId: "707",
+      modelCode: "fixture-model",
+      expectedAssetScene: "image-generation",
+      requestFingerprint: "e".repeat(64),
+      idempotencyKeyHash: null,
+      spaceId: 1,
+      accountId: account.id,
+      quotedPoints: 2,
+      windows: budgetWindows()
+    });
+    if (admitted.outcome !== "created") {
+      throw new Error("Fixture admission was not created");
+    }
+    const submitting = repository.transition(admitted.job.id, ["queued"], {
+      status: "submitting",
+      submittedAt: Date.now(),
+      upstreamFingerprint: "f".repeat(64)
+    });
+    admissions.charge(admitted.job.id);
+    const discovering = repository.transition(
+      submitting.id,
+      ["submitting"],
+      { status: "discovering" }
+    );
+    const processing = repository.transition(
+      discovering.id,
+      ["discovering"],
+      {
+        status: "processing",
+        creationCode: "disabled-creation",
+        upstreamTaskId: "fixture-disabled-task"
+      }
+    );
+    accounts.update(account.id, { enabled: false });
+    repository.close();
+    store.close();
+
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releaseRead: (() => void) | undefined;
+    const blockedRead = new Promise<unknown>((resolve) => {
+      releaseRead = () => {
+        resolve({
+          data: {
+            task: {
+              taskId: "fixture-disabled-task",
+              status: 1,
+              taskResults: [{
+                url: "https://example.invalid/late.png"
+              }]
+            }
+          }
+        });
+      };
+    });
+    const transport: LingjingTransport = {
+      read<T>(path: string): Promise<T> {
+        if (path === "/openApi/modelmarket/describeUserTask") {
+          markStarted?.();
+          return blockedRead as Promise<T>;
+        }
+        return Promise.reject(new Error(`Unexpected read ${path}`));
+      },
+      submitOnce: () => Promise.reject(new Error("Unexpected submit")),
+      uploadApi: () => Promise.reject(new Error("Unexpected upload")),
+      putSigned: () => Promise.reject(
+        new Error("Unexpected signed upload")
+      )
+    };
+
+    runtime = await startServer(env, {
+      transport: withAccountRuntime(transport)
+    });
+    await started;
+    expect(runtime.registry.has(processing.id)).toBe(true);
+    expect(runtime.dependencies.runtimes.listEnabled()).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ record: { id: account.id } })
+      ])
+    );
+
+    await runtime.stop();
+    releaseRead?.();
+    const verified = new SqliteJobRepository(dbPath);
+    expect(verified.findById(processing.id)).toMatchObject({
+      status: "processing",
+      accountId: account.id
+    });
+    verified.close();
+  });
 
   it("starts recovery before listening and closes HTTP and SQLite cleanly", async () => {
     directory = mkdtempSync(join(tmpdir(), "lingjing-index-test-"));

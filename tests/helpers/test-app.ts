@@ -200,6 +200,7 @@ export async function createTestApp(
     }),
     listEnabled: vi.fn(() => loadedRuntimes)
   };
+  const capacity = new CapacityManager(5, 20);
   const { config: configOverrides, ...dependencyOverrides } = overrides;
   const dependencies: AppDependencies = {
     config: { ...config, ...configOverrides },
@@ -246,9 +247,21 @@ export async function createTestApp(
     coordinator: {
       create: vi.fn(),
       resume: vi.fn(),
+      resolveUnknown: vi.fn((
+        accountId: string,
+        jobId: string,
+        action: "charge" | "release"
+      ) => {
+        const resolved = admissions.resolveUnknown(accountId, jobId, action);
+        capacity.releaseJob(jobId);
+        loadedRuntimes.find(
+          (runtime) => runtime.record.id === accountId
+        )?.capacity.releaseJob(jobId);
+        return resolved;
+      }),
       stopPollers: vi.fn()
     },
-    capacity: new CapacityManager(5, 20),
+    capacity,
     recovery: {
       ready: true
     },

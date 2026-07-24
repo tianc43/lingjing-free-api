@@ -281,4 +281,20 @@ describe("CapacityManager", () => {
     });
     active.release();
   });
+
+  it("releases an active job by local job ID idempotently", () => {
+    const manager = new CapacityManager(2);
+    const lease = manager.restore(
+      "job-unknown",
+      "unknown",
+      Date.now() + 60_000
+    );
+
+    manager.releaseJob("job-unknown");
+    manager.releaseJob("job-unknown");
+    lease?.release();
+
+    expect(manager.counts().active).toBe(0);
+    expect(manager.activeJobIds()).toEqual([]);
+  });
 });

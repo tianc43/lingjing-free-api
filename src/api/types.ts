@@ -56,10 +56,11 @@ export interface AdminDependencies {
   >;
   admissions: Pick<
     SqliteAdmissionRepository,
-    "budgetState" | "usageBreakdown" | "resolveUnknown"
+    "budgetState" | "usageBreakdown"
   >;
   runtimes: AdminRuntimeRegistry;
   repository: JobRepository;
+  coordinator: Pick<GenerationCoordinator, "resolveUnknown">;
 }
 
 export interface AppDependencies {

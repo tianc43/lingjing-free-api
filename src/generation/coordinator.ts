@@ -73,7 +73,7 @@ export interface LingjingGenerationCoordinatorOptions {
   scheduler: Pick<AccountScheduler, "start" | "admit" | "restore">;
   admissions: Pick<
     SqliteAdmissionRepository,
-    "charge" | "failAndRelease"
+    "charge" | "failAndRelease" | "resolveUnknown"
   >;
   prepareMedia(input: MediaInput): Promise<PreparedMedia>;
   createUploadService?: (
@@ -506,6 +506,23 @@ implements GenerationCoordinator {
     if (current.status === "processing") {
       await this.pollUntilSettled(current, runtime, lease);
     }
+  }
+
+  resolveUnknown(
+    accountId: string,
+    jobId: string,
+    action: "charge" | "release"
+  ) {
+    const resolved = this.options.admissions.resolveUnknown(
+      accountId,
+      jobId,
+      action
+    );
+    this.options.capacity.releaseJob(jobId);
+    const runtime = this.options.scheduler.restore(resolved.job);
+    runtime.capacity.releaseJob(jobId);
+    this.notifier.notify(jobId);
+    return resolved;
   }
 
   private async persistDiscoveryAndPoll(

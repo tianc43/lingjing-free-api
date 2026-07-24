@@ -29,6 +29,14 @@ export interface GenerationCoordinator {
    */
   create(request: GenerationRequest): Promise<GenerationHandle>;
   resume(jobId: string): Promise<GenerationHandle>;
+  resolveUnknown(
+    accountId: string,
+    jobId: string,
+    action: "charge" | "release"
+  ): {
+    job: JobRecord;
+    state: "reserved" | "charged" | "released";
+  };
   stopPollers(): void;
 }
 

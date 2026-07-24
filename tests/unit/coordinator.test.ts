@@ -507,6 +507,33 @@ describe("LingjingGenerationCoordinator", () => {
     expect(app.capacity.activeJobIds()).not.toContain(handle.job.id);
   });
 
+  it.each(["charge", "release"] as const)(
+    "resolves an unknown job with %s and immediately releases bound capacity",
+    async (action) => {
+      const app = harness();
+      app.addAssetsPerSubmit(2);
+      const handle = await app.coordinator.create(fixtureRequest());
+      expect((await handle.wait(5_000)).status).toBe("unknown");
+      expect(app.capacity.counts().active).toBe(1);
+      expect(app.accountCapacity.counts().active).toBe(1);
+
+      const resolved = app.coordinator.resolveUnknown(
+        handle.job.accountId,
+        handle.job.id,
+        action
+      );
+
+      expect(resolved.job.status).toBe("failed");
+      expect(resolved.state).toBe(
+        action === "charge" ? "charged" : "released"
+      );
+      expect(app.budgetState(handle.job.id)).toBe(resolved.state);
+      expect(app.capacity.counts().active).toBe(0);
+      expect(app.accountCapacity.counts().active).toBe(0);
+      expect(await handle.wait(0)).toMatchObject({ status: "failed" });
+    }
+  );
+
   it("keeps the unknown hold durable across a background discovery read failure", async () => {
     const app = createGenerationHarness({ unknownCapacityHoldMs: 1_000 });
     harnesses.push(app);

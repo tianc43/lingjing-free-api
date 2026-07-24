@@ -59,12 +59,16 @@ export class AccountRuntimeRegistry {
   constructor(private readonly options: AccountRuntimeRegistryOptions) {}
 
   ready(): Promise<void> {
-    this.readyPromise ??= this.loadEnabled();
+    this.readyPromise ??= this.loadAll();
     return this.readyPromise;
   }
 
   listEnabled(): AccountRuntime[] {
-    return [...this.runtimes.values()];
+    return [...this.runtimes.values()].filter(
+      (runtime) =>
+        runtime.record.enabled
+        && runtime.record.healthStatus === "ready"
+    );
   }
 
   require(accountId: string): AccountRuntime {
@@ -75,9 +79,14 @@ export class AccountRuntimeRegistry {
 
   async refresh(accountId: string): Promise<AccountRuntime | null> {
     const record = this.options.accounts.findById(accountId);
-    if (record === null || !record.enabled) {
+    if (record === null) {
       this.runtimes.delete(accountId);
       return null;
+    }
+    const existing = this.runtimes.get(accountId);
+    if (!record.enabled && existing !== undefined) {
+      existing.record = record;
+      return existing;
     }
     return await this.createRuntime(record);
   }
@@ -87,10 +96,10 @@ export class AccountRuntimeRegistry {
     return Promise.resolve();
   }
 
-  private async loadEnabled(): Promise<void> {
+  private async loadAll(): Promise<void> {
     const records = this.options.accounts.list();
     for (const record of records) {
-      if (record.enabled) await this.createRuntime(record);
+      await this.createRuntime(record);
     }
   }
 

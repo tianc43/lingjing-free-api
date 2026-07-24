@@ -186,6 +186,9 @@ describe("chat completions SSE", () => {
           return Promise.resolve(nextHandle);
         }),
         resume: vi.fn(),
+        resolveUnknown: vi.fn(() => {
+          throw new Error("Unexpected unknown resolution");
+        }),
         stopPollers: vi.fn(() => {
           stopPollerCalls += 1;
         })

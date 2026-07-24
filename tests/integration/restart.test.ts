@@ -169,6 +169,9 @@ function coordinatorFor(
     },
     admissions: {
       charge: () => undefined,
+      resolveUnknown: () => {
+        throw new Error("Unexpected unknown resolution");
+      },
       failAndRelease: (jobId, expectedStatuses, errorCode) => (
         repository.transition(jobId, expectedStatuses, {
           status: "failed",

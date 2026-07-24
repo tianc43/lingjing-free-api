@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-const nonNegativeInteger = z.number().int().nonnegative();
+const nonNegativeInteger = z.number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
 
 export const loginBodySchema = z.object({
   password: z.string()

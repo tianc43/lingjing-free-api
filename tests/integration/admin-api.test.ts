@@ -144,6 +144,45 @@ describe("administrator API", () => {
     });
   });
 
+  it("maps only account validation failures to 400", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const originalCreate = fixture.dependencies.accounts.create;
+    fixture.dependencies.accounts.create = () => {
+      throw new TypeError("fixture repository validation detail");
+    };
+
+    const invalid = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts",
+      payload: {
+        name: "Valid schema input",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0
+      }
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).not.toContain("fixture repository validation detail");
+
+    fixture.dependencies.accounts.create = originalCreate;
+    fixture.dependencies.accounts.create = () => {
+      throw new Error("fixture unrelated database failure");
+    };
+    const unrelated = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts",
+      payload: {
+        name: "Another valid schema input",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0
+      }
+    });
+    expect(unrelated.statusCode).toBe(502);
+    expect(unrelated.body).not.toContain("fixture unrelated database failure");
+  });
+
   it("creates, edits, checks, enables, disables, and lists safe account views", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);
@@ -189,6 +228,26 @@ describe("administrator API", () => {
       "updated_at"
     ]);
 
+    const duplicateCreate = await mutate(
+      fixture,
+      cookie,
+      body.csrf_token,
+      {
+        method: "POST",
+        url: "/admin/api/accounts",
+        payload: {
+          name: "Fixture account",
+          priority: 0,
+          daily_point_limit: 0,
+          monthly_point_limit: 0
+        }
+      }
+    );
+    expect(duplicateCreate.statusCode).toBe(409);
+    expect(duplicateCreate.json()).toMatchObject({
+      error: { code: "account_name_conflict" }
+    });
+
     const patched = await mutate(fixture, cookie, body.csrf_token, {
       method: "PATCH",
       url: `/admin/api/accounts/${createdBody.account.id}`,
@@ -207,12 +266,31 @@ describe("administrator API", () => {
       }
     });
 
+    const duplicateRename = await mutate(
+      fixture,
+      cookie,
+      body.csrf_token,
+      {
+        method: "PATCH",
+        url: `/admin/api/accounts/${createdBody.account.id}`,
+        payload: { name: "Legacy account" }
+      }
+    );
+    expect(duplicateRename.statusCode).toBe(409);
+    expect(duplicateRename.json()).toMatchObject({
+      error: { code: "account_name_conflict" }
+    });
+
     for (const payload of [
       { cookie: "fixture-cookie" },
       { auth_directory: "fixture-private-path" },
       { password: "fixture-password" },
       { credentials: "fixture-credentials" },
-      { enabled: true }
+      { enabled: true },
+      { priority: Number.MAX_SAFE_INTEGER + 1 },
+      { priority: -1 },
+      { daily_point_limit: 1.5 },
+      { monthly_point_limit: -1 }
     ]) {
       const rejected = await mutate(fixture, cookie, body.csrf_token, {
         method: "PATCH",
@@ -281,6 +359,7 @@ describe("administrator API", () => {
       totalBalance: 100,
       maxConcurrency: 2
     });
+    await fixture.runtimes.refresh(account.id);
     const admitted = fixture.admissions.reserveOrGet({
       accountId: account.id,
       quotedPoints: 4,
