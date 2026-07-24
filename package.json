@@ -31,6 +31,7 @@
     "test:live:video": "vitest run --config vitest.live.config.ts tests/live/video.live.test.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "11.0.2",
     "@fastify/multipart": "^10.1.0",
     "@fastify/rate-limit": "^11.1.0",
     "@fastify/swagger": "^9.8.1",

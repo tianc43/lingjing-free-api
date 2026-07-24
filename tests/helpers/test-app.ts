@@ -9,6 +9,9 @@ import { buildApp, type AppDependencies } from "../../src/app.js";
 import type { AppConfig } from "../../src/config.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
+import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
+import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "./cleanup.js";
 import type { AccountSnapshot } from "../../src/lingjing/account.js";
 import type { NormalizedModel, SourceType } from "../../src/models/types.js";
@@ -103,7 +106,8 @@ const config: AppConfig = {
   maxTempBytes: 1_073_741_824,
   maxQueuedRequests: 20,
   logLevel: "info",
-  docsEnabled: true
+  docsEnabled: true,
+  adminPassword: null
 };
 
 export interface TestApp {
@@ -116,15 +120,29 @@ export interface TestApp {
   catalogCalls: SourceType[];
   catalogRefreshes: boolean[];
   repository: SqliteJobRepository;
+  accounts: SqliteAccountRepository;
+  admissions: SqliteAdmissionRepository;
+  runtimes: {
+    refresh: ReturnType<typeof vi.fn>;
+    listEnabled: ReturnType<typeof vi.fn>;
+  };
   capturedPinoOutput(): string;
   close(): Promise<void>;
 }
 
+type TestAppOverrides = Omit<Partial<AppDependencies>, "config"> & {
+  config?: Partial<AppConfig>;
+};
+
 export async function createTestApp(
-  overrides: Partial<AppDependencies> = {}
+  overrides: TestAppOverrides = {}
 ): Promise<TestApp> {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-api-test-"));
-  const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
+  const store = new SqliteStore(join(directory, "jobs.sqlite"));
+  const repository = new SqliteJobRepository(store);
+  const accounts = new SqliteAccountRepository(store);
+  const admissions = new SqliteAdmissionRepository(store);
+  accounts.ensureLegacyAccount("data/auth");
   let logOutput = "";
   const destination = new Writable({
     write(chunk, _encoding, callback) {
@@ -142,8 +160,49 @@ export async function createTestApp(
   };
   const catalogCalls: SourceType[] = [];
   const catalogRefreshes: boolean[] = [];
+  const loadedRuntimes: Array<{
+    record: NonNullable<ReturnType<SqliteAccountRepository["findById"]>>;
+    session: {
+      describe(): {
+        mode: string;
+        source: string;
+        sourceMtimeMs: number | null;
+        hasCsrf: boolean;
+      };
+    };
+    capacity: CapacityManager;
+  }> = [];
+  const runtimes = {
+    refresh: vi.fn((accountId: string) => {
+      const record = accounts.findById(accountId);
+      if (record === null || !record.enabled) return Promise.resolve(null);
+      const runtime = {
+        record,
+        session: {
+          describe: () => ({
+            mode: "browser-state",
+            source: "fixture-admin-session",
+            sourceMtimeMs: 123,
+            hasCsrf: true
+          })
+        },
+        capacity: new CapacityManager(
+          record.maxConcurrency ?? config.maxConcurrency,
+          config.maxQueuedRequests
+        )
+      };
+      const existing = loadedRuntimes.findIndex(
+        (item) => item.record.id === accountId
+      );
+      if (existing === -1) loadedRuntimes.push(runtime);
+      else loadedRuntimes[existing] = runtime;
+      return Promise.resolve(runtime);
+    }),
+    listEnabled: vi.fn(() => loadedRuntimes)
+  };
+  const { config: configOverrides, ...dependencyOverrides } = overrides;
   const dependencies: AppDependencies = {
-    config,
+    config: { ...config, ...configOverrides },
     logger: createLogger("info", destination),
     session: {
       mode: "browser-state",
@@ -181,6 +240,9 @@ export async function createTestApp(
       resolve: vi.fn()
     },
     repository,
+    accounts,
+    admissions,
+    runtimes,
     coordinator: {
       create: vi.fn(),
       resume: vi.fn(),
@@ -201,7 +263,7 @@ export async function createTestApp(
         new Error("Fixture output fetch is not configured")
       )
     },
-    ...overrides
+    ...dependencyOverrides
   };
   const app = await buildApp(dependencies);
   return {
@@ -211,10 +273,14 @@ export async function createTestApp(
     catalogCalls,
     catalogRefreshes,
     repository,
+    accounts,
+    admissions,
+    runtimes,
     capturedPinoOutput: () => logOutput,
     close: async () => {
       await app.close();
       repository.close();
+      store.close();
       removeTestDirectory(directory);
     }
   };

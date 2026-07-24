@@ -21,6 +21,18 @@ describe("parseConfig", () => {
       .toBe("./private-data");
   });
 
+  it("enables administrator access only for a trimmed non-empty password", () => {
+    expect(parseConfig(validEnv).adminPassword).toBeNull();
+    expect(parseConfig({
+      ...validEnv,
+      LINGJING_ADMIN_PASSWORD: "   "
+    }).adminPassword).toBeNull();
+    expect(parseConfig({
+      ...validEnv,
+      LINGJING_ADMIN_PASSWORD: "  fixture-admin-password  "
+    }).adminPassword).toBe("fixture-admin-password");
+  });
+
   it("rejects the sample key and invalid concurrency", () => {
     expect(() => parseConfig({ LINGJING_API_KEY: "change-me" })).toThrow();
     expect(() => parseConfig({

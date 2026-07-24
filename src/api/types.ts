@@ -1,4 +1,9 @@
 import type { Logger } from "pino";
+import type { SqliteAccountRepository } from "../accounts/sqlite-account-repository.js";
+import type {
+  SqliteAdmissionRepository
+} from "../accounts/sqlite-admission-repository.js";
+import type { AccountRecord } from "../accounts/types.js";
 import type { AppConfig } from "../config.js";
 import type { GenerationCoordinator } from "../generation/types.js";
 import type { CapacityManager } from "../jobs/capacity.js";
@@ -30,6 +35,33 @@ export type JobRepository = Pick<
   "findById" | "list"
 >;
 
+export interface AdminRuntimeRegistry {
+  listEnabled(): AdminRuntimeView[];
+  refresh(
+    accountId: string
+  ): Promise<AdminRuntimeView | null>;
+}
+
+export interface AdminRuntimeView {
+  record: AccountRecord;
+  session: Pick<SessionProvider, "describe">;
+  capacity: Pick<CapacityManager, "counts">;
+}
+
+export interface AdminDependencies {
+  config: AppConfig;
+  accounts: Pick<
+    SqliteAccountRepository,
+    "create" | "update" | "findById" | "list"
+  >;
+  admissions: Pick<
+    SqliteAdmissionRepository,
+    "budgetState" | "usageBreakdown" | "resolveUnknown"
+  >;
+  runtimes: AdminRuntimeRegistry;
+  repository: JobRepository;
+}
+
 export interface AppDependencies {
   config: AppConfig;
   logger: Logger;
@@ -38,6 +70,9 @@ export interface AppDependencies {
   account: Pick<AccountService, "describe">;
   catalog: ModelCatalog;
   repository: JobRepository;
+  accounts: AdminDependencies["accounts"];
+  admissions: AdminDependencies["admissions"];
+  runtimes: AdminRuntimeRegistry;
   coordinator: GenerationCoordinator;
   capacity: Pick<CapacityManager, "counts">;
   recovery: RecoveryService;

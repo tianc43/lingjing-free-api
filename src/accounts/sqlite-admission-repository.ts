@@ -7,6 +7,15 @@ import type { SqliteStore } from "../persistence/sqlite-store.js";
 import { budgetWindows } from "./budget.js";
 import type { AdmissionInput, AdmissionResult } from "./types.js";
 
+export type BudgetState = "reserved" | "charged" | "released";
+
+export interface BudgetUsageBreakdown {
+  dayChargedPoints: number;
+  monthChargedPoints: number;
+  dayReservedPoints: number;
+  monthReservedPoints: number;
+}
+
 interface JobRow {
   id: string;
   kind: "image" | "video";
@@ -246,6 +255,100 @@ export class SqliteAdmissionRepository {
       } | undefined;
       if (current === undefined) throw new Error(`Budget entry for job ${jobId} does not exist`);
       if (current.state === "released") throw new Error(`Budget entry for job ${jobId} is released`);
+    });
+  }
+
+  budgetState(jobId: string): BudgetState | null {
+    return this.store.read((database) => {
+      const row = database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ?"
+      ).get(jobId) as { state: BudgetState } | undefined;
+      return row?.state ?? null;
+    });
+  }
+
+  usageBreakdown(
+    accountId: string,
+    windows: { dayWindowStart: number; monthWindowStart: number }
+  ): BudgetUsageBreakdown {
+    return this.store.read((database) => {
+      const row = database.prepare(`
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN day_window_start = @dayWindowStart AND state = 'charged'
+            THEN quoted_points ELSE 0 END), 0) AS day_charged_points,
+          COALESCE(SUM(CASE
+            WHEN month_window_start = @monthWindowStart AND state = 'charged'
+            THEN quoted_points ELSE 0 END), 0) AS month_charged_points,
+          COALESCE(SUM(CASE
+            WHEN day_window_start = @dayWindowStart AND state = 'reserved'
+            THEN quoted_points ELSE 0 END), 0) AS day_reserved_points,
+          COALESCE(SUM(CASE
+            WHEN month_window_start = @monthWindowStart AND state = 'reserved'
+            THEN quoted_points ELSE 0 END), 0) AS month_reserved_points
+        FROM budget_entries
+        WHERE account_id = @accountId
+      `).get({ accountId, ...windows }) as {
+        day_charged_points: number;
+        month_charged_points: number;
+        day_reserved_points: number;
+        month_reserved_points: number;
+      };
+      return {
+        dayChargedPoints: row.day_charged_points,
+        monthChargedPoints: row.month_charged_points,
+        dayReservedPoints: row.day_reserved_points,
+        monthReservedPoints: row.month_reserved_points
+      };
+    });
+  }
+
+  resolveUnknown(
+    accountId: string,
+    jobId: string,
+    action: "charge" | "release"
+  ): { state: BudgetState; job: JobRecord } {
+    return this.store.immediate((database) => {
+      const current = this.findJob(database, jobId);
+      if (
+        current === undefined
+        || current.account_id !== accountId
+        || current.status !== "unknown"
+      ) {
+        throw new Error("Unknown job resolution conflict");
+      }
+      const budget = database.prepare(
+        "SELECT state FROM budget_entries WHERE job_id = ? AND account_id = ?"
+      ).get(jobId, accountId) as { state: BudgetState } | undefined;
+      if (
+        budget === undefined
+        || (budget.state !== "reserved" && budget.state !== "charged")
+      ) {
+        throw new Error("Unknown job resolution conflict");
+      }
+      const state: BudgetState = action === "charge" ? "charged" : "released";
+      const now = Date.now();
+      database.prepare(`
+        UPDATE budget_entries
+        SET state = ?, updated_at = ?
+        WHERE job_id = ? AND account_id = ?
+      `).run(state, now, jobId, accountId);
+      database.prepare(`
+        UPDATE jobs
+        SET status = 'failed',
+            failed_at = ?,
+            unknown_hold_until = NULL,
+            error_code = 'admin_resolved_unknown',
+            updated_at = ?
+        WHERE id = ?
+      `).run(now, now, jobId);
+      database.prepare(`
+        INSERT INTO job_status_history(job_id, status, created_at)
+        VALUES (?, 'failed', ?)
+      `).run(jobId, now);
+      const resolved = this.findJob(database, jobId);
+      if (resolved === undefined) throw new Error("Resolved job could not be read");
+      return { state, job: jobFromRow(resolved) };
     });
   }
 

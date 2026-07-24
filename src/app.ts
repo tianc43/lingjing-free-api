@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
+import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -11,6 +12,7 @@ import Fastify, {
   type FastifySchema
 } from "fastify";
 import { isAuthorized } from "./api/auth.js";
+import { registerAdminRoutes } from "./admin/routes.js";
 import { registerErrorHandler } from "./api/error-handler.js";
 import { registerAccountRoutes } from "./api/routes/account.js";
 import { registerChatRoutes } from "./api/routes/chat.js";
@@ -43,6 +45,11 @@ function rateLimitKey(request: FastifyRequest): string {
     .digest("hex");
 }
 
+function adminPath(url: string): boolean {
+  const path = url.split("?", 1)[0] ?? "";
+  return path === "/admin" || path.startsWith("/admin/");
+}
+
 export async function buildApp(
   dependencies: AppDependencies
 ): Promise<FastifyInstance> {
@@ -61,6 +68,14 @@ export async function buildApp(
 
   registerErrorHandler(app);
   app.setNotFoundHandler((request) => {
+    if (adminPath(request.url)) {
+      throw new AppError(
+        404,
+        "invalid_request_error",
+        "route_not_found",
+        "Route not found"
+      );
+    }
     if (
       !isAuthorized(
         request.headers.authorization,
@@ -76,6 +91,7 @@ export async function buildApp(
       "Route not found"
     );
   });
+  await app.register(cookie);
   if (dependencies.config.docsEnabled) {
     await app.register(swagger, {
       openapi: {
@@ -120,6 +136,7 @@ export async function buildApp(
     });
   }
 
+  await registerAdminRoutes(app, dependencies);
   registerSystemRoutes(app, dependencies);
   await app.register(async function protectedApi(protectedApp) {
     protectedApp.addHook("onRequest", (request): Promise<void> => {

@@ -60,6 +60,11 @@ export function sanitizeError(
 
 export const errors = {
   authentication: () => new AppError(401, "authentication_error", "invalid_api_key", "Invalid API key"),
+  adminAuthentication: () => new AppError(401, "authentication_error", "admin_authentication_required", "Administrator authentication required"),
+  adminCsrf: () => new AppError(403, "permission_denied", "invalid_csrf_token", "Invalid administrator CSRF token"),
+  adminConflict: () => new AppError(409, "invalid_request_error", "admin_state_conflict", "Administrator action conflicts with current state"),
+  accountNotFound: () => new AppError(404, "invalid_request_error", "account_not_found", "Account not found", "id"),
+  adminJobNotFound: () => new AppError(404, "invalid_request_error", "job_not_found", "Job not found", "id"),
   loginRequired: () => new AppError(503, "login_required", "lingjing_session_expired", "Lingjing login required"),
   csrfExpired: () => new AppError(503, "session_refresh_required", "lingjing_csrf_expired", "Lingjing session refresh required"),
   permissionDenied: () => new AppError(403, "permission_denied", "lingjing_permission_denied", "Lingjing permission denied"),

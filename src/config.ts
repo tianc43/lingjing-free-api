@@ -4,6 +4,7 @@ export interface AppConfig {
   host: string;
   port: number;
   apiKey: string;
+  adminPassword: string | null;
   sessionMode: "browser-state" | "cookie-file";
   storageStatePath: string;
   cookieFilePath: string;
@@ -34,6 +35,7 @@ const configSchema = z.object({
   HOST: z.string().default("127.0.0.1"),
   PORT: positiveInteger.default(8000),
   LINGJING_API_KEY: z.string().min(1),
+  LINGJING_ADMIN_PASSWORD: z.string().optional().default(""),
   SESSION_MODE: z.enum(["browser-state", "cookie-file"]).default("browser-state"),
   LINGJING_STORAGE_STATE: z.string().default("./data/auth/storage-state.json"),
   LINGJING_COOKIE_FILE: z.string().default("./data/auth/cookie.txt"),
@@ -84,6 +86,7 @@ export function parseConfig(env: NodeJS.ProcessEnv | Record<string, string | und
     host: config.HOST,
     port: config.PORT,
     apiKey: config.LINGJING_API_KEY,
+    adminPassword: config.LINGJING_ADMIN_PASSWORD.trim() || null,
     sessionMode: config.SESSION_MODE,
     storageStatePath: config.LINGJING_STORAGE_STATE,
     cookieFilePath: config.LINGJING_COOKIE_FILE,

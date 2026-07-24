@@ -20,6 +20,7 @@ import {
   scanSecrets
 } from "../helpers/secret-scan.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
+import { createTestApp } from "../helpers/test-app.js";
 
 const directories: string[] = [];
 
@@ -371,6 +372,52 @@ describe("security regression", () => {
         "apiKey: fixture-downstream"
       ].join("\n")
     }])).toEqual([]);
+  });
+
+  it("keeps administrator credentials, cookies, CSRF and bodies out of logs", async () => {
+    const password = "fixture-admin-password";
+    const requestSecret = "fixture-admin-body-secret";
+    const fixture = await createTestApp({
+      config: { adminPassword: password }
+    });
+    try {
+      const login = await fixture.app.inject({
+        method: "POST",
+        url: "/admin/api/login",
+        payload: { password }
+      });
+      const setCookie = login.headers["set-cookie"];
+      const sessionId = (
+        Array.isArray(setCookie) ? setCookie[0] : setCookie
+      )?.split(/[=;]/u)[1] ?? "";
+      const csrfToken = login.json<{ csrf_token: string }>().csrf_token;
+      const rejected = await fixture.app.inject({
+        method: "POST",
+        url: "/admin/api/accounts",
+        headers: {
+          cookie: `lingjing_admin_session=${sessionId}`,
+          "x-csrf-token": csrfToken
+        },
+        payload: {
+          name: requestSecret,
+          priority: 0,
+          daily_point_limit: 0,
+          monthly_point_limit: 0,
+          cookie: "fixture-forbidden-cookie"
+        }
+      });
+      expect(rejected.statusCode).toBe(400);
+      assertNoSensitiveValues(
+        fixture.capturedPinoOutput(),
+        [password, requestSecret, sessionId, csrfToken]
+      );
+      assertNoSensitiveValues(
+        rejected.body,
+        [password, requestSecret, sessionId, csrfToken]
+      );
+    } finally {
+      await fixture.close();
+    }
   });
 
   it("builds and scans a fresh dist plus tracked files, package output and logs", () => {
