@@ -8,6 +8,6 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: resolve(import.meta.dirname, "../dist/admin"),
-    emptyOutDir: false
+    emptyOutDir: true
   }
 });

@@ -6,7 +6,6 @@ export default defineConfig({
     environment: "node",
     restoreMocks: true,
     clearMocks: true,
-    fileParallelism: false,
     testTimeout: 10_000,
     coverage: {
       provider: "v8",

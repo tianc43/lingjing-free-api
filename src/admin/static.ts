@@ -14,11 +14,11 @@ const ADMIN_CLIENT_ROUTES = new Set([
 
 export async function registerAdminStatic(
   app: FastifyInstance,
-  enabled: boolean
+  enabled: boolean,
+  adminRoot: string = resolve(process.cwd(), "dist", "admin")
 ): Promise<void> {
-  const output = resolve(process.cwd(), "dist", "admin");
-  const index = join(output, "index.html");
-  const assets = join(output, "assets");
+  const index = join(adminRoot, "index.html");
+  const assets = join(adminRoot, "assets");
   if (!enabled || !existsSync(index) || !existsSync(assets)) return;
 
   await app.register(fastifyStatic, {

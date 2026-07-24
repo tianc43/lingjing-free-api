@@ -139,7 +139,11 @@ export async function buildApp(
   }
 
   await registerAdminRoutes(app, dependencies);
-  await registerAdminStatic(app, dependencies.config.adminPassword !== null);
+  await registerAdminStatic(
+    app,
+    dependencies.config.adminPassword !== null,
+    dependencies.adminStaticRoot
+  );
   registerSystemRoutes(app, dependencies);
   await app.register(async function protectedApi(protectedApp) {
     protectedApp.addHook("onRequest", (request): Promise<void> => {

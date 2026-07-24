@@ -65,6 +65,7 @@ export interface AdminDependencies {
 
 export interface AppDependencies {
   config: AppConfig;
+  adminStaticRoot?: string;
   logger: Logger;
   session: SessionProvider;
   transport: LingjingTransport;
