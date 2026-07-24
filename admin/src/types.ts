@@ -41,6 +41,7 @@ export interface Overview {
 }
 
 export interface Settings {
+  shared_api_key_configured: boolean;
   max_concurrency: number;
   max_queued_requests: number;
   unknown_capacity_hold_ms: number;

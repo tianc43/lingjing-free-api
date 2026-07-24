@@ -26,7 +26,7 @@ export class AdminApi {
 
   async session(): Promise<boolean> {
     try {
-      const response = await this.request<{ csrf_token: string }>("/session");
+    const response = await this.request<{ csrf_token: string }>("/session", {}, false);
       this.sessionNonce = response.csrf_token;
       return true;
     } catch (cause) {
@@ -54,8 +54,11 @@ export class AdminApi {
     const action = enabled ? "enable" : "disable";
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(account.id)}/${action}`, { method: "POST" })).account;
   }
+  async checkAccount(id: string): Promise<Account> {
+    return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}/check`, { method: "POST" })).account;
+  }
 
-  private async request<T>(path: string, options: { method?: string; body?: RequestBody; csrf?: boolean } = {}): Promise<T> {
+  private async request<T>(path: string, options: { method?: string; body?: RequestBody; csrf?: boolean } = {}, notifyUnauthorized = true): Promise<T> {
     const method = options.method ?? "GET";
     const headers = new Headers({ Accept: "application/json" });
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
@@ -68,7 +71,7 @@ export class AdminApi {
       credentials: "same-origin",
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
     });
-    if (response.status === 401) {
+    if (response.status === 401 && notifyUnauthorized) {
       this.sessionNonce = null;
       this.onUnauthorized();
     }

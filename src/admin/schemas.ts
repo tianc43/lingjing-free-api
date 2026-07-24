@@ -160,5 +160,6 @@ export const settingsResponseSchema = z.object({
   unknown_capacity_hold_ms: nonNegativeInteger,
   image_wait_timeout_ms: nonNegativeInteger,
   video_wait_timeout_ms: nonNegativeInteger,
-  docs_enabled: z.boolean()
+  docs_enabled: z.boolean(),
+  shared_api_key_configured: z.boolean()
 }).strict();

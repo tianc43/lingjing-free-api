@@ -406,6 +406,14 @@ describe("administrator API", () => {
       ]);
     }
 
+    const settings = await fixture.app.inject({
+      url: "/admin/api/settings",
+      headers: { cookie }
+    });
+    expect(settings.json()).toMatchObject({
+      shared_api_key_configured: true
+    });
+
     const detail = await fixture.app.inject({
       url: `/admin/api/jobs/${admitted.job.id}`,
       headers: { cookie }

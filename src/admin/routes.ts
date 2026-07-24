@@ -643,7 +643,8 @@ export async function registerAdminRoutes(
       unknown_capacity_hold_ms: dependencies.config.unknownCapacityHoldMs,
       image_wait_timeout_ms: dependencies.config.imageWaitTimeoutMs,
       video_wait_timeout_ms: dependencies.config.videoWaitTimeoutMs,
-      docs_enabled: dependencies.config.docsEnabled
+      docs_enabled: dependencies.config.docsEnabled,
+      shared_api_key_configured: dependencies.config.apiKey.trim().length > 0
     }));
   }, { prefix: "/admin/api" });
 }
