@@ -256,7 +256,10 @@ ON budget_entries(account_id, month_window_start, state);
 ```
 
 Insert `legacy`, set every existing null `jobs.account_id` to `legacy`, and
-create zero-point charged budget entries for existing jobs. Keep the physical
+create zero-point budget entries for existing jobs according to durable state:
+`queued` is `reserved`, `failed` is `released`, and any status that may already
+have reached upstream submission is `charged`. Historical zero-point values
+without quote provenance remain explicitly unknown. Keep the physical account
 column nullable for SQLite additive migration safety.
 
 - [ ] **Step 4: Implement account repository validation and mapping**
