@@ -749,7 +749,7 @@ authentication. Never log submitted passwords or tokens.
 
 - [ ] **Step 4: Write admin API integration tests that fail**
 
-Build an app with `LINGJING_ADMIN_PASSWORD=test-admin-password`. Test:
+Build an app with `LINGJING_ADMIN_PASSWORD=fixture-admin-password`. Test:
 
 ```ts
 POST /admin/api/login
