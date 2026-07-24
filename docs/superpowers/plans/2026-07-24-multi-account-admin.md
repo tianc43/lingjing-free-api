@@ -1063,7 +1063,7 @@ non-root runtime user, and existing `./data:/app/data` volume.
 Document:
 
 ```powershell
-$env:LINGJING_ADMIN_PASSWORD = '<strong local password>'
+$env:LINGJING_ADMIN_PASSWORD = 'change-me'
 docker compose up -d --build
 Start-Process 'http://127.0.0.1:8000/admin/'
 npm run login -- --account-id acct_0123456789abcdef01234567
