@@ -246,6 +246,39 @@ def _url_extension(url):
     return _safe_extension(Path(parsed.path).suffix)
 
 
+def _file_identity(path):
+    metadata = os.stat(path, follow_symlinks=False)
+    return metadata.st_dev, metadata.st_ino
+
+
+def _safe_file_identity(path):
+    if path is None:
+        return None
+    try:
+        return _file_identity(path)
+    except BaseException:
+        return None
+
+
+def _unlink_quietly(path):
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except BaseException:
+        pass
+
+
+def _rollback_publication(temporary, destination, expected_identity=None):
+    identity = expected_identity or _safe_file_identity(temporary)
+    if (
+        identity is not None
+        and _safe_file_identity(destination) == identity
+    ):
+        _unlink_quietly(destination)
+    _unlink_quietly(temporary)
+
+
 def _download(url, destination_stem, timeout):
     extension = _url_extension(url)
     request = urllib.request.Request(
@@ -254,7 +287,6 @@ def _download(url, destination_stem, timeout):
     destination = None
     temporary = None
     descriptor = None
-    published = False
     try:
         with _open_without_redirects(request, timeout) as response:
             if not extension:
@@ -288,14 +320,28 @@ def _download(url, destination_stem, timeout):
                     target.write(chunk)
                 target.flush()
                 os.fsync(target.fileno())
+            publication_identity = None
             try:
-                os.link(temporary, destination)
-            except FileExistsError:
-                raise ClientError("Output file already exists") from None
-            except (AttributeError, NotImplementedError, OSError):
-                raise ClientError("Download failed") from None
-            published = True
-            return destination
+                try:
+                    os.link(temporary, destination)
+                except FileExistsError:
+                    raise ClientError(
+                        "Output file already exists"
+                    ) from None
+                except (AttributeError, NotImplementedError, OSError):
+                    raise ClientError("Download failed") from None
+                publication_identity = _file_identity(temporary)
+                temporary.unlink()
+                temporary = None
+                return destination
+            except BaseException:
+                _rollback_publication(
+                    temporary,
+                    destination,
+                    publication_identity,
+                )
+                temporary = None
+                raise
     except urllib.error.HTTPError as error:
         if 300 <= error.code < 400:
             error.close()
@@ -307,14 +353,12 @@ def _download(url, destination_stem, timeout):
         raise ClientError("Download failed") from None
     finally:
         if descriptor is not None:
-            os.close(descriptor)
-        if temporary is not None:
             try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                if published:
-                    destination.unlink(missing_ok=True)
-                raise ClientError("Download failed") from None
+                os.close(descriptor)
+            except BaseException:
+                pass
+        if temporary is not None:
+            _unlink_quietly(temporary)
 
 
 def _parameters_object(value):

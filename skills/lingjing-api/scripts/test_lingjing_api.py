@@ -252,6 +252,21 @@ class FixtureHandler(BaseHTTPRequestHandler):
         pass
 
 
+class BytesResponse:
+    def __init__(self, body=b"fixture"):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, size):
+        body, self.body = self.body, b""
+        return body
+
+
 class ApiClientTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -541,7 +556,7 @@ class ApiClientTest(unittest.TestCase):
             )
         self.assertEqual(existing.read_bytes(), b"keep-me")
 
-    def test_temp_cleanup_failure_never_removes_preexisting_destination(self):
+    def test_temp_cleanup_failure_preserves_original_and_destination(self):
         existing = self.output_dir / "output-01.png"
         existing.write_bytes(b"keep-me")
         real_unlink = Path.unlink
@@ -552,7 +567,7 @@ class ApiClientTest(unittest.TestCase):
             return real_unlink(path, missing_ok=missing_ok)
 
         with patch.object(Path, "unlink", new=fail_temporary_unlink):
-            with self.assertRaisesRegex(ClientError, "Download failed"):
+            with self.assertRaisesRegex(ClientError, "already exists"):
                 self.client.download_task(
                     "job_no_extension", self.output_dir
                 )
@@ -649,6 +664,89 @@ class ApiClientTest(unittest.TestCase):
                     "job_two_outputs", self.output_dir
                 )
         self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_publication_window_interrupt_removes_owned_final_and_temp(self):
+        real_link = os.link
+
+        def interrupt_after_link(source, destination):
+            real_link(source, destination)
+            raise KeyboardInterrupt("publication interrupted")
+
+        with patch.object(
+            lingjing_api,
+            "_open_without_redirects",
+            return_value=BytesResponse(),
+        ), patch.object(os, "link", side_effect=interrupt_after_link):
+            with self.assertRaisesRegex(
+                KeyboardInterrupt, "publication interrupted"
+            ):
+                lingjing_api._download(
+                    "http://example.invalid/output.png",
+                    self.output_dir / "output-01",
+                    1,
+                )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_publication_interrupt_preserves_concurrent_regular_replacement(self):
+        destination = self.output_dir / "output-01.png"
+        real_link = os.link
+
+        def replace_after_link(source, linked_destination):
+            real_link(source, linked_destination)
+            Path(linked_destination).unlink()
+            Path(linked_destination).write_bytes(b"replacement")
+            raise KeyboardInterrupt("publication interrupted")
+
+        with patch.object(
+            lingjing_api,
+            "_open_without_redirects",
+            return_value=BytesResponse(),
+        ), patch.object(os, "link", side_effect=replace_after_link):
+            with self.assertRaisesRegex(
+                KeyboardInterrupt, "publication interrupted"
+            ):
+                lingjing_api._download(
+                    "http://example.invalid/output.png",
+                    self.output_dir / "output-01",
+                    1,
+                )
+        self.assertEqual(destination.read_bytes(), b"replacement")
+        self.assertEqual(list(self.output_dir.glob("*.tmp")), [])
+
+    def test_publication_interrupt_preserves_concurrent_symlink_replacement(self):
+        destination = self.output_dir / "output-01.png"
+        external = self.output_dir / "external.bin"
+        external.write_bytes(b"outside")
+        probe = self.output_dir / "symlink-probe"
+        try:
+            probe.symlink_to(external)
+        except OSError as error:
+            self.skipTest(f"Symlinks unavailable: {error}")
+        probe.unlink()
+        real_link = os.link
+
+        def replace_after_link(source, linked_destination):
+            real_link(source, linked_destination)
+            Path(linked_destination).unlink()
+            Path(linked_destination).symlink_to(external)
+            raise KeyboardInterrupt("publication interrupted")
+
+        with patch.object(
+            lingjing_api,
+            "_open_without_redirects",
+            return_value=BytesResponse(),
+        ), patch.object(os, "link", side_effect=replace_after_link):
+            with self.assertRaisesRegex(
+                KeyboardInterrupt, "publication interrupted"
+            ):
+                lingjing_api._download(
+                    "http://example.invalid/output.png",
+                    self.output_dir / "output-01",
+                    1,
+                )
+        self.assertTrue(destination.is_symlink())
+        self.assertEqual(external.read_bytes(), b"outside")
+        self.assertEqual(list(self.output_dir.glob("*.tmp")), [])
 
     def test_malformed_task_schema_is_sanitized_for_task_wait_and_download(self):
         task_ids = (
