@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -19,7 +20,7 @@ from pathlib import Path
 
 PUBLIC_OPERATIONS = {
     "GET": (
-        re.compile(r"^/models(?:\?.*)?$"),
+        re.compile(r"^/models$"),
         re.compile(r"^/tasks/job_[A-Za-z0-9_]+$"),
     ),
     "POST": (
@@ -36,6 +37,10 @@ class ClientError(Exception):
 
 
 class TaskTimeoutError(ClientError):
+    pass
+
+
+class RequestTimeoutError(ClientError):
     pass
 
 
@@ -120,7 +125,11 @@ def decode_response(request, timeout, api_key, additional_secrets=()):
         code = _redact(code, secrets)
         message = _redact(message, secrets)
         raise ApiError(error.code, code, message) from None
-    except (urllib.error.URLError, TimeoutError):
+    except TimeoutError:
+        raise RequestTimeoutError("Request timed out") from None
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            raise RequestTimeoutError("Request timed out") from None
         raise ClientError("Request failed") from None
     try:
         return json.loads(body.decode("utf-8"))
@@ -171,6 +180,62 @@ def _validated_output_url(url):
     return parsed
 
 
+def _normalized_base_url(base_url):
+    invalid = ClientError("LINGJING_BASE_URL is invalid")
+    if not isinstance(base_url, str) or any(
+        ord(character) < 0x21 or ord(character) == 0x7F
+        for character in base_url
+    ):
+        raise invalid
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise invalid from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"/v1", "/v1/"}
+    ):
+        raise invalid
+    if port is not None and not 0 < port < 65536:
+        raise invalid
+    return urllib.parse.SplitResult(
+        parsed.scheme,
+        parsed.netloc,
+        "/v1",
+        "",
+        "",
+    )
+
+
+def _task_response(payload, job_id):
+    invalid = ClientError("The API returned an invalid task response")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("id") != job_id
+        or not isinstance(payload.get("status"), str)
+        or not payload["status"].strip()
+    ):
+        raise invalid
+    if "outputs" in payload:
+        outputs = payload["outputs"]
+        if not isinstance(outputs, list):
+            raise invalid
+        for output in outputs:
+            if (
+                not isinstance(output, dict)
+                or not isinstance(output.get("url"), str)
+                or not output["url"].strip()
+            ):
+                raise invalid
+    return payload
+
+
 def _safe_extension(value):
     value = value.lower()
     return value if re.fullmatch(r"\.[a-z0-9]{1,10}", value) else ""
@@ -187,7 +252,9 @@ def _download(url, destination_stem, timeout):
         url, headers={"Accept": "*/*"}, method="GET"
     )
     destination = None
-    created = False
+    temporary = None
+    descriptor = None
+    published = False
     try:
         with _open_without_redirects(request, timeout) as response:
             if not extension:
@@ -200,11 +267,16 @@ def _download(url, destination_stem, timeout):
                 extension = _safe_extension(guessed) or ".bin"
             destination = Path(f"{destination_stem}{extension}")
             try:
-                target = open(destination, "xb")
-            except FileExistsError:
-                raise ClientError("Output file already exists") from None
-            created = True
-            with target:
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{destination.stem}-",
+                    suffix=".tmp",
+                    dir=destination.parent,
+                )
+                temporary = Path(temporary_name)
+            except OSError:
+                raise ClientError("Download failed") from None
+            with os.fdopen(descriptor, "wb") as target:
+                descriptor = None
                 total = 0
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -214,22 +286,35 @@ def _download(url, destination_stem, timeout):
                     if total > MAX_DOWNLOAD_BYTES:
                         raise ClientError("Output exceeds download size limit")
                     target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                raise ClientError("Output file already exists") from None
+            except (AttributeError, NotImplementedError, OSError):
+                raise ClientError("Download failed") from None
+            published = True
             return destination
     except urllib.error.HTTPError as error:
-        if created:
-            destination.unlink(missing_ok=True)
         if 300 <= error.code < 400:
             error.close()
             raise ClientError("Download redirects are not allowed") from None
         raise ClientError("Download failed") from None
     except ClientError:
-        if created:
-            destination.unlink(missing_ok=True)
         raise
     except Exception:
-        if created:
-            destination.unlink(missing_ok=True)
         raise ClientError("Download failed") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                if published:
+                    destination.unlink(missing_ok=True)
+                raise ClientError("Download failed") from None
 
 
 def _parameters_object(value):
@@ -246,12 +331,10 @@ def _parameters_object(value):
 
 class ApiClient:
     def __init__(self, base_url, api_key, timeout=30):
-        parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ClientError("LINGJING_BASE_URL must be an HTTP(S) URL")
+        self._base_url = _normalized_base_url(base_url)
         if not api_key:
             raise ClientError("LINGJING_API_KEY is required")
-        self.base_url = base_url.rstrip("/")
+        self.base_url = urllib.parse.urlunsplit(self._base_url)
         self.api_key = _validated_auth_header(
             api_key, "LINGJING_API_KEY"
         )
@@ -264,9 +347,34 @@ class ApiClient:
         payload=None,
         extra_headers=None,
         timeout=None,
+        query=None,
     ):
         patterns = PUBLIC_OPERATIONS.get(method, ())
         if not any(pattern.fullmatch(path) for pattern in patterns):
+            raise ClientError("Public operation is not allowed")
+        if query and (method, path) != ("GET", "/models"):
+            raise ClientError("Public operation is not allowed")
+        query_string = urllib.parse.urlencode(query or {})
+        final_path = f"/v1{path}"
+        url = urllib.parse.urlunsplit(
+            (
+                self._base_url.scheme,
+                self._base_url.netloc,
+                final_path,
+                query_string,
+                "",
+            )
+        )
+        try:
+            final = urllib.parse.urlsplit(url)
+        except ValueError:
+            raise ClientError("Public operation is not allowed") from None
+        if (
+            final.scheme != self._base_url.scheme
+            or final.netloc != self._base_url.netloc
+            or final.path != final_path
+            or final.fragment
+        ):
             raise ClientError("Public operation is not allowed")
         headers = {"Accept": "application/json", "Authorization": f"Bearer {self.api_key}"}
         if extra_headers:
@@ -276,7 +384,7 @@ class ApiClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
-            self.base_url + path, data=body, headers=headers, method=method
+            url, data=body, headers=headers, method=method
         )
         additional_secrets = [self.base_url]
         if extra_headers:
@@ -294,13 +402,13 @@ class ApiClient:
             query["type"] = media_type
         if mode:
             query["mode"] = mode
-        suffix = "?" + urllib.parse.urlencode(query) if query else ""
-        return self._request("GET", "/models" + suffix)
+        return self._request("GET", "/models", query=query)
 
     def task(self, job_id, timeout=None):
         if not JOB_ID_PATTERN.fullmatch(job_id):
             raise ClientError("Invalid task identifier")
-        return self._request("GET", f"/tasks/{job_id}", timeout=timeout)
+        result = self._request("GET", f"/tasks/{job_id}", timeout=timeout)
+        return _task_response(result, job_id)
 
     def generate_image(
         self,
@@ -382,9 +490,17 @@ class ApiClient:
                     "Task state is unknown; do not resubmit"
                 )
             try:
+                request_timeout = min(self.timeout, remaining)
+                deadline_limited = remaining <= self.timeout
                 result = self.task(
-                    job_id, timeout=min(self.timeout, remaining)
+                    job_id, timeout=request_timeout
                 )
+            except RequestTimeoutError:
+                if deadline_limited:
+                    raise TaskTimeoutError(
+                        "Task state is unknown; do not resubmit"
+                    ) from None
+                raise
             except ClientError:
                 if time.monotonic() >= deadline:
                     raise TaskTimeoutError(
@@ -429,12 +545,14 @@ class ApiClient:
                     self.timeout,
                 )
                 files.append(destination)
-        except Exception as error:
+        except BaseException as error:
             for path in files:
                 path.unlink(missing_ok=True)
             if isinstance(error, ClientError):
                 raise
-            raise ClientError("Download failed") from None
+            if isinstance(error, Exception):
+                raise ClientError("Download failed") from None
+            raise
         return {"files": [str(path) for path in files]}
 
 

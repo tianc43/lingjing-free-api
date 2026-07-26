@@ -81,6 +81,29 @@ class FixtureHandler(BaseHTTPRequestHandler):
             ):
                 pass
             return
+        malformed_tasks = {
+            "/v1/tasks/job_schema_array": [],
+            "/v1/tasks/job_schema_scalar": 7,
+            "/v1/tasks/job_schema_missing_status": {
+                "id": "job_schema_missing_status",
+            },
+            "/v1/tasks/job_schema_bad_outputs": {
+                "id": "job_schema_bad_outputs",
+                "status": "completed",
+                "outputs": {},
+            },
+            "/v1/tasks/job_schema_bad_item": {
+                "id": "job_schema_bad_item",
+                "status": "completed",
+                "outputs": [{}],
+            },
+        }
+        if self.path in malformed_tasks:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(malformed_tasks[self.path]).encode())
+            return
         if self.path == "/v1/tasks/job_terminal_failed":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -107,6 +130,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
             ],
             "/v1/tasks/job_traversal": ["/media/../../server-name.png"],
             "/v1/tasks/job_no_extension": ["/media/no-extension"],
+            "/v1/tasks/job_two_outputs": [
+                "/media/output.png",
+                "/media/output.png",
+            ],
         }
         if self.path in task_outputs:
             output_urls = []
@@ -264,6 +291,49 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(request["path"], "/v1/models?type=video&mode=text-to-video")
         self.assertEqual(request["authorization"], "Bearer test-key")
 
+    def test_base_url_rejects_ambiguous_or_non_v1_values_without_request(self):
+        server_origin = f"http://127.0.0.1:{self.server.server_port}"
+        invalid_values = (
+            f"{server_origin}/admin/api/accounts?ignored=",
+            f"{server_origin}/v1#fragment",
+            f"http://user:password@127.0.0.1:{self.server.server_port}/v1",
+            "http://[",
+            f"{server_origin}/v1\r\n",
+            f"{server_origin}/v1/../admin",
+            f"{server_origin}/v1%2fadmin",
+            f"{server_origin}/v1\\admin",
+        )
+        expected = {
+            "ok": False,
+            "error": {
+                "type": "client_error",
+                "message": "LINGJING_BASE_URL is invalid",
+            },
+        }
+        for base_url in invalid_values:
+            with self.subTest(kind=invalid_values.index(base_url)):
+                stdout = StringIO()
+                stderr = StringIO()
+                with patch.dict(
+                    os.environ,
+                    {
+                        "LINGJING_BASE_URL": base_url,
+                        "LINGJING_API_KEY": "test-key",
+                    },
+                ), redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["models"])
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(json.loads(stderr.getvalue()), expected)
+                self.assertNotIn(base_url, stderr.getvalue())
+                self.assertNotIn("traceback", stderr.getvalue().lower())
+                self.assertEqual(self.server.requests, [])
+
+    def test_base_url_single_trailing_slash_is_normalized(self):
+        client = ApiClient(f"{self.client.base_url}/", "test-key")
+        client.models()
+        self.assertEqual(self.server.requests[-1]["path"], "/v1/models")
+
     def test_task_rejects_non_job_identifier(self):
         with self.assertRaisesRegex(ClientError, "Invalid task identifier"):
             self.client.task("../admin/api/accounts")
@@ -389,6 +459,23 @@ class ApiClientTest(unittest.TestCase):
             any(request["method"] == "POST" for request in self.server.requests)
         )
 
+    def test_wait_deadline_socket_timeout_is_deterministically_task_timeout(self):
+        with patch.object(
+            lingjing_api.time,
+            "monotonic",
+            side_effect=(100.0, 100.0),
+        ):
+            with self.assertRaisesRegex(
+                ClientError, "Task state is unknown; do not resubmit"
+            ) as caught:
+                self.client.wait_for_task(
+                    "job_slow", interval=0, timeout=0.001
+                )
+        self.assertEqual(type(caught.exception).__name__, "TaskTimeoutError")
+        self.assertFalse(
+            any(request["method"] == "POST" for request in self.server.requests)
+        )
+
     def test_download_does_not_forward_authorization(self):
         result = self.client.download_task("job_download", self.output_dir)
         self.assertEqual(len(result["files"]), 1)
@@ -454,6 +541,23 @@ class ApiClientTest(unittest.TestCase):
             )
         self.assertEqual(existing.read_bytes(), b"keep-me")
 
+    def test_temp_cleanup_failure_never_removes_preexisting_destination(self):
+        existing = self.output_dir / "output-01.png"
+        existing.write_bytes(b"keep-me")
+        real_unlink = Path.unlink
+
+        def fail_temporary_unlink(path, missing_ok=False):
+            if path.suffix == ".tmp":
+                raise OSError("simulated temp cleanup failure")
+            return real_unlink(path, missing_ok=missing_ok)
+
+        with patch.object(Path, "unlink", new=fail_temporary_unlink):
+            with self.assertRaisesRegex(ClientError, "Download failed"):
+                self.client.download_task(
+                    "job_no_extension", self.output_dir
+                )
+        self.assertEqual(existing.read_bytes(), b"keep-me")
+
     def test_download_does_not_follow_existing_destination_symlink(self):
         external = self.output_dir / "external.bin"
         external.write_bytes(b"outside")
@@ -468,6 +572,123 @@ class ApiClientTest(unittest.TestCase):
             )
         self.assertTrue(destination.is_symlink())
         self.assertEqual(external.read_bytes(), b"outside")
+
+    def test_download_does_not_publish_final_path_until_complete(self):
+        started = threading.Event()
+        release = threading.Event()
+        outcome = {}
+
+        class BlockingResponse:
+            def __init__(self):
+                self.reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size):
+                self.reads += 1
+                if self.reads == 1:
+                    return b"first-"
+                if self.reads == 2:
+                    started.set()
+                    release.wait(2)
+                    return b"second"
+                return b""
+
+        def run_download():
+            try:
+                outcome["result"] = lingjing_api._download(
+                    "http://example.invalid/output.png",
+                    self.output_dir / "output-01",
+                    1,
+                )
+            except BaseException as error:
+                outcome["error"] = error
+
+        with patch.object(
+            lingjing_api,
+            "_open_without_redirects",
+            return_value=BlockingResponse(),
+        ):
+            thread = threading.Thread(target=run_download)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(1))
+                self.assertFalse(
+                    (self.output_dir / "output-01.png").exists()
+                )
+            finally:
+                release.set()
+                thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", outcome)
+        destination = Path(outcome["result"])
+        self.assertEqual(destination.read_bytes(), b"first-second")
+
+    def test_download_interruption_rolls_back_files_published_by_this_call(self):
+        real_download = lingjing_api._download
+        calls = 0
+
+        def interrupt_second_download(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt()
+            return real_download(*args, **kwargs)
+
+        with patch.object(
+            lingjing_api,
+            "_download",
+            side_effect=interrupt_second_download,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.client.download_task(
+                    "job_two_outputs", self.output_dir
+                )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_malformed_task_schema_is_sanitized_for_task_wait_and_download(self):
+        task_ids = (
+            "job_schema_array",
+            "job_schema_scalar",
+            "job_schema_missing_status",
+            "job_schema_bad_outputs",
+            "job_schema_bad_item",
+        )
+        expected = {
+            "ok": False,
+            "error": {
+                "type": "client_error",
+                "message": "The API returned an invalid task response",
+            },
+        }
+        for command in ("task", "wait", "download"):
+            for task_id in task_ids:
+                with self.subTest(command=command, task_id=task_id):
+                    argv = [command, task_id]
+                    if command == "wait":
+                        argv += ["--interval", "0", "--timeout", "1"]
+                    elif command == "download":
+                        argv += ["--output-dir", str(self.output_dir)]
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    with patch.dict(
+                        os.environ,
+                        {
+                            "LINGJING_BASE_URL": self.client.base_url,
+                            "LINGJING_API_KEY": "test-key",
+                        },
+                    ), redirect_stdout(stdout), redirect_stderr(stderr):
+                        exit_code = main(argv)
+                    self.assertEqual(exit_code, 1)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertEqual(json.loads(stderr.getvalue()), expected)
+                    self.assertNotIn(task_id, stderr.getvalue())
+                    self.assertNotIn("traceback", stderr.getvalue().lower())
+                    self.server.requests.clear()
 
     def test_cli_image_parses_parameters_and_emits_json(self):
         stdout = StringIO()
