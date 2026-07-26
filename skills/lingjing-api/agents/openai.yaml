@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lingjing API"
+  short_description: "Generate Lingjing images and videos through the public API"
+  default_prompt: "Use $lingjing-api to discover a compatible model and create the requested image or video."
