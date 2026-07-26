@@ -11,7 +11,7 @@ import type { AccountRuntimeRegistry } from "./runtime-registry.js";
 import type { SqliteAccountRepository } from "./sqlite-account-repository.js";
 import type { AccountObservation, AccountRecord, CreateAccountInput } from "./types.js";
 
-type ImportConfig = Pick<AppConfig, "dataDirectory" | "maxConcurrency">;
+type ImportConfig = Pick<AppConfig, "dataDirectory" | "maxConcurrency" | "sessionMode">;
 
 export interface ImportAccountInput {
   account: CreateAccountInput;
@@ -41,6 +41,9 @@ export class CookieImportService {
   constructor(private readonly options: CookieImportServiceOptions) {}
 
   async import(input: ImportAccountInput): Promise<AccountRecord> {
+    if (this.options.config.sessionMode === "cookie-file") {
+      throw new Error("Cookie imports require browser-state sessions");
+    }
     const candidate = parseCookieImport(input.cookies);
     const snapshot = await this.describe(candidate.session);
     const account = this.options.accounts.create(input.account);
@@ -57,8 +60,10 @@ export class CookieImportService {
       if (imported === null) throw new Error("Imported account could not be read");
       return imported;
     } catch (cause) {
-      await this.removeNewSession(account.id);
-      this.options.accounts.removeUnbound(account.id);
+      await Promise.allSettled([
+        this.removeNewSession(account.id),
+        Promise.resolve().then(() => this.options.accounts.removeUnbound(account.id))
+      ]);
       throw cause;
     }
   }

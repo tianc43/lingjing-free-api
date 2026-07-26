@@ -5,14 +5,29 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
-import { AccountRuntimeRegistry } from "../../src/accounts/runtime-registry.js";
 import { parseConfig } from "../../src/config.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
+const filesystem = vi.hoisted(() => ({ failRemove: false }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rm: (...arguments_: Parameters<typeof actual.rm>) => {
+      if (filesystem.failRemove) {
+        return Promise.reject(new Error("fixture session cleanup failure"));
+      }
+      return actual.rm(...arguments_);
+    }
+  };
+});
+
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
+  filesystem.failRemove = false;
   for (const directory of temporaryDirectories.splice(0)) {
     removeTestDirectory(directory);
   }
@@ -31,16 +46,17 @@ const validInput = {
   }
 };
 
-async function fixture() {
+async function fixture(sessionMode: "browser-state" | "cookie-file" = "browser-state") {
   const directory = await mkdtemp(join(tmpdir(), "lingjing-cookie-import-"));
   temporaryDirectories.push(directory);
   const config = parseConfig({
     LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
-    DATA_DIRECTORY: join(directory, "data")
+    DATA_DIRECTORY: join(directory, "data"),
+    SESSION_MODE: sessionMode
   });
   const store = new SqliteStore(":memory:");
   const accounts = new SqliteAccountRepository(store);
-  const runtimes = { refresh: vi.fn(() => Promise.resolve(null)) } as Pick<AccountRuntimeRegistry, "refresh">;
+  const runtimes = { refresh: vi.fn(() => Promise.resolve(null)) };
   const describeAccount = vi.fn(() => Promise.resolve({
     subject: "fixture-subject",
     spaceId: 0,
@@ -58,7 +74,7 @@ async function fixture() {
     runtimes,
     describeAccount
   });
-  return { accounts, config, describeAccount, importer, store };
+  return { accounts, config, describeAccount, importer, runtimes, store };
 }
 
 describe("CookieImportService", () => {
@@ -90,6 +106,76 @@ describe("CookieImportService", () => {
 
     try {
       await expect(importer.import(validInput)).rejects.toThrow("expired");
+      expect(accounts.list().map((account) => account.name))
+        .not.toContain("Primary subscription");
+      await expect(readdir(join(config.dataDirectory, "accounts"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rolls back a newly persisted account after runtime refresh fails", async () => {
+    const { accounts, config, importer, runtimes, store } = await fixture();
+    runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("upstream refresh failure");
+      expect(accounts.list().map((account) => account.name))
+        .not.toContain("Primary subscription");
+      await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps the original failure and removes the account when session cleanup fails", async () => {
+    const { accounts, importer, runtimes, store } = await fixture();
+    runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
+    filesystem.failRemove = true;
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("upstream refresh failure");
+      expect(accounts.list().map((account) => account.name))
+        .not.toContain("Primary subscription");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps the original failure after database cleanup fails", async () => {
+    const { accounts, config, describeAccount, runtimes, store } = await fixture();
+    const removeUnbound = vi.fn(() => {
+      throw new Error("fixture database cleanup failure");
+    });
+    const importer = new CookieImportService({
+      accounts: {
+        create: accounts.create.bind(accounts),
+        findById: accounts.findById.bind(accounts),
+        recordObservation: accounts.recordObservation.bind(accounts),
+        removeUnbound,
+        update: accounts.update.bind(accounts)
+      },
+      config,
+      runtimes,
+      describeAccount
+    });
+    runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("upstream refresh failure");
+      expect(removeUnbound).toHaveBeenCalledTimes(1);
+      await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects cookie-file mode before validating or creating an account", async () => {
+    const { accounts, config, describeAccount, importer, store } = await fixture("cookie-file");
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("Cookie imports require browser-state sessions");
+      expect(describeAccount).not.toHaveBeenCalled();
       expect(accounts.list().map((account) => account.name))
         .not.toContain("Primary subscription");
       await expect(readdir(join(config.dataDirectory, "accounts"))).rejects.toMatchObject({ code: "ENOENT" });
