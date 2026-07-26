@@ -46,13 +46,15 @@ def _error_details(body):
     )
 
 
-def decode_response(request, timeout):
+def decode_response(request, timeout, api_key):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read()
             status = response.status
     except urllib.error.HTTPError as error:
         code, message = _error_details(error.read())
+        code = code.replace(api_key, "[REDACTED]")
+        message = message.replace(api_key, "[REDACTED]")
         raise ApiError(error.code, code, message) from None
     except urllib.error.URLError as error:
         raise ClientError(f"Request failed: {error.reason}") from None
@@ -74,6 +76,8 @@ class ApiClient:
         self.timeout = timeout
 
     def _request(self, method, path, payload=None, extra_headers=None):
+        if method != "GET":
+            raise ClientError("Read-only method is not allowed")
         if not any(pattern.fullmatch(path) for pattern in PUBLIC_PATHS):
             raise ClientError("Public route is not allowed")
         headers = {"Accept": "application/json", "Authorization": f"Bearer {self.api_key}"}
@@ -86,7 +90,7 @@ class ApiClient:
         request = urllib.request.Request(
             self.base_url + path, data=body, headers=headers, method=method
         )
-        return decode_response(request, self.timeout)
+        return decode_response(request, self.timeout, self.api_key)
 
     def models(self, media_type=None, mode=None):
         query = {}
