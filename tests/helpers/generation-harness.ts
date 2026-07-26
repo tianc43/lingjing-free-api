@@ -195,6 +195,7 @@ export function createGenerationHarness(options: {
     healthStatus: "ready",
     lastErrorCode: null,
     subjectHash: "legacy-subject",
+    membership: null,
     pointsBalance: 100,
     totalBalance: 100,
     maxConcurrency: options.accountCapacityActiveLimit ?? 5
@@ -210,6 +211,7 @@ export function createGenerationHarness(options: {
     healthStatus: "ready",
     lastErrorCode: null,
     subjectHash: "selected-subject",
+    membership: null,
     pointsBalance: 100,
     totalBalance: 100,
     maxConcurrency: options.accountCapacityActiveLimit ?? 5

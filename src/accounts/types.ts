@@ -15,6 +15,7 @@ export interface AccountRecord {
   healthStatus: AccountHealth;
   lastErrorCode: string | null;
   subjectHash: string | null;
+  membership: string | null;
   pointsBalance: number | null;
   totalBalance: number | null;
   maxConcurrency: number | null;
@@ -43,6 +44,7 @@ export interface AccountObservation {
   healthStatus: AccountHealth;
   lastErrorCode: string | null;
   subjectHash: string | null;
+  membership: string | null;
   pointsBalance: number | null;
   totalBalance: number | null;
   maxConcurrency: number | null;

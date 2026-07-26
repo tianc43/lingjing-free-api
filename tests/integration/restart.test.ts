@@ -485,6 +485,7 @@ describe("durable restart recovery", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1
@@ -596,6 +597,7 @@ describe("durable restart recovery", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1
@@ -700,6 +702,7 @@ describe("durable restart recovery", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1
@@ -800,6 +803,7 @@ describe("durable restart recovery", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1

@@ -177,6 +177,29 @@ describe("SqliteAccountRepository", () => {
     store.close();
   });
 
+  it("removes only unbound accounts", () => {
+    const store = new SqliteStore(":memory:");
+    const accounts = new SqliteAccountRepository(store);
+    const unbound = accounts.create({ name: "Unbound", priority: 0, dailyPointLimit: 0, monthlyPointLimit: 0 });
+    const bound = accounts.create({ name: "Bound", priority: 1, dailyPointLimit: 0, monthlyPointLimit: 0 });
+    store.immediate((database) => {
+      database.prepare(`
+        INSERT INTO jobs (
+          id, kind, source_type, model, api_id, expected_asset_scene,
+          request_fingerprint, space_id, status, account_id, quoted_points,
+          quote_known, created_at, updated_at
+        ) VALUES (?, 'image', 'image-generation', 'fixture', '707', 'image', ?, 0, 'queued', ?, 0, 1, 1, 1)
+      `).run("job_bound", "d".repeat(64), bound.id);
+    });
+
+    accounts.removeUnbound(unbound.id);
+    accounts.removeUnbound(bound.id);
+
+    expect(accounts.findById(unbound.id)).toBeNull();
+    expect(accounts.findById(bound.id)).not.toBeNull();
+    store.close();
+  });
+
   it("rejects duplicate names and invalid account limits", () => {
     const store = new SqliteStore(":memory:");
     const accounts = new SqliteAccountRepository(store);

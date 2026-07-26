@@ -13,6 +13,7 @@ interface AccountRow {
   health_status: AccountHealth;
   last_error_code: string | null;
   subject_hash: string | null;
+  membership: string | null;
   points_balance: number | null;
   total_balance: number | null;
   max_concurrency: number | null;
@@ -24,7 +25,7 @@ interface AccountRow {
 
 const SELECT_COLUMNS = `
   id, name, enabled, priority, daily_point_limit, monthly_point_limit,
-  auth_directory, health_status, last_error_code, subject_hash, points_balance,
+  auth_directory, health_status, last_error_code, subject_hash, membership, points_balance,
   total_balance, max_concurrency, last_checked_at, last_selected_at, created_at,
   updated_at
 `;
@@ -51,6 +52,7 @@ function accountFromRow(row: AccountRow): AccountRecord {
     healthStatus: row.health_status,
     lastErrorCode: row.last_error_code,
     subjectHash: row.subject_hash,
+    membership: row.membership,
     pointsBalance: row.points_balance,
     totalBalance: row.total_balance,
     maxConcurrency: row.max_concurrency,
@@ -208,6 +210,21 @@ export class SqliteAccountRepository {
     });
   }
 
+  removeUnbound(id: string): void {
+    this.store.immediate((database) => {
+      database.prepare(`
+        DELETE FROM accounts
+        WHERE id = @id
+          AND NOT EXISTS (
+            SELECT 1 FROM jobs WHERE jobs.account_id = accounts.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM budget_entries WHERE budget_entries.account_id = accounts.id
+          )
+      `).run({ id });
+    });
+  }
+
   list(): AccountRecord[] {
     return this.store.read((database) => (database.prepare(`
       SELECT ${SELECT_COLUMNS}
@@ -220,6 +237,7 @@ export class SqliteAccountRepository {
     assertAccountHealth(observation.healthStatus);
     assertNullableString(observation.lastErrorCode, "lastErrorCode");
     assertNullableString(observation.subjectHash, "subjectHash");
+    assertNullableString(observation.membership, "membership");
     assertNullableFiniteNumber(observation.pointsBalance, "pointsBalance");
     assertNullableFiniteNumber(observation.totalBalance, "totalBalance");
     assertNullableConcurrency(observation.maxConcurrency);
@@ -236,6 +254,7 @@ export class SqliteAccountRepository {
         SET health_status = @healthStatus,
             last_error_code = @lastErrorCode,
             subject_hash = @subjectHash,
+            membership = @membership,
             points_balance = @pointsBalance,
             total_balance = @totalBalance,
             max_concurrency = @maxConcurrency,
@@ -247,6 +266,7 @@ export class SqliteAccountRepository {
         healthStatus: observation.healthStatus,
         lastErrorCode: observation.lastErrorCode,
         subjectHash: observation.subjectHash,
+        membership: observation.membership,
         pointsBalance: observation.pointsBalance,
         totalBalance: observation.totalBalance,
         maxConcurrency: observation.maxConcurrency,

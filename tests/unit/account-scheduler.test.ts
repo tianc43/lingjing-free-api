@@ -74,6 +74,7 @@ function record(
     healthStatus: "ready",
     lastErrorCode: null,
     subjectHash: null,
+    membership: null,
     pointsBalance: 100,
     totalBalance: 100,
     maxConcurrency: 5,

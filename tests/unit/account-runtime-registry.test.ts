@@ -59,6 +59,7 @@ function accountRecord(id: string): AccountRecord {
     healthStatus: "unknown",
     lastErrorCode: null,
     subjectHash: null,
+    membership: null,
     pointsBalance: null,
     totalBalance: null,
     maxConcurrency: null,
@@ -93,6 +94,31 @@ describe("AccountRuntimeRegistry", () => {
     });
     expect(() => accountSessionPaths(config, "legacy")).toThrow("Invalid account ID");
     expect(() => accountSessionPaths(config, "../../escape")).toThrow("Invalid account ID");
+  });
+
+  it("records the upstream membership in a ready account observation", async () => {
+    const store = new SqliteStore(":memory:");
+    const accounts = new SqliteAccountRepository(store);
+    accounts.ensureLegacyAccount("data/auth");
+    const registry = new AccountRuntimeRegistry({
+      accounts,
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length"
+      }),
+      sessionFactory: () => Promise.resolve(session()),
+      transportFactory: () => transport()
+    });
+
+    try {
+      await registry.ready();
+      expect(accounts.findById("legacy")).toMatchObject({
+        healthStatus: "ready",
+        membership: "fixture"
+      });
+    } finally {
+      await registry.close();
+      store.close();
+    }
   });
 
   it("isolates enabled account sessions and refreshes one runtime", async () => {
@@ -178,6 +204,7 @@ describe("AccountRuntimeRegistry", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1

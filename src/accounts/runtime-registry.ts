@@ -27,6 +27,7 @@ function observationForUnavailableSession() {
     healthStatus: "needs_login" as const,
     lastErrorCode: "lingjing_session_missing",
     subjectHash: null,
+    membership: null,
     pointsBalance: null,
     totalBalance: null,
     maxConcurrency: null
@@ -38,6 +39,7 @@ function observationForUnhealthyRuntime() {
     healthStatus: "unhealthy" as const,
     lastErrorCode: "lingjing_runtime_unhealthy",
     subjectHash: null,
+    membership: null,
     pointsBalance: null,
     totalBalance: null,
     maxConcurrency: null
@@ -161,6 +163,7 @@ export class AccountRuntimeRegistry {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: snapshot.subject,
+      membership: snapshot.membership,
       pointsBalance: snapshot.pointsBalance,
       totalBalance: snapshot.totalBalance,
       maxConcurrency: snapshot.maxConcurrency

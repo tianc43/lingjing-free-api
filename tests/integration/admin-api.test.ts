@@ -355,6 +355,7 @@ describe("administrator API", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject-hash",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 2

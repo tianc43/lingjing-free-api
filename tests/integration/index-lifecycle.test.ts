@@ -310,6 +310,7 @@ describe("server lifecycle", () => {
       healthStatus: "ready",
       lastErrorCode: null,
       subjectHash: "fixture-subject",
+      membership: null,
       pointsBalance: 100,
       totalBalance: 100,
       maxConcurrency: 1

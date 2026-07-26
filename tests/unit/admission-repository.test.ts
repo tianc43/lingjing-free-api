@@ -59,6 +59,7 @@ function createReadyAccount(
     healthStatus: "ready",
     lastErrorCode: null,
     subjectHash: null,
+    membership: null,
     pointsBalance: null,
     totalBalance: null,
     maxConcurrency: null
