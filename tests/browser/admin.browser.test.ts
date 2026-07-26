@@ -443,6 +443,7 @@ test("operator manages API access keys and copies service examples", async ({ pa
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
   await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", { exact: true })).toBeVisible();
+  await expect(page.getByText(/"mode":"text-to-video"/u)).toBeVisible();
   await page.getByRole("button", { name: "Disable Dify" }).click();
   await expect(page.getByRole("button", { name: "Enable Dify" })).toBeVisible();
   await page.getByRole("button", { name: "Enable Dify" }).click();
