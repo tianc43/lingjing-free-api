@@ -4,22 +4,32 @@ function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
 }
 
-export function isAuthorized(authorization: string | string[] | undefined, configuredToken: string): boolean {
-  if (typeof authorization !== "string" || Array.isArray(authorization)) {
-    return false;
+function parseBearerToken(header: string | string[] | undefined): string | null {
+  if (typeof header !== "string" || Array.isArray(header)) {
+    return null;
   }
+  const match = /^Bearer ([^\s,]+)$/.exec(header);
+  return match?.[1] ?? null;
+}
 
-  const match = /^Bearer ([^\s,]+)$/.exec(authorization);
-  if (match === null) {
-    return false;
-  }
-
-  const token = match[1];
-  if (token === undefined) {
-    return false;
-  }
-
-  const providedDigest = sha256(token);
-  const configuredDigest = sha256(configuredToken);
+function constantTimeEqual(provided: string, configured: string): boolean {
+  const providedDigest = sha256(provided);
+  const configuredDigest = sha256(configured);
   return providedDigest.length === configuredDigest.length && timingSafeEqual(providedDigest, configuredDigest);
+}
+
+export interface ManagedApiKeyVerifier {
+  verify(token: string): boolean;
+}
+
+export function isAuthorized(
+  header: string | string[] | undefined,
+  configuredToken: string,
+  managedKeys?: ManagedApiKeyVerifier
+): boolean {
+  const token = parseBearerToken(header);
+  if (token === null) {
+    return false;
+  }
+  return constantTimeEqual(token, configuredToken) || managedKeys?.verify(token) === true;
 }

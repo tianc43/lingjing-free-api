@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const VERSION_ONE_SQL = `
   CREATE TABLE jobs (
@@ -166,6 +166,21 @@ const VERSION_FOUR_SQL = `
     );
 `;
 
+const VERSION_FIVE_SQL = `
+  CREATE TABLE api_keys (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL UNIQUE,
+    key_hash TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    revoked_at INTEGER
+  );
+  ALTER TABLE accounts ADD COLUMN membership TEXT;
+`;
+
 export function configureJobDatabase(database: Database.Database): void {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 10000");
@@ -252,6 +267,13 @@ export function migrateJobDatabase(database: Database.Database): void {
       database.prepare(
         "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
       ).run(4, Date.now());
+      version = 4;
+    }
+    if (version < 5) {
+      database.exec(VERSION_FIVE_SQL);
+      database.prepare(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)"
+      ).run(5, Date.now());
     }
   }).immediate();
 }

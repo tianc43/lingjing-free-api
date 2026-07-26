@@ -139,7 +139,7 @@ describe("SqliteAccountRepository", () => {
       expect(jobs.findById("job_existing")?.quotedPoints).toBeNull();
       expect(store.read((database) => database.prepare(
         "SELECT MAX(version) AS version FROM schema_migrations"
-      ).get())).toEqual({ version: 4 });
+      ).get())).toEqual({ version: 5 });
       expect(store.read((database) => database.prepare(`
         SELECT job_id, state, quoted_points
         FROM budget_entries ORDER BY job_id

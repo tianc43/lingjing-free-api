@@ -404,7 +404,7 @@ describe("startup recovery", () => {
     try {
       expect(store.read((database) => database.prepare(`
         SELECT MAX(version) AS version FROM schema_migrations
-      `).get())).toEqual({ version: 4 });
+      `).get())).toEqual({ version: 5 });
       expect(repository.findById("job_v3_unknown_quote")?.quotedPoints).toBeNull();
       expect(repository.findById("job_v3_known_zero")?.quotedPoints).toBe(0);
       expect(store.read((database) => database.prepare(`
