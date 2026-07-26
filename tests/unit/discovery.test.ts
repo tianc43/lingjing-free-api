@@ -6,6 +6,7 @@ import type { LingjingTransport } from "../../src/lingjing/types.js";
 import type { JobRecord } from "../../src/jobs/types.js";
 
 const submittedAt = 10_000;
+const olderThanClockWindow = submittedAt - 10_001;
 const submitPayload = {
   apiId: "707",
   refId: "fixture-ref",
@@ -73,7 +74,7 @@ describe("matchAsset", () => {
   it("matches by time, scene, modelCode and request fingerprint", () => {
     const exactAsset = asset();
     const result = matchAsset(jobFixture, [
-      asset({ id: "older", createTime: 7_999 }),
+      asset({ id: "older", createTime: olderThanClockWindow }),
       exactAsset,
       asset({ id: "wrong-model", modelCode: "model-v2" })
     ]);
@@ -81,6 +82,16 @@ describe("matchAsset", () => {
     expect(result).toEqual({
       kind: "unique",
       asset: exactAsset,
+      candidates: 1
+    });
+  });
+
+  it("matches an exact post-submit asset despite upstream clock skew", () => {
+    const skewedAsset = asset({ createTime: submittedAt - 3_300 });
+
+    expect(matchAsset(jobFixture, [skewedAsset])).toEqual({
+      kind: "unique",
+      asset: skewedAsset,
       candidates: 1
     });
   });
@@ -95,7 +106,7 @@ describe("matchAsset", () => {
   });
 
   it("does not bind assets created before submission or present in the baseline", () => {
-    expect(matchAsset(jobFixture, [asset({ createTime: 7_999 })]).kind)
+    expect(matchAsset(jobFixture, [asset({ createTime: olderThanClockWindow })]).kind)
       .toBe("not-found");
     expect(matchAsset(jobFixture, [asset()], new Set(["asset-exact"])).kind)
       .toBe("not-found");
@@ -144,7 +155,7 @@ describe("listRecentAssets", () => {
     const read = vi.fn((_path: string, init?: { query?: Record<string, unknown> }) => Promise.resolve({
       records: Number(init?.query?.currentPage) === 1
         ? [asset({ id: "new" })]
-        : [asset({ id: "still-new" }), asset({ id: "old", createTime: 7_999 })]
+        : [asset({ id: "still-new" }), asset({ id: "old", createTime: olderThanClockWindow })]
     }));
     const transport = { read } as unknown as LingjingTransport;
 
@@ -184,7 +195,7 @@ describe("listRecentAssets", () => {
         ? [asset({ id: "overlap" })]
         : [
             asset({ id: "overlap" }),
-            asset({ id: "old", createTime: 7_999 })
+            asset({ id: "old", createTime: olderThanClockWindow })
           ]
     }));
 
@@ -213,7 +224,7 @@ describe("listRecentAssets", () => {
                 params: [{ idx: "1", values: "different request" }]
               }
             }),
-            asset({ id: "old", createTime: 7_999 })
+            asset({ id: "old", createTime: olderThanClockWindow })
           ]
     }));
 
@@ -233,8 +244,8 @@ describe("listRecentAssets", () => {
       records: Number(init?.query?.currentPage) === 1
         ? [asset({ id: "clock-conflict", createTime: 10_100 })]
         : [
-            asset({ id: "clock-conflict", createTime: 7_999 }),
-            asset({ id: "old", createTime: 7_999 })
+            asset({ id: "clock-conflict", createTime: olderThanClockWindow }),
+            asset({ id: "old", createTime: olderThanClockWindow })
           ]
     }));
 
@@ -249,7 +260,7 @@ describe("listRecentAssets", () => {
   it("keeps an old id blacklisted when a recent representation follows", async () => {
     const read = vi.fn(() => Promise.resolve({
       records: [
-        asset({ id: "old-then-recent", createTime: 7_999 }),
+        asset({ id: "old-then-recent", createTime: olderThanClockWindow }),
         asset({ id: "old-then-recent", createTime: 10_100 })
       ]
     }));

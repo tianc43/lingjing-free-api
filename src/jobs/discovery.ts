@@ -9,7 +9,7 @@ import type { LingjingTransport } from "../lingjing/types.js";
 
 const MAX_ASSET_PAGES = 5;
 const ASSET_PAGE_SIZE = 20;
-const SUBMISSION_CLOCK_SKEW_MS = 2_000;
+const SUBMISSION_CLOCK_SKEW_MS = 10_000;
 const ASSET_SCENE_ALIASES: Record<
 JobRecord["sourceType"],
 readonly string[]
