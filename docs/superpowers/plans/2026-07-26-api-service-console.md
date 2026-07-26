@@ -141,11 +141,11 @@ export interface ManagedApiKeyVerifier {
 }
 
 export function isAuthorized(
-  authorization: string | string[] | undefined,
+  header: string | string[] | undefined,
   configuredToken: string,
   managedKeys?: ManagedApiKeyVerifier
 ): boolean {
-  const token = parseBearerToken(authorization);
+  const token = parseBearerToken(header);
   if (token === null) return false;
   return constantTimeEqual(token, configuredToken)
     || managedKeys?.verify(token) === true;
@@ -186,19 +186,19 @@ git commit -m "feat: add managed API keys"
 it("converts a raw Cookie header into a Lingjing candidate session", async () => {
   const result = parseCookieImport({
     format: "header",
-    value: "csrfToken=csrf-fixture; pin=fixture%2Dpin; thor=auth-fixture"
+    value: "csrfToken=fixture-csrf; pin=fixture%2Dpin; thor=fixture-auth"
   });
   expect(result.originPin).toBe("fixture-pin");
   expect(result.storageState.cookies.map((cookie) => cookie.name))
     .toEqual(["csrfToken", "pin", "thor"]);
-  expect((await result.session.load()).csrfToken).toBe("csrf-fixture");
+  expect((await result.session.load()).csrfToken).toBe("fixture-csrf");
 });
 
 it("accepts browser cookie JSON and rejects malformed or oversized input", () => {
   expect(parseCookieImport({
     format: "json",
     value: JSON.stringify([
-      { name: "csrfToken", value: "csrf", domain: "lingjing.jdcloud.com", path: "/" },
+      { name: "csrfToken", value: "fixture-csrf", domain: "lingjing.jdcloud.com", path: "/" },
       { name: "pin", value: "fixture%2Dpin", domain: ".jdcloud.com", path: "/" }
     ])
   }).originPin).toBe("fixture-pin");
@@ -275,7 +275,7 @@ it("persists and enables only a session validated upstream", async () => {
     },
     cookies: {
       format: "header",
-      value: "csrfToken=csrf; pin=fixture%2Dpin; thor=auth"
+      value: "csrfToken=fixture-csrf; pin=fixture%2Dpin; thor=fixture-auth"
     }
   });
   expect(account).toMatchObject({
@@ -391,7 +391,7 @@ it("imports an account without returning cookie material", async () => {
       daily_point_limit: 0,
       monthly_point_limit: 0,
       cookie_format: "header",
-      cookie_input: "csrfToken=secret-csrf; pin=private-pin; thor=secret-auth"
+      cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin; thor=fixture-auth"
     }
   });
   expect(response.statusCode).toBe(201);
@@ -400,17 +400,18 @@ it("imports an account without returning cookie material", async () => {
     enabled: true,
     health_status: "ready"
   });
-  expect(response.body).not.toContain("secret-");
-  expect(response.body).not.toContain("private-pin");
+  expect(response.body).not.toContain("fixture-csrf");
+  expect(response.body).not.toContain("fixture-private-pin");
 });
 
 it("creates a key once and uses it on a protected route", async () => {
   const created = await createAdminKey(app, csrf, "Dify");
   expect(created.api_key).toMatch(/^ljk_/u);
+  const authHeader = `Bearer ${created.api_key}`;
   expect(await app.inject({
     method: "GET",
     url: "/v1/models",
-    headers: { authorization: `Bearer ${created.api_key}` }
+    headers: { authorization: authHeader }
   })).toHaveProperty("statusCode", 200);
   expect((await listAdminKeys(app)).body).not.toContain(created.api_key);
 });
@@ -513,7 +514,7 @@ await expect(page.getByRole("link", { name: "Open Lingjing login" }))
   .toHaveAttribute("href", "https://lingjing.jdcloud.com/");
 await page.getByLabel("Cookie format").selectOption("header");
 await page.getByLabel("Lingjing cookies").fill(
-  "csrfToken=csrf; pin=fixture-pin; thor=auth"
+  "csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth"
 );
 await page.getByRole("button", { name: "Validate and add" }).click();
 await expect(page.getByText("Premium")).toBeVisible();
@@ -584,7 +585,8 @@ await expect(page.getByText(/^ljk_/u)).toBeVisible();
 await expect(page.getByText("This key is shown only once")).toBeVisible();
 await page.getByRole("button", { name: "Done" }).click();
 await expect(page.getByText(/^ljk_/u)).toHaveCount(0);
-await expect(page.getByText("Authorization: Bearer")).toBeVisible();
+await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}"))
+  .toBeVisible();
 ```
 
 - [ ] **Step 2: Build and verify RED**
@@ -674,7 +676,7 @@ Document:
 3. Import and validate the account.
 4. Confirm membership and balance.
 5. Create and copy an API key.
-6. Use `<origin>/v1` with `Authorization: Bearer <key>`.
+6. Use `<origin>/v1` with `Authorization: Bearer ${LINGJING_API_KEY}`.
 7. Disable or revoke a key.
 
 State explicitly that the browser page cannot automatically read cross-origin

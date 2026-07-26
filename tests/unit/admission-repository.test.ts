@@ -27,7 +27,7 @@ function inputFor(accountId: string, suffix: string): AdmissionInput {
   return {
     accountId,
     quotedPoints: 7,
-    windows: budgetWindows(Date.parse("2026-07-24T03:00:00Z")),
+    windows: budgetWindows(),
     kind: "image",
     sourceType: "image-generation",
     model: "fixture-model",
@@ -104,6 +104,7 @@ describe("SqliteAdmissionRepository", () => {
     const admissions = new SqliteAdmissionRepository(store, () => now);
     const input = {
       ...inputFor(accountId, "c"),
+      windows: budgetWindows(now),
       jobId: `job_${"1".repeat(32)}`
     };
 
@@ -128,7 +129,10 @@ describe("SqliteAdmissionRepository", () => {
     });
     const store = new SqliteStore(databasePath);
     const admissions = new SqliteAdmissionRepository(store, () => now);
-    const input = inputFor(accountId, "d");
+    const input = {
+      ...inputFor(accountId, "d"),
+      windows: budgetWindows(now)
+    };
     const created = admissions.reserveOrGet(input);
     if (created.outcome !== "created") {
       throw new Error("Expected fixture admission to be created");
@@ -200,7 +204,11 @@ describe("SqliteAdmissionRepository", () => {
       "  }",
       "}"
     ].join("\n");
-    const attempts = [inputFor(accountId, "a"), inputFor(accountId, "b")].map(async (input, index) => {
+    const windows = budgetWindows();
+    const attempts = [
+      { ...inputFor(accountId, "a"), windows },
+      { ...inputFor(accountId, "b"), windows }
+    ].map(async (input, index) => {
       const { stdout } = await execFileAsync(process.execPath, [
         "--import",
         "tsx",
@@ -222,7 +230,7 @@ describe("SqliteAdmissionRepository", () => {
 
     expect(results.filter((result) => result.outcome === "created")).toHaveLength(1);
     expect(results.filter((result) => result.outcome === "budget_exhausted")).toHaveLength(1);
-    expect(accounts.usage(accountId, budgetWindows(Date.parse("2026-07-24T03:00:00Z"))).dayUsedPoints).toBe(7);
+    expect(accounts.usage(accountId, windows).dayUsedPoints).toBe(7);
     store.close();
   }, 20_000);
 

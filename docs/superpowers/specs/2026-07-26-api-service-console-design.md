@@ -126,7 +126,7 @@ The API access page derives the displayed origin from the current request and
 shows:
 
 - Base URL: `<origin>/v1`
-- Authentication: `Authorization: Bearer <api-key>`
+- Authentication: `Authorization: Bearer ${LINGJING_API_KEY}`
 - Copyable cURL examples for image generation and video generation.
 - An OpenAI client configuration example.
 
