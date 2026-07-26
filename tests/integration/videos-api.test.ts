@@ -284,6 +284,24 @@ describe("video generation API", () => {
     );
   });
 
+  it("accepts the executable video API alias", async () => {
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: [{ url: videoOutput.url }]
+    });
+    expect(requests).toHaveLength(1);
+  });
+
   it("uses the upstream default for a model parameter instead of the public alias", async () => {
     const resolve = fixture.dependencies.catalog.resolve.bind(
       fixture.dependencies.catalog
@@ -589,16 +607,18 @@ describe("video generation API", () => {
     });
   });
 
-  it("documents both protected generation routes and response modes", async () => {
-    expect((await fixture.app.inject({
-      method: "POST",
-      url: "/v1/videos/generations",
-      payload: {
-        model: "fixture-video",
-        prompt: "private",
-        mode: "text-to-video"
-      }
-    })).statusCode).toBe(401);
+  it("documents both protected video API paths and response modes", async () => {
+    for (const url of ["/v1/videos/generations", "/v1/videos"]) {
+      expect((await fixture.app.inject({
+        method: "POST",
+        url,
+        payload: {
+          model: "fixture-video",
+          prompt: "private",
+          mode: "text-to-video"
+        }
+      })).statusCode).toBe(401);
+    }
 
     const response = await authorizedInject(fixture.app, {
       method: "GET",
@@ -633,10 +653,7 @@ describe("video generation API", () => {
         };
       }>;
     }>();
-    for (const path of [
-      "/v1/images/generations",
-      "/v1/videos/generations"
-    ]) {
+    for (const path of ["/v1/videos/generations", "/v1/videos"]) {
       expect(specification.paths[path]?.post?.security).toEqual([
         { bearerAuth: [] }
       ]);
@@ -646,9 +663,9 @@ describe("video generation API", () => {
       const multipartSchema = specification.paths[path]?.post
         ?.requestBody?.content?.["multipart/form-data"]?.schema;
       expect(multipartSchema?.type).toBe("object");
-      expect(multipartSchema?.required).toEqual(path.includes("images")
-        ? ["model", "prompt"]
-        : ["model", "prompt", "mode"]);
+      expect(multipartSchema?.required).toEqual([
+        "model", "prompt", "mode"
+      ]);
       expect(multipartSchema?.properties?.image).toMatchObject({
         type: "string",
         format: "binary"
@@ -661,22 +678,14 @@ describe("video generation API", () => {
       expect(jsonSchema?.anyOf).toBeUndefined();
       expect(jsonSchema?.type).toBe("object");
       expect(jsonSchema?.additionalProperties).toBe(false);
-      expect(jsonSchema?.required).toEqual(path.includes("images")
-        ? ["model", "prompt"]
-        : ["model", "prompt", "mode"]);
+      expect(jsonSchema?.required).toEqual(["model", "prompt", "mode"]);
       expect(
         jsonSchema?.properties?.response_mode?.enum
       ).toEqual(["wait", "async"]);
-      if (path.includes("images")) {
-        expect(
-          jsonSchema?.properties?.response_format?.enum
-        ).toEqual(["url", "b64_json"]);
-      } else {
-        expect(jsonSchema?.properties?.mode?.enum).toEqual([
-          "text-to-video",
-          "image-to-video"
-        ]);
-      }
+      expect(jsonSchema?.properties?.mode?.enum).toEqual([
+        "text-to-video",
+        "image-to-video"
+      ]);
       const idempotency = specification.paths[path]?.post
         ?.parameters?.find((parameter) =>
           parameter.name === "idempotency-key"

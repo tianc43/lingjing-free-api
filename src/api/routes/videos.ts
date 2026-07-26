@@ -1,4 +1,8 @@
-import type { FastifyInstance } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest
+} from "fastify";
 import { errors } from "../../errors.js";
 import type { MediaInput } from "../../media/types.js";
 import { parseGenerationMultipart } from "../multipart.js";
@@ -35,27 +39,26 @@ export function registerVideoRoutes(
   app: FastifyInstance,
   dependencies: AppDependencies
 ): void {
-  app.post("/v1/videos/generations", {
-    schema: routeSchema({
-      security: bearerSecurity,
-      headers: generationHeadersSchema,
-      bodyContent: {
-        "application/json": videoApiRequestSchema
-      },
-      multipartBody: videoMultipartRequestSchema,
-      response: {
-        200: videoGenerationResponseSchema,
-        202: taskResponseSchema,
-        400: errorResponseSchema,
-        401: errorResponseSchema,
-        409: errorResponseSchema,
-        413: errorResponseSchema,
-        429: errorResponseSchema,
-        502: errorResponseSchema,
-        503: errorResponseSchema
-      }
-    })
-  }, async (request, reply) => {
+  const schema = routeSchema({
+    security: bearerSecurity,
+    headers: generationHeadersSchema,
+    bodyContent: {
+      "application/json": videoApiRequestSchema
+    },
+    multipartBody: videoMultipartRequestSchema,
+    response: {
+      200: videoGenerationResponseSchema,
+      202: taskResponseSchema,
+      400: errorResponseSchema,
+      401: errorResponseSchema,
+      409: errorResponseSchema,
+      413: errorResponseSchema,
+      429: errorResponseSchema,
+      502: errorResponseSchema,
+      503: errorResponseSchema
+    }
+  });
+  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     let media: MediaInput[] = [];
     let transferred = false;
     try {
@@ -139,5 +142,8 @@ export function registerVideoRoutes(
     } finally {
       if (!transferred) await disposeMedia(media);
     }
-  });
+  };
+
+  app.post("/v1/videos/generations", { schema }, handler);
+  app.post("/v1/videos", { schema }, handler);
 }
