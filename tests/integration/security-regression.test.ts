@@ -420,6 +420,61 @@ describe("security regression", () => {
     }
   });
 
+  it("keeps imported cookies and one-time managed keys out of logs and later responses", async () => {
+    const fixture = await createTestApp({
+      config: { adminPassword: "fixture-admin-password" }
+    });
+    try {
+      const login = await fixture.app.inject({
+        method: "POST",
+        url: "/admin/api/login",
+        payload: { password: "fixture-admin-password" }
+      });
+      const cookie = (Array.isArray(login.headers["set-cookie"])
+        ? login.headers["set-cookie"][0]
+        : login.headers["set-cookie"]
+      )?.split(";", 1)[0];
+      if (cookie === undefined) throw new Error("Admin cookie was not set");
+      const csrfToken = login.json<{ csrf_token: string }>().csrf_token;
+      const imported = await fixture.app.inject({
+        method: "POST",
+        url: "/admin/api/accounts/import",
+        headers: { cookie, "x-csrf-token": csrfToken },
+        payload: {
+          name: "Security imported account",
+          priority: 0,
+          daily_point_limit: 0,
+          monthly_point_limit: 0,
+          cookie_format: "header",
+          cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
+        }
+      });
+      expect(imported.statusCode).toBe(201);
+      const created = await fixture.app.inject({
+        method: "POST",
+        url: "/admin/api/api-keys",
+        headers: { cookie, "x-csrf-token": csrfToken },
+        payload: { name: "Security managed key" }
+      });
+      expect(created.statusCode).toBe(201);
+      const apiKey = created.json<{ api_key: string }>().api_key;
+      const listed = await fixture.app.inject({
+        url: "/admin/api/api-keys",
+        headers: { cookie }
+      });
+      expect(listed.statusCode).toBe(200);
+      assertNoSensitiveValues(imported.body, ["fixture-csrf", "fixture-private-pin"]);
+      assertNoSensitiveValues(listed.body, [apiKey]);
+      assertNoSensitiveValues(fixture.capturedPinoOutput(), [
+        "fixture-csrf",
+        "fixture-private-pin",
+        apiKey
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("builds and scans a fresh dist plus tracked files, package output and logs", () => {
     const dist = resolve(process.cwd(), "dist");
     removeTestDirectory(dist);

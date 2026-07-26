@@ -4,11 +4,13 @@ import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
 import { AccountScheduler } from "./accounts/scheduler.js";
+import { CookieImportService } from "./accounts/cookie-import-service.js";
 import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
 import type { AccountRuntime } from "./accounts/runtime.js";
 import { SqliteAccountRepository } from "./accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "./accounts/sqlite-admission-repository.js";
 import { buildApp } from "./app.js";
+import { SqliteApiKeyRepository } from "./api-keys/sqlite-api-key-repository.js";
 import type { AppDependencies } from "./api/types.js";
 import { createRequestMediaBudget } from "./api/multipart.js";
 import { parseConfig } from "./config.js";
@@ -172,6 +174,7 @@ export async function startServer(
   const logger = createLogger(config.logLevel);
   const store = new SqliteStore(config.dbPath);
   const accounts = new SqliteAccountRepository(store);
+  const apiKeys = new SqliteApiKeyRepository(store);
   accounts.ensureLegacyAccount("data/auth");
   const repository = new SqliteJobRepository(store);
   const admissions = new SqliteAdmissionRepository(store);
@@ -186,6 +189,11 @@ export async function startServer(
     ...(options.transport === undefined
       ? {}
       : { transportFactory: () => options.transport as LingjingTransport })
+  });
+  const cookieImporter = new CookieImportService({
+    accounts,
+    config,
+    runtimes
   });
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
@@ -317,6 +325,8 @@ export async function startServer(
     };
     const dependencies: AppDependencies = {
       config,
+      apiKeys,
+      cookieImporter,
       logger,
       session: lazyService(() => compatibilityRuntime().session),
       transport: lazyService(() => compatibilityRuntime().transport),

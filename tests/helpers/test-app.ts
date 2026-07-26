@@ -11,6 +11,8 @@ import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
+import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
+import { SqliteApiKeyRepository } from "../../src/api-keys/sqlite-api-key-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "./cleanup.js";
 import type { AccountSnapshot } from "../../src/lingjing/account.js";
@@ -138,10 +140,17 @@ export async function createTestApp(
   overrides: TestAppOverrides = {}
 ): Promise<TestApp> {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-api-test-"));
+  const { config: configOverrides, ...dependencyOverrides } = overrides;
+  const testConfig: AppConfig = {
+    ...config,
+    dataDirectory: join(directory, "data"),
+    ...configOverrides
+  };
   const store = new SqliteStore(join(directory, "jobs.sqlite"));
   const repository = new SqliteJobRepository(store);
   const accounts = new SqliteAccountRepository(store);
   const admissions = new SqliteAdmissionRepository(store);
+  const apiKeys = new SqliteApiKeyRepository(store);
   accounts.ensureLegacyAccount("data/auth");
   let logOutput = "";
   const destination = new Writable({
@@ -188,7 +197,7 @@ export async function createTestApp(
         },
         capacity: new CapacityManager(
           record.maxConcurrency ?? config.maxConcurrency,
-          config.maxQueuedRequests
+          testConfig.maxQueuedRequests
         )
       };
       const existing = loadedRuntimes.findIndex(
@@ -201,9 +210,19 @@ export async function createTestApp(
     listEnabled: vi.fn(() => loadedRuntimes)
   };
   const capacity = new CapacityManager(5, 20);
-  const { config: configOverrides, ...dependencyOverrides } = overrides;
+  const cookieImporter = new CookieImportService({
+    accounts,
+    config: testConfig,
+    runtimes: runtimes as unknown as Pick<
+      import("../../src/accounts/runtime-registry.js").AccountRuntimeRegistry,
+      "refresh"
+    >,
+    describeAccount: account.describe
+  });
   const dependencies: AppDependencies = {
-    config: { ...config, ...configOverrides },
+    config: testConfig,
+    apiKeys,
+    cookieImporter,
     logger: createLogger("info", destination),
     session: {
       mode: "browser-state",

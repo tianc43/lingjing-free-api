@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { budgetWindows } from "../accounts/budget.js";
 import type { BudgetState } from "../accounts/sqlite-admission-repository.js";
 import type { AccountRecord } from "../accounts/types.js";
+import type { ApiKeyRecord } from "../api-keys/types.js";
 import {
   emptyQuerySchema,
   errorResponseSchema,
@@ -22,9 +23,15 @@ import {
   accountParamsSchema,
   accountResponseSchema,
   accountViewSchema,
+  apiKeyListResponseSchema,
+  apiKeyParamsSchema,
+  apiKeyResponseSchema,
   adminJobViewSchema,
+  createApiKeyBodySchema,
+  createApiKeyResponseSchema,
   createAccountBodySchema,
   createAccountResponseSchema,
+  importAccountBodySchema,
   jobListQuerySchema,
   jobListResponseSchema,
   jobParamsSchema,
@@ -200,6 +207,73 @@ function accountMutation<T>(operation: () => T): T {
   }
 }
 
+function apiKeyView(key: ApiKeyRecord) {
+  return {
+    id: key.id,
+    name: key.name,
+    key_prefix: key.keyPrefix,
+    enabled: key.enabled,
+    created_at: key.createdAt,
+    updated_at: key.updatedAt,
+    last_used_at: key.lastUsedAt,
+    revoked_at: key.revokedAt
+  };
+}
+
+function apiKeyMutation<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (cause) {
+    if (cause instanceof TypeError || cause instanceof RangeError) {
+      throw errors.invalidRequest("Invalid API key");
+    }
+    if (
+      cause instanceof Error
+      && "code" in cause
+      && cause.code === "SQLITE_CONSTRAINT_UNIQUE"
+      && cause.message === "UNIQUE constraint failed: api_keys.name"
+    ) {
+      throw errors.apiKeyNameConflict();
+    }
+    if (
+      cause instanceof Error
+      && cause.message.includes("was not found")
+    ) {
+      throw errors.apiKeyNotFound();
+    }
+    throw cause;
+  }
+}
+
+const INVALID_COOKIE_IMPORT_MESSAGES = new Set([
+  "Cookie input is too large",
+  "Invalid browser cookie JSON",
+  "Unsupported cookie domain",
+  "Invalid Cookie header",
+  "Too many cookies",
+  "Lingjing csrfToken cookie is required",
+  "Duplicate Lingjing csrfToken cookie",
+  "Invalid Lingjing pin cookie",
+  "Lingjing pin cookie is required",
+  "Conflicting Lingjing pin cookies"
+]);
+
+function importFailure(cause: unknown) {
+  if (
+    cause instanceof Error
+    && INVALID_COOKIE_IMPORT_MESSAGES.has(cause.message)
+  ) {
+    return errors.invalidRequest("Invalid cookie import", "cookie_input");
+  }
+  if (
+    cause instanceof Error
+    && /timed?\s*out|timeout/iu.test(cause.message)
+  ) {
+    return errors.importValidationTimeout();
+  }
+  return errors.invalidImportedSession();
+}
+
 export async function registerAdminRoutes(
   app: FastifyInstance,
   dependencies: AdminDependencies
@@ -353,6 +427,144 @@ export async function registerAdminRoutes(
         account: accountView(dependencies, account, allJobs(dependencies)),
         login_command: `npm run login -- --account-id ${account.id}`
       });
+    });
+
+    adminApp.post("/accounts/import", {
+      schema: routeSchema({
+        security: publicSecurity,
+        body: importAccountBodySchema,
+        response: {
+          201: accountResponseSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          409: errorResponseSchema,
+          504: errorResponseSchema
+        }
+      })
+    }, async (request, reply) => {
+      const body = importAccountBodySchema.parse(request.body);
+      let account: AccountRecord;
+      try {
+        account = await dependencies.cookieImporter.import({
+          account: {
+            name: body.name,
+            priority: body.priority,
+            dailyPointLimit: body.daily_point_limit,
+            monthlyPointLimit: body.monthly_point_limit
+          },
+          cookies: {
+            format: body.cookie_format,
+            value: body.cookie_input
+          }
+        });
+      } catch (cause) {
+        try {
+          accountMutation(() => { throw cause; });
+        } catch (mapped) {
+          if (mapped !== cause) throw mapped;
+        }
+        throw importFailure(cause);
+      }
+      return noStore(reply).code(201).send({
+        account: accountView(dependencies, account, allJobs(dependencies))
+      });
+    });
+
+    adminApp.get("/api-keys", {
+      schema: routeSchema({
+        security: publicSecurity,
+        querystring: emptyQuerySchema,
+        response: {
+          200: apiKeyListResponseSchema,
+          401: errorResponseSchema
+        }
+      })
+    }, (_request, reply) => noStore(reply).send({
+      api_keys: dependencies.apiKeys.list().map(apiKeyView)
+    }));
+
+    adminApp.post("/api-keys", {
+      schema: routeSchema({
+        security: publicSecurity,
+        body: createApiKeyBodySchema,
+        response: {
+          201: createApiKeyResponseSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          409: errorResponseSchema
+        }
+      })
+    }, (request, reply) => {
+      const body = createApiKeyBodySchema.parse(request.body);
+      const created = apiKeyMutation(() => dependencies.apiKeys.create(body.name));
+      return noStore(reply).code(201).send({
+        key: apiKeyView(created.record),
+        api_key: created.secret
+      });
+    });
+
+    const updateApiKey = (
+      id: string,
+      enabled: boolean,
+      reply: FastifyReply
+    ) => {
+      const key = apiKeyMutation(() => dependencies.apiKeys.setEnabled(id, enabled));
+      return noStore(reply).send({ key: apiKeyView(key) });
+    };
+
+    adminApp.post("/api-keys/:id/enable", {
+      schema: routeSchema({
+        security: publicSecurity,
+        params: apiKeyParamsSchema,
+        response: {
+          200: apiKeyResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema
+        }
+      })
+    }, (request, reply) => {
+      const { id } = apiKeyParamsSchema.parse(request.params);
+      return updateApiKey(id, true, reply);
+    });
+
+    adminApp.post("/api-keys/:id/disable", {
+      schema: routeSchema({
+        security: publicSecurity,
+        params: apiKeyParamsSchema,
+        response: {
+          200: apiKeyResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema
+        }
+      })
+    }, (request, reply) => {
+      const { id } = apiKeyParamsSchema.parse(request.params);
+      return updateApiKey(id, false, reply);
+    });
+
+    adminApp.delete("/api-keys/:id", {
+      schema: routeSchema({
+        security: publicSecurity,
+        params: apiKeyParamsSchema,
+        response: {
+          200: apiKeyResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema
+        }
+      })
+    }, (request, reply) => {
+      const { id } = apiKeyParamsSchema.parse(request.params);
+      apiKeyMutation(() => {
+        dependencies.apiKeys.revoke(id);
+      });
+      const key = dependencies.apiKeys.list().find((item) => item.id === id);
+      if (key === undefined) throw errors.apiKeyNotFound();
+      return noStore(reply).send({ key: apiKeyView(key) });
     });
 
     adminApp.patch("/accounts/:id", {
@@ -624,6 +836,15 @@ export async function registerAdminRoutes(
           active: jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length,
           queued: jobs.filter((job) => job.status === "queued").length
         },
+        balance: {
+          available_points: accounts.reduce((sum, account) => (
+            account.enabled
+            && account.healthStatus === "ready"
+            && account.totalBalance !== null
+              ? sum + account.totalBalance
+              : sum
+          ), 0)
+        },
         recent_failures: recentFailures
       });
     });
@@ -637,14 +858,19 @@ export async function registerAdminRoutes(
           401: errorResponseSchema
         }
       })
-    }, (_request, reply) => noStore(reply).send({
+    }, (request, reply) => noStore(reply).send({
       max_concurrency: dependencies.config.maxConcurrency,
       max_queued_requests: dependencies.config.maxQueuedRequests,
       unknown_capacity_hold_ms: dependencies.config.unknownCapacityHoldMs,
       image_wait_timeout_ms: dependencies.config.imageWaitTimeoutMs,
       video_wait_timeout_ms: dependencies.config.videoWaitTimeoutMs,
       docs_enabled: dependencies.config.docsEnabled,
-      shared_api_key_configured: dependencies.config.apiKey.trim().length > 0
+      shared_api_key_configured: dependencies.config.apiKey.trim().length > 0,
+      legacy_api_key_configured: dependencies.config.apiKey.trim().length > 0,
+      api_base_url: new URL(
+        "/v1",
+        `${request.protocol}://${request.headers.host ?? request.hostname}`
+      ).toString().replace(/\/$/u, "")
     }));
   }, { prefix: "/admin/api" });
 }

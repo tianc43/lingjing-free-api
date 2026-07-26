@@ -51,7 +51,7 @@ function mutate(
   cookie: string,
   csrfToken: string,
   options: {
-    method: "POST" | "PATCH";
+    method: "POST" | "PATCH" | "DELETE";
     url: string;
     payload?: object;
   }
@@ -142,6 +142,190 @@ describe("administrator API", () => {
     expect(missing.json()).toMatchObject({
       error: { code: "invalid_csrf_token" }
     });
+  });
+
+  it("imports an account without returning cookie material", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const response = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Imported",
+        priority: 1,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin; thor=fixture-auth"
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      account: {
+        name: "Imported",
+        enabled: true,
+        health_status: "ready"
+      }
+    });
+    expect(response.body).not.toContain("fixture-csrf");
+    expect(response.body).not.toContain("fixture-private-pin");
+
+    const malformed = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Malformed imported account",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "pin=fixture-private-pin"
+      }
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json()).toMatchObject({
+      error: { code: "invalid_request" }
+    });
+
+    const duplicate = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Imported",
+        priority: 1,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
+      }
+    });
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.json()).toMatchObject({
+      error: { code: "account_name_conflict" }
+    });
+  });
+
+  it("sanitizes invalid and timed-out imported sessions", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const importer = (fixture.dependencies as unknown as {
+      cookieImporter: { import(): Promise<never> };
+    }).cookieImporter;
+    const originalImport = importer.import.bind(importer);
+    importer.import = () => Promise.reject(
+      new Error("fixture-private-pin upstream refused imported cookie")
+    );
+    const invalid = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Invalid imported account",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
+      }
+    });
+    expect(invalid.statusCode).toBe(401);
+    expect(invalid.json()).toMatchObject({
+      error: { code: "invalid_imported_session" }
+    });
+    expect(invalid.body).not.toContain("fixture-private-pin");
+
+    importer.import = () => Promise.reject(new Error("fixture import timed out"));
+    const timedOut = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Timed out imported account",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
+      }
+    });
+    expect(timedOut.statusCode).toBe(504);
+    expect(timedOut.json()).toMatchObject({
+      error: { code: "import_validation_timeout" }
+    });
+    importer.import = originalImport;
+  });
+
+  it("creates, lists, disables, enables and revokes a managed API key", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const create = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/api-keys",
+      payload: { name: "Dify" }
+    });
+    expect(create.statusCode).toBe(201);
+    const created = create.json<{
+      api_key: string;
+      key: { id: string; name: string };
+    }>();
+    expect(created.api_key).toMatch(/^ljk_/u);
+
+    const managedAuthorization = `Bearer ${created.api_key}`;
+    expect(await fixture.app.inject({
+      method: "GET",
+      url: "/v1/models?type=image",
+      headers: { authorization: managedAuthorization }
+    })).toHaveProperty("statusCode", 200);
+    expect(await fixture.app.inject({
+      method: "GET",
+      url: "/v1/models?type=image",
+      headers: { authorization: "Bearer fixture-downstream-secret" }
+    })).toHaveProperty("statusCode", 200);
+
+    const listed = await fixture.app.inject({
+      url: "/admin/api/api-keys",
+      headers: { cookie }
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body).not.toContain(created.api_key);
+    expect(listed.json()).toMatchObject({
+      api_keys: [expect.objectContaining({ id: created.key.id, name: "Dify" })]
+    });
+
+    const disabled = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: `/admin/api/api-keys/${created.key.id}/disable`
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(await fixture.app.inject({
+      url: "/v1/models?type=image",
+      headers: { authorization: managedAuthorization }
+    })).toHaveProperty("statusCode", 401);
+
+    const enabled = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: `/admin/api/api-keys/${created.key.id}/enable`
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(await fixture.app.inject({
+      url: "/v1/models?type=image",
+      headers: { authorization: managedAuthorization }
+    })).toHaveProperty("statusCode", 200);
+
+    const revoked = await mutate(fixture, cookie, body.csrf_token, {
+      method: "DELETE",
+      url: `/admin/api/api-keys/${created.key.id}`
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(await fixture.app.inject({
+      url: "/v1/models",
+      headers: { authorization: managedAuthorization }
+    })).toHaveProperty("statusCode", 401);
+
+    const unknown = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/api-keys/unknown/enable"
+    });
+    expect(unknown.statusCode).toBe(404);
   });
 
   it("maps only account validation failures to 400", async () => {
@@ -361,6 +545,37 @@ describe("administrator API", () => {
       maxConcurrency: 2
     });
     await fixture.runtimes.refresh(account.id);
+    const disabledReady = fixture.accounts.create({
+      name: "Disabled ready",
+      priority: 2,
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    fixture.accounts.recordObservation(disabledReady.id, {
+      healthStatus: "ready",
+      lastErrorCode: null,
+      subjectHash: "fixture-disabled-subject",
+      membership: null,
+      pointsBalance: 50,
+      totalBalance: 50,
+      maxConcurrency: 1
+    });
+    const unhealthy = fixture.accounts.create({
+      name: "Unhealthy account",
+      priority: 3,
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0
+    });
+    fixture.accounts.update(unhealthy.id, { enabled: true });
+    fixture.accounts.recordObservation(unhealthy.id, {
+      healthStatus: "unhealthy",
+      lastErrorCode: "fixture-health-failure",
+      subjectHash: "fixture-unhealthy-subject",
+      membership: null,
+      pointsBalance: 70,
+      totalBalance: 70,
+      maxConcurrency: 1
+    });
     const admitted = fixture.admissions.reserveOrGet({
       accountId: account.id,
       quotedPoints: 4,
@@ -409,10 +624,20 @@ describe("administrator API", () => {
 
     const settings = await fixture.app.inject({
       url: "/admin/api/settings",
-      headers: { cookie }
+      headers: { cookie, host: "localhost:8000" }
     });
     expect(settings.json()).toMatchObject({
-      shared_api_key_configured: true
+      shared_api_key_configured: true,
+      legacy_api_key_configured: true,
+      api_base_url: "http://localhost:8000/v1"
+    });
+
+    const overview = await fixture.app.inject({
+      url: "/admin/api/overview",
+      headers: { cookie }
+    });
+    expect(overview.json()).toMatchObject({
+      balance: { available_points: 100 }
     });
 
     const detail = await fixture.app.inject({

@@ -24,6 +24,19 @@ export const createAccountBodySchema = z.object({
   monthly_point_limit: nonNegativeInteger
 }).strict();
 
+export const importAccountBodySchema = createAccountBodySchema.extend({
+  cookie_format: z.enum(["header", "json"]),
+  cookie_input: z.string().min(1).max(65_536)
+}).strict();
+
+export const createApiKeyBodySchema = z.object({
+  name: z.string().trim().min(1).max(200)
+}).strict();
+
+export const apiKeyParamsSchema = z.object({
+  id: z.string().min(1)
+}).strict();
+
 export const updateAccountBodySchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   priority: nonNegativeInteger.optional(),
@@ -125,6 +138,29 @@ export const accountListResponseSchema = z.object({
   accounts: z.array(accountViewSchema)
 }).strict();
 
+export const apiKeyViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  key_prefix: z.string(),
+  enabled: z.boolean(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  last_used_at: z.number().nullable(),
+  revoked_at: z.number().nullable()
+}).strict();
+
+export const apiKeyResponseSchema = z.object({
+  key: apiKeyViewSchema
+}).strict();
+
+export const createApiKeyResponseSchema = apiKeyResponseSchema.extend({
+  api_key: z.string()
+}).strict();
+
+export const apiKeyListResponseSchema = z.object({
+  api_keys: z.array(apiKeyViewSchema)
+}).strict();
+
 export const jobResponseSchema = z.object({
   job: adminJobViewSchema
 }).strict();
@@ -151,6 +187,9 @@ export const overviewResponseSchema = z.object({
     active: nonNegativeInteger,
     queued: nonNegativeInteger
   }).strict(),
+  balance: z.object({
+    available_points: z.number().nonnegative()
+  }).strict(),
   recent_failures: z.array(adminJobViewSchema)
 }).strict();
 
@@ -161,5 +200,7 @@ export const settingsResponseSchema = z.object({
   image_wait_timeout_ms: nonNegativeInteger,
   video_wait_timeout_ms: nonNegativeInteger,
   docs_enabled: z.boolean(),
-  shared_api_key_configured: z.boolean()
+  shared_api_key_configured: z.boolean(),
+  legacy_api_key_configured: z.boolean(),
+  api_base_url: z.string()
 }).strict();

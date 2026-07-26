@@ -81,7 +81,8 @@ export async function buildApp(
     if (
       !isAuthorized(
         request.headers.authorization,
-        dependencies.config.apiKey
+        dependencies.config.apiKey,
+        dependencies.apiKeys
       )
     ) {
       throw errors.authentication();
@@ -150,7 +151,8 @@ export async function buildApp(
       if (
         !isAuthorized(
           request.headers.authorization,
-          dependencies.config.apiKey
+          dependencies.config.apiKey,
+          dependencies.apiKeys
         )
       ) {
         return Promise.reject(errors.authentication());
