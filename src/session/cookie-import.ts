@@ -191,12 +191,12 @@ class CookieImportSessionProvider implements SessionProvider {
     this.csrfToken = csrfToken;
   }
 
-  async load(): Promise<SessionSnapshot> {
-    return { mode: this.mode, jar: this.jar, csrfToken: this.csrfToken, sourceMtimeMs: 0 };
+  load(): Promise<SessionSnapshot> {
+    return Promise.resolve({ mode: this.mode, jar: this.jar, csrfToken: this.csrfToken, sourceMtimeMs: 0 });
   }
 
-  async loadProfile(): Promise<{ originPin: string }> {
-    return { originPin: this.originPin };
+  loadProfile(): Promise<{ originPin: string }> {
+    return Promise.resolve({ originPin: this.originPin });
   }
 
   async applySetCookies(url: URL, headers: string[]): Promise<void> {

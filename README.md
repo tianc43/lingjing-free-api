@@ -91,6 +91,19 @@ docker compose down
 
 控制台可以创建、编辑、检查、启用和禁用账号。禁用只阻止新任务，不中断已经提交的任务；删除、角色、导出和告警不在当前 MVP。新账号在本机完成 `npm run login -- --account-id <id>` 后，再从控制台检查并启用。状态为 `needs_login` 时按 [故障排查](docs/troubleshooting.md) 重新登录，不要上传或粘贴 Cookie。
 
+### 从网页账号到托管 API Key
+
+这是受信任本机操作者的手工流程，Cookie 只粘贴到本机 `/admin/`，不应写入终端历史、截图、聊天或 Git：
+
+1. 打开 `<origin>/admin/`，用 `LINGJING_ADMIN_PASSWORD` 登录，再进入“灵境”账号页。
+2. 在灵境网页完成登录。在浏览器开发者工具的一个已认证请求中手工复制 `Cookie` Header，或从浏览器导出 Cookie JSON；选择相应格式粘贴到控制台并填写账号名称/预算。网页控制台**不能**自动读取跨域 Cookie，也不能读取带 `HttpOnly` 属性的 Cookie，这是浏览器的同源与 Cookie 安全边界。
+3. 提交导入并等待控制台验证；只在验证成功后确认显示的会员和余额摘要，再启用该账号。导入响应和账号列表不会回显 Cookie。
+4. 进入“API 访问”，创建一个有辨识度名称的 API Key，立即复制并保存到调用方的安全密钥存储。明文 Key 只在成功创建时显示一次，之后只能看到前缀和状态。
+5. 使用控制台显示的 Base URL（通常为 `<origin>/v1`）和 `Authorization: Bearer ${LINGJING_API_KEY}` 调用。这里的 `${LINGJING_API_KEY}` 是调用方环境变量；迁移后应赋值为刚创建的托管 Key，而不是把 Key 写进代码。
+6. 怀疑泄露时先禁用 Key 验证调用会得到 401；确认不再需要时撤销。禁用可以重新启用，撤销是终态，不能重新启用或恢复同一明文值。
+
+现有 `.env` 中的共享 `LINGJING_API_KEY` 作为 legacy 环境 Key 仍会被接受，避免现有客户端立刻中断；控制台不会显示它。逐个将客户端改为独立托管 Key，确认后再按本机密钥轮换流程替换 legacy 值。服务启动仍要求一个长度合规的 `LINGJING_API_KEY`，因此不要把它留空。
+
 每日和每月预算按模型元数据中可信的 quoted points（报价点数）记账，而不是按余额差推算：
 
 - `0` 表示 unlimited（不限额），不是“禁止生成”；
@@ -103,7 +116,7 @@ SQLite 中持久保存账号配置、quoted usage、任务账号绑定和预算�
 
 ## 鉴权与公共路由
 
-除 `/healthz`、`/ping` 和独立认证的 `/admin/` 外，兼容 API 路由都要求：
+除 `/healthz`、`/ping` 和独立认证的 `/admin/` 外，兼容 API 路由都要求一个 Bearer Key：控制台创建的启用托管 Key，或过渡期间仍受支持的 legacy `LINGJING_API_KEY`。
 
 ```text
 Authorization: Bearer $LINGJING_API_KEY

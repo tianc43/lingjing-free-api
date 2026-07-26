@@ -537,8 +537,11 @@ for (const viewport of [
     await page.getByLabel("Cookie format").selectOption("header");
     await page.getByLabel("Lingjing cookies").fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
     await page.getByRole("button", { name: "Validate and add" }).click();
-    await expect(page.getByText("Premium")).toBeVisible();
-    await expect(page.getByText("Total balance 150")).toBeVisible();
+    const importedAccount = page.locator(".account-row").filter({
+      has: page.getByText(`Browser ${viewport.name}`, { exact: true })
+    });
+    await expect(importedAccount).toContainText("Premium");
+    await expect(importedAccount).toContainText("Total balance 150");
     await expect(page.getByText("npm run login -- --account-id")).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: `Disable Browser ${viewport.name}` }),

@@ -2,6 +2,18 @@
 
 所有命令都只检查状态或元数据，不打印 Cookie、CSRF、下游密钥、Prompt 或数据库内容。以下示例假设调用进程已经安全设置 `LINGJING_API_KEY`。
 
+## 控制台无法自动导入 Cookie
+
+`/admin/` 是同源管理页，不是浏览器扩展或远程浏览器。它不能自动读取灵境网页的跨域 Cookie，也不能读取带 `HttpOnly` 属性的 Cookie；这是预期的浏览器安全限制，不是服务故障。
+
+在可信本机先登录灵境，然后从已认证请求手工复制 `Cookie` Header，或手工导出 Cookie JSON。登录 `/admin/`，在“灵境”页选择对应格式粘贴并导入；不要把 Cookie 交给终端、工单、截图或聊天。导入后等待验证，检查显示的会员和余额摘要，再启用账号。若导入被拒绝，确认内容是完整 Cookie Header/浏览器 Cookie JSON，且包含当前灵境会话所需的 `csrfToken` 和 `pin`，然后在网页重新登录并重新复制；不要猜测或手改 Cookie 值。
+
+## 新建 Key 后调用得到 401
+
+在 `/admin/` 的“API 访问”创建 Key 时，明文只显示一次；立即保存到调用方的安全密钥存储。客户端应使用控制台所示 Base URL（通常为 `<origin>/v1`）及 `Authorization: Bearer ${LINGJING_API_KEY}`，其中调用方的 `${LINGJING_API_KEY}` 应为新建的托管 Key。确认 Key 仍为启用、未撤销，并确认 Base URL 已包含 `/v1`。
+
+禁用适合临时阻断：调用会返回 401，之后可以重新启用。撤销是不可逆的；为调用方创建新 Key 并更新其安全配置。旧的 `.env` `LINGJING_API_KEY` 在过渡期仍可调用，控制台不会显示它；先迁移所有客户端到独立托管 Key，再按本机轮换流程替换 legacy 值。不要将 legacy 值留空，因为服务启动仍要求它存在。
+
 ## 会话过期：`lingjing_session_expired`
 
 先检查文件存在、权限和修改时间：

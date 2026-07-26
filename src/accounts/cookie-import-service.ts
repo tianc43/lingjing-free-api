@@ -62,7 +62,9 @@ export class CookieImportService {
     } catch (cause) {
       await Promise.allSettled([
         this.removeNewSession(account.id),
-        Promise.resolve().then(() => this.options.accounts.removeUnbound(account.id))
+        Promise.resolve().then(() => {
+          this.options.accounts.removeUnbound(account.id);
+        })
       ]);
       throw cause;
     }

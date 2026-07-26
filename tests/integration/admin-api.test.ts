@@ -324,9 +324,9 @@ describe("administrator API", () => {
     const revokedKey = revoked.json<{ key: Record<string, unknown> }>().key;
     expect(revokedKey).toMatchObject({
       id: created.key.id,
-      enabled: true,
-      revoked_at: expect.any(Number)
+      enabled: true
     });
+    expect(revokedKey.revoked_at).toEqual(expect.any(Number));
     expect(await fixture.app.inject({
       url: "/v1/models",
       headers: { authorization: managedAuthorization }
