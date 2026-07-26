@@ -22,9 +22,11 @@ type Account = {
   health_status: "ready";
   last_error_code: null;
   has_session: boolean;
+  membership: string | null;
   points_balance: number;
   total_balance: number;
   active_jobs: number;
+  last_checked_at: number | null;
   updated_at: number;
 };
 let server: Server | undefined;
@@ -56,6 +58,11 @@ function overview() {
       monthly_reserved_points: 3,
     },
     jobs: { active: 1, queued: 1 },
+    balance: {
+      available_points: accounts
+        .filter((item) => item.enabled && item.health_status === "ready")
+        .reduce((sum, item) => sum + item.total_balance, 0),
+    },
     recent_failures: [],
   };
 }
@@ -207,9 +214,11 @@ test.beforeAll(async () => {
         health_status: "ready",
         last_error_code: null,
         has_session: false,
+        membership: null,
         points_balance: 120,
         total_balance: 120,
         active_jobs: 0,
+        last_checked_at: null,
         updated_at: Date.now(),
       };
       accounts = [...accounts, account];
@@ -221,6 +230,33 @@ test.beforeAll(async () => {
         },
         201,
       );
+      return;
+    }
+    if (url.pathname === "/admin/api/accounts/import" && request.method === "POST") {
+      const input = await body(request);
+      const account: Account = {
+        id: `browser-${nextId++}`,
+        name: String(input.name),
+        enabled: true,
+        priority: Number(input.priority),
+        daily_point_limit: Number(input.daily_point_limit),
+        monthly_point_limit: Number(input.monthly_point_limit),
+        daily_used_points: 0,
+        monthly_used_points: 0,
+        daily_reserved_points: 0,
+        monthly_reserved_points: 0,
+        health_status: "ready",
+        last_error_code: null,
+        has_session: true,
+        membership: "Premium",
+        points_balance: 120,
+        total_balance: 150,
+        active_jobs: 0,
+        last_checked_at: Date.now(),
+        updated_at: Date.now(),
+      };
+      accounts = [...accounts, account];
+      json(response, { account }, 201);
       return;
     }
     const check = /^\/admin\/api\/accounts\/([^/]+)\/check$/.exec(url.pathname);
@@ -331,9 +367,11 @@ test.beforeEach(() => {
       health_status: "ready",
       last_error_code: null,
       has_session: true,
+      membership: "Premium",
       points_balance: 120,
       total_balance: 120,
       active_jobs: 1,
+      last_checked_at: Date.now(),
       updated_at: Date.now(),
     },
   ];
@@ -375,11 +413,11 @@ for (const viewport of [
     await expect(page).toHaveURL(/\/admin\/accounts$/);
     await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
     const seedCheck = page.getByRole("button", {
-      name: "Check health Seed account",
+      name: "Refresh balance Seed account",
     });
     await seedCheck.click();
     await expect(
-      page.getByText("Health check completed for Seed account"),
+      page.getByText("Balance refreshed for Seed account"),
     ).toBeVisible();
     page.once("dialog", (dialog) => void dialog.dismiss());
     await page.getByRole("button", { name: "Disable Seed account" }).click();
@@ -391,11 +429,11 @@ for (const viewport of [
     await expect(
       page.getByRole("button", { name: "Enable Seed account" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Create account" }).click();
+    await page.getByRole("button", { name: "Add account" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.getByLabel("Account name").focus();
     await page.keyboard.press("Shift+Tab");
-    await expect(page.getByRole("dialog")).toContainText("Create account");
+    await expect(page.getByRole("dialog")).toContainText("Add account");
     await expect(
       page.evaluate(() => document.activeElement?.closest("dialog") !== null),
     ).resolves.toBe(true);
@@ -405,32 +443,34 @@ for (const viewport of [
     ).resolves.toBe(true);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Create account" })).toBeFocused();
-    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.getByRole("button", { name: "Add account" })).toBeFocused();
+    await page.getByRole("button", { name: "Add account" }).click();
+    await expect(page.getByRole("link", { name: "Open Lingjing login" })).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
+    await expect(page.getByText("Opening Lingjing does not import cookies automatically.")).toBeVisible();
     await page.getByLabel("Priority").fill("-1");
     await page.getByLabel("Daily point limit").fill("1.5");
     await page.getByLabel("Monthly point limit").fill("-2");
-    await page.getByRole("button", { name: "Create account" }).last().click();
+    await page.getByRole("button", { name: "Validate and add" }).click();
     for (const field of ["Account name", "Priority", "Daily point limit", "Monthly point limit"]) await expect(page.getByLabel(field)).toHaveAttribute("aria-invalid", "true");
     await expect(page.getByLabel("Account name")).toBeFocused();
     await page.getByLabel("Account name").fill(`Browser ${viewport.name}`);
     await page.getByLabel("Priority").fill("7");
     await page.getByLabel("Daily point limit").fill("10");
     await page.getByLabel("Monthly point limit").fill("100");
-    await page.getByRole("button", { name: "Create account" }).last().click();
-    await expect(page.getByText("npm run login -- --account-id")).toBeVisible();
+    await page.getByLabel("Cookie format").selectOption("header");
+    await page.getByLabel("Lingjing cookies").fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
+    await page.getByRole("button", { name: "Validate and add" }).click();
+    await expect(page.getByText("Premium")).toBeVisible();
+    await expect(page.getByText("Total balance 150")).toBeVisible();
+    await expect(page.getByText("npm run login -- --account-id")).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: `Enable Browser ${viewport.name}` }),
+      page.getByRole("button", { name: `Disable Browser ${viewport.name}` }),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: `Check health Browser ${viewport.name}` })
+      .getByRole("button", { name: `Refresh balance Browser ${viewport.name}` })
       .click();
     await expect(
-      page.getByText(`Health check completed for Browser ${viewport.name}`),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Copy login command" }).click();
-    await expect(
-      page.getByText("Could not copy the login command. Copy it manually."),
+      page.getByText(`Balance refreshed for Browser ${viewport.name}`),
     ).toBeVisible();
     await page
       .getByRole("button", { name: `Edit Browser ${viewport.name}` })
@@ -493,7 +533,7 @@ test("keeps initial session 401 signed out but expires an established session", 
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
   expireNext = true;
-  await page.getByRole("button", { name: "Check health Seed account" }).click();
+  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
   await expect(
     page.getByRole("heading", { name: "Admin sign in" }),
   ).toBeVisible();
@@ -559,12 +599,12 @@ test("logout clears an app action failure before returning to sign in", async ({
   await page.getByLabel("Administrator password").fill("fixture-admin-password");
   await page.getByRole("button", { name: "Sign in" }).click();
   failHealth = true;
-  await page.getByRole("button", { name: "Check health Seed account" }).click();
+  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.evaluate(() => { history.pushState({}, "", "/admin/settings"); dispatchEvent(new PopStateEvent("popstate")); });
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
   await page.getByRole("link", { name: "Accounts" }).click();
-  await page.getByRole("button", { name: "Check health Seed account" }).click();
+  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Admin sign in" })).toBeVisible();

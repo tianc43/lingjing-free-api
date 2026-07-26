@@ -1,4 +1,4 @@
-import type { Account, AccountInput, Job, Overview, Settings } from "./types";
+import type { Account, AccountImportInput, AccountInput, Job, Overview, Settings } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -46,6 +46,9 @@ export class AdminApi {
   async settings(): Promise<Settings> { return await this.request("/settings"); }
   async createAccount(input: AccountInput): Promise<{ account: Account; login_command: string }> {
     return await this.request("/accounts", { method: "POST", body: input });
+  }
+  async importAccount(input: AccountImportInput): Promise<Account> {
+    return (await this.request<{ account: Account }>("/accounts/import", { method: "POST", body: input })).account;
   }
   async updateAccount(id: string, input: AccountInput): Promise<Account> {
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: input })).account;

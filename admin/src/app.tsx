@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminApi } from "./api";
 import { AccountDialog } from "./components/account-dialog";
+import { AccountOnboardingDialog } from "./components/account-onboarding-dialog";
 import { AppShell, type PageName } from "./components/app-shell";
 import { AccountsPage } from "./pages/accounts-page";
 import { LoginPage } from "./pages/login-page";
 import { OverviewPage } from "./pages/overview-page";
 import { SettingsPage } from "./pages/settings-page";
 import { TasksPage } from "./pages/tasks-page";
-import type { Account, AccountInput, Job, Overview, Settings } from "./types";
+import type { Account, AccountImportInput, AccountInput, Job, Overview, Settings } from "./types";
 
 type ResourceName = "accounts" | "overview" | "jobs" | "settings";
 type ResourceErrors = Partial<Record<ResourceName, string>>;
@@ -38,8 +39,8 @@ export function App() {
   const [resourceErrors, setResourceErrors] = useState<ResourceErrors>({});
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<Account | null | undefined>(undefined);
-  const [loginCommand, setLoginCommand] = useState("");
+  const [dialog, setDialog] = useState<Account | undefined>(undefined);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [checking, setChecking] = useState<string | null>(null);
   const api = useMemo(() => new AdminApi(() => {
@@ -100,14 +101,17 @@ export function App() {
     }
   };
   const save = async (input: AccountInput) => {
-    if (dialog === null) {
-      const result = await api.createAccount(input);
-      setLoginCommand(result.login_command);
-    } else if (dialog !== undefined) {
+    if (dialog !== undefined) {
       await api.updateAccount(dialog.id, input);
     }
     setError(null);
     setDialog(undefined);
+    await load();
+  };
+  const importAccount = async (input: AccountImportInput) => {
+    await api.importAccount(input);
+    setError(null);
+    setOnboardingOpen(false);
     await load();
   };
   const toggle = async (account: Account) => {
@@ -125,29 +129,18 @@ export function App() {
     try {
       await api.checkAccount(account.id);
       setError(null);
-      setNotice(`Health check completed for ${account.name}`);
+      setNotice(`Balance refreshed for ${account.name}`);
       await loadAccounts();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Health check failed");
+      setError(cause instanceof Error ? cause.message : "Balance refresh failed");
     } finally {
       setChecking(null);
-    }
-  };
-  const copyCommand = async () => {
-    try {
-      await navigator.clipboard.writeText(loginCommand);
-      setError(null);
-      setNotice("Login command copied");
-    } catch {
-      setNotice("");
-      setError("Could not copy the login command. Copy it manually.");
     }
   };
   const logout = () => void api.logout().finally(() => {
     setAuthenticated(false);
     setError(null);
     setNotice("");
-    setLoginCommand("");
   });
   if (!authenticated) return <LoginPage onLogin={login} error={error} />;
   if (initializing) return <Skeleton />;
@@ -155,16 +148,16 @@ export function App() {
   const pageContent = page === "overview"
     ? <><ResourceFailure error={resourceErrors.overview} onRetry={() => void loadOverview()} />{overview === null && resourceLoading.overview ? <Skeleton /> : overview !== null && <OverviewPage overview={overview} />}</>
     : page === "accounts"
-      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setDialog(null)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account) => void check(account)} checking={checking} />}</>
+      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account) => void check(account)} checking={checking} />}</>
     : page === "tasks"
         ? <><ResourceFailure error={resourceErrors.jobs} onRetry={() => void loadJobs()} />{resourceLoading.jobs && jobs.length === 0 ? <Skeleton /> : <TasksPage accounts={accounts} jobs={jobs} />}</>
         : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage accounts={accounts} settings={settings} />}</>;
 
   return <AppShell page={page} onNavigate={navigate} onLogout={logout}>
     {error !== null && <section className="retry-state" role="alert"><p>{error}</p></section>}
-    {loginCommand && <aside className="command-notice" aria-live="polite"><code>{loginCommand}</code><button aria-label="Copy login command" className="quiet-button" onClick={() => void copyCommand()}>Copy</button><span>{notice}</span></aside>}
-    {!loginCommand && notice && <p className="command-notice" aria-live="polite">{notice}</p>}
+    {notice && <p className="command-notice" aria-live="polite">{notice}</p>}
     {pageContent}
     {dialog !== undefined && <AccountDialog account={dialog} onClose={() => setDialog(undefined)} onSave={save} />}
+    {onboardingOpen && <AccountOnboardingDialog onClose={() => setOnboardingOpen(false)} onImport={importAccount} />}
   </AppShell>;
 }

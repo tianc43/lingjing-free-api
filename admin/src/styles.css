@@ -101,7 +101,8 @@ body {
 }
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 button {
@@ -236,7 +237,7 @@ h2 {
   border-bottom: 1px solid var(--border-subtle);
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: 2fr repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: var(--space-6);
   padding-bottom: var(--space-6);
 }
@@ -302,7 +303,7 @@ td {
   border-bottom: 1px solid var(--border-subtle);
   display: grid;
   gap: var(--space-3);
-  grid-template-columns: minmax(10rem, 1.2fr) 0.65fr minmax(8rem, 1fr) minmax(
+  grid-template-columns: minmax(10rem, 1.2fr) minmax(9rem, 1fr) minmax(8rem, 1fr) minmax(
       8rem,
       1fr
     ) 0.7fr auto;
@@ -322,9 +323,20 @@ td {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.wallet {
+.wallet,
+.balance-facts {
   display: grid;
   gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+.balance-facts span {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.balance-facts strong {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 .budget-meter {
@@ -418,7 +430,8 @@ label {
   font-weight: 650;
 }
 input,
-select {
+select,
+textarea {
   background: var(--input-bg);
   border: 1px solid var(--input-border);
   border-radius: var(--radius-input);
@@ -426,6 +439,11 @@ select {
   font-size: 1rem;
   min-height: var(--control-height);
   padding: 0 var(--space-2);
+}
+textarea {
+  min-height: 7rem;
+  padding: var(--space-2);
+  resize: vertical;
 }
 .settings-grid {
   display: grid;
@@ -535,6 +553,15 @@ form {
   align-items: center;
   display: flex;
   justify-content: space-between;
+}
+.dialog-guidance {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+.dialog-guidance a {
+  color: var(--cyan-300);
+  width: max-content;
 }
 .dialog footer {
   gap: var(--space-2);
@@ -658,6 +685,9 @@ nav a {
     padding: var(--space-4) 0;
   }
   .account-name {
+    grid-column: 1 / -1;
+  }
+  .balance-facts {
     grid-column: 1 / -1;
   }
   .row-actions {

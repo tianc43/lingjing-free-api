@@ -14,9 +14,11 @@ export interface Account {
   health_status: HealthStatus;
   last_error_code: string | null;
   has_session: boolean;
+  membership: string | null;
   points_balance: number | null;
   total_balance: number | null;
   active_jobs: number;
+  last_checked_at: number | null;
   updated_at: number;
 }
 
@@ -37,6 +39,7 @@ export interface Overview {
   accounts: { total: number; enabled: number; ready: number; unhealthy: number; budget_exhausted: number };
   usage: { daily_used_points: number; monthly_used_points: number; daily_reserved_points: number; monthly_reserved_points: number };
   jobs: { active: number; queued: number };
+  balance: { available_points: number };
   recent_failures: Job[];
 }
 
@@ -55,4 +58,9 @@ export interface AccountInput {
   priority: number;
   daily_point_limit: number;
   monthly_point_limit: number;
+}
+
+export interface AccountImportInput extends AccountInput {
+  cookie_format: "header" | "json";
+  cookie_input: string;
 }
