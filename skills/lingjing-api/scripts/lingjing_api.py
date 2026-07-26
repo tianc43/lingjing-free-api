@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import http.client
 import json
 import math
 import mimetypes
@@ -40,11 +39,46 @@ class TaskTimeoutError(ClientError):
     pass
 
 
+class TaskFailedError(ClientError):
+    pass
+
+
 class ApiError(ClientError):
     def __init__(self, status, code, message):
         super().__init__(f"HTTP {status}: {code}: {message}")
         self.status = status
         self.code = code
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ClientError(f"Argument error: {message}")
+
+
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def _reject(self, request, response, code, message, headers):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            code,
+            "Redirects are not allowed",
+            headers,
+            response,
+        )
+
+    http_error_301 = _reject
+    http_error_302 = _reject
+    http_error_303 = _reject
+    http_error_307 = _reject
+    http_error_308 = _reject
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    _RejectRedirectHandler()
+)
+
+
+def _open_without_redirects(request, timeout):
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
 
 
 def _error_details(body):
@@ -71,15 +105,22 @@ def _redact(value, secrets):
 def decode_response(request, timeout, api_key, additional_secrets=()):
     secrets = (api_key, *additional_secrets)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_without_redirects(request, timeout) as response:
             body = response.read()
             status = response.status
     except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            error.close()
+            raise ApiError(
+                error.code,
+                "redirect_not_allowed",
+                "Authenticated API redirects are not allowed",
+            ) from None
         code, message = _error_details(error.read())
         code = _redact(code, secrets)
         message = _redact(message, secrets)
         raise ApiError(error.code, code, message) from None
-    except urllib.error.URLError:
+    except (urllib.error.URLError, TimeoutError):
         raise ClientError("Request failed") from None
     try:
         return json.loads(body.decode("utf-8"))
@@ -95,19 +136,48 @@ def _submission_headers(idempotency_key=None):
     }
 
 
-def _download(url, destination, timeout):
-    parsed = urllib.parse.urlsplit(url)
+def _validated_output_url(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except (TypeError, ValueError):
+        raise ClientError("Unsafe output URL") from None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ClientError("Unsafe output URL")
+    return parsed
+
+
+def _safe_extension(value):
+    value = value.lower()
+    return value if re.fullmatch(r"\.[a-z0-9]{1,10}", value) else ""
+
+
+def _url_extension(url):
+    parsed = _validated_output_url(url)
+    return _safe_extension(Path(parsed.path).suffix)
+
+
+def _download(url, destination_stem, timeout):
+    extension = _url_extension(url)
     request = urllib.request.Request(
         url, headers={"Accept": "*/*"}, method="GET"
     )
-    destination = Path(destination)
+    destination = None
     created = False
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            content_type = response.headers.get_content_type()
-            target = open(destination, "xb")
+        with _open_without_redirects(request, timeout) as response:
+            if not extension:
+                guessed = (
+                    mimetypes.guess_extension(
+                        response.headers.get_content_type()
+                    )
+                    or ".bin"
+                )
+                extension = _safe_extension(guessed) or ".bin"
+            destination = Path(f"{destination_stem}{extension}")
+            try:
+                target = open(destination, "xb")
+            except FileExistsError:
+                raise ClientError("Output file already exists") from None
             created = True
             with target:
                 total = 0
@@ -119,25 +189,22 @@ def _download(url, destination, timeout):
                     if total > MAX_DOWNLOAD_BYTES:
                         raise ClientError("Output exceeds download size limit")
                     target.write(chunk)
-            return content_type
+            return destination
+    except urllib.error.HTTPError as error:
+        if created:
+            destination.unlink(missing_ok=True)
+        if 300 <= error.code < 400:
+            error.close()
+            raise ClientError("Download redirects are not allowed") from None
+        raise ClientError("Download failed") from None
     except ClientError:
         if created:
             destination.unlink(missing_ok=True)
         raise
-    except (
-        urllib.error.HTTPError,
-        urllib.error.URLError,
-        http.client.HTTPException,
-        OSError,
-    ):
+    except Exception:
         if created:
             destination.unlink(missing_ok=True)
         raise ClientError("Download failed") from None
-
-
-def _url_extension(url):
-    suffix = Path(urllib.parse.urlsplit(url).path).suffix.lower()
-    return suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix) else ""
 
 
 def _parameters_object(value):
@@ -163,7 +230,14 @@ class ApiClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def _request(self, method, path, payload=None, extra_headers=None):
+    def _request(
+        self,
+        method,
+        path,
+        payload=None,
+        extra_headers=None,
+        timeout=None,
+    ):
         patterns = PUBLIC_OPERATIONS.get(method, ())
         if not any(pattern.fullmatch(path) for pattern in patterns):
             raise ClientError("Public operation is not allowed")
@@ -181,7 +255,10 @@ class ApiClient:
         if extra_headers:
             additional_secrets.extend(extra_headers.values())
         return decode_response(
-            request, self.timeout, self.api_key, additional_secrets
+            request,
+            self.timeout if timeout is None else timeout,
+            self.api_key,
+            additional_secrets,
         )
 
     def models(self, media_type=None, mode=None):
@@ -193,10 +270,10 @@ class ApiClient:
         suffix = "?" + urllib.parse.urlencode(query) if query else ""
         return self._request("GET", "/models" + suffix)
 
-    def task(self, job_id):
+    def task(self, job_id, timeout=None):
         if not JOB_ID_PATTERN.fullmatch(job_id):
             raise ClientError("Invalid task identifier")
-        return self._request("GET", f"/tasks/{job_id}")
+        return self._request("GET", f"/tasks/{job_id}", timeout=timeout)
 
     def generate_image(
         self,
@@ -272,8 +349,24 @@ class ApiClient:
             )
         deadline = time.monotonic() + timeout
         while True:
-            result = self.task(job_id)
-            if result.get("status") in {"completed", "failed"}:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TaskTimeoutError(
+                    "Task state is unknown; do not resubmit"
+                )
+            try:
+                result = self.task(
+                    job_id, timeout=min(self.timeout, remaining)
+                )
+            except ClientError:
+                if time.monotonic() >= deadline:
+                    raise TaskTimeoutError(
+                        "Task state is unknown; do not resubmit"
+                    ) from None
+                raise
+            if result.get("status") == "failed":
+                raise TaskFailedError("Task failed")
+            if result.get("status") == "completed":
                 return result
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -303,33 +396,23 @@ class ApiClient:
                     raise ClientError("Task has no downloadable outputs")
                 url = output["url"]
                 stem = f"output-{index:02d}"
-                extension = _url_extension(url)
-                destination = output_path / (
-                    stem + extension if extension else stem + ".download"
+                destination = _download(
+                    url,
+                    output_path / stem,
+                    self.timeout,
                 )
-                content_type = _download(url, destination, self.timeout)
-                if not extension:
-                    extension = mimetypes.guess_extension(content_type) or ".bin"
-                    final_destination = output_path / (stem + extension)
-                    if final_destination.exists():
-                        destination.unlink(missing_ok=True)
-                        raise ClientError("Output file already exists")
-                    try:
-                        destination.rename(final_destination)
-                    except OSError:
-                        destination.unlink(missing_ok=True)
-                        raise ClientError("Download failed") from None
-                    destination = final_destination
                 files.append(destination)
-        except ClientError:
+        except Exception as error:
             for path in files:
                 path.unlink(missing_ok=True)
-            raise
+            if isinstance(error, ClientError):
+                raise
+            raise ClientError("Download failed") from None
         return {"files": [str(path) for path in files]}
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Use public Lingjing media APIs")
+    parser = JsonArgumentParser(description="Use public Lingjing media APIs")
     commands = parser.add_subparsers(dest="command", required=True)
 
     models = commands.add_parser("models")
@@ -370,8 +453,8 @@ def main(argv=None):
     download.add_argument("job_id")
     download.add_argument("--output-dir", required=True)
 
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         client = ApiClient(
             os.environ.get("LINGJING_BASE_URL", ""),
             os.environ.get("LINGJING_API_KEY", ""),

@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,18 +58,64 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 json.dumps({"id": "job_timeout", "status": "processing"}).encode()
             )
             return
+        if self.path == "/v1/tasks/job_redirect":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-target")
+            self.end_headers()
+            return
+        if self.path == "/v1/tasks/job_slow":
+            time.sleep(self.server.slow_delay)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps(
+                        {"id": "job_slow", "status": "processing"}
+                    ).encode()
+                )
+            except (
+                BrokenPipeError,
+                ConnectionAbortedError,
+                ConnectionResetError,
+            ):
+                pass
+            return
+        if self.path == "/v1/tasks/job_terminal_failed":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "id": "job_terminal_failed",
+                        "status": "failed",
+                        "error": {"code": "server-controlled-secret"},
+                    }
+                ).encode()
+            )
+            return
         task_outputs = {
-            "/v1/tasks/job_download": "/media/output.png",
-            "/v1/tasks/job_file_url": "file:///tmp/output.png",
-            "/v1/tasks/job_oversized": "/media/oversized.bin",
-            "/v1/tasks/job_download_failed": "/media/failure.png",
+            "/v1/tasks/job_download": ["/media/output.png"],
+            "/v1/tasks/job_file_url": ["file:///tmp/output.png"],
+            "/v1/tasks/job_oversized": ["/media/oversized.bin"],
+            "/v1/tasks/job_download_failed": ["/media/failure.png"],
+            "/v1/tasks/job_redirect_download": ["/media/redirect-unsafe"],
+            "/v1/tasks/job_malformed_outputs": [
+                "/media/output.png",
+                "http://[::1",
+            ],
+            "/v1/tasks/job_traversal": ["/media/../../server-name.png"],
+            "/v1/tasks/job_no_extension": ["/media/no-extension"],
         }
         if self.path in task_outputs:
-            output_url = task_outputs[self.path]
-            if output_url.startswith("/"):
-                output_url = (
-                    f"http://127.0.0.1:{self.server.server_port}{output_url}"
-                )
+            output_urls = []
+            for output_url in task_outputs[self.path]:
+                if output_url.startswith("/"):
+                    output_url = (
+                        f"http://127.0.0.1:{self.server.server_port}{output_url}"
+                    )
+                output_urls.append(output_url)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -77,7 +124,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     {
                         "id": self.path.rsplit("/", 1)[-1],
                         "status": "completed",
-                        "outputs": [{"url": output_url}],
+                        "outputs": [{"url": url} for url in output_urls],
                     }
                 ).encode()
             )
@@ -88,6 +135,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"fixture-png")
             return
+        if self.path == "/media/no-extension" or self.path.endswith(
+            "/server-name.png"
+        ):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.end_headers()
+            self.wfile.write(b"fixture-png")
+            return
+        if self.path == "/media/redirect-unsafe":
+            self.send_response(302)
+            self.send_header("Location", "file:///tmp/unsafe-output.png")
+            self.end_headers()
+            return
         if self.path == "/media/oversized.bin":
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -97,6 +157,12 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if self.path == "/media/failure.png":
             self.send_response(500)
             self.end_headers()
+            return
+        if self.path == "/redirect-target":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"redirected": True}).encode())
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -115,6 +181,25 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 "json": json.loads(body.decode()),
             }
         )
+        if (
+            self.path == "/v1/images/generations"
+            and self.server.post_redirect
+        ):
+            self.send_response(302)
+            self.send_header("Location", "/redirect-target")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "redirect",
+                            "message": self.headers.get("Idempotency-Key"),
+                        }
+                    }
+                ).encode()
+            )
+            return
         if self.server.post_error_message is not None:
             self.send_response(409)
             self.send_header("Content-Type", "application/json")
@@ -147,7 +232,9 @@ class ApiClientTest(unittest.TestCase):
         cls.server.requests = []
         cls.server.error_message = "Job failed"
         cls.server.post_error_message = None
+        cls.server.post_redirect = False
         cls.server.wait_reads = 0
+        cls.server.slow_delay = 1.0
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
 
@@ -161,6 +248,7 @@ class ApiClientTest(unittest.TestCase):
         self.server.requests.clear()
         self.server.error_message = "Job failed"
         self.server.post_error_message = None
+        self.server.post_redirect = False
         self.server.wait_reads = 0
         self.client = ApiClient(f"http://127.0.0.1:{self.server.server_port}/v1", "test-key")
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -190,6 +278,30 @@ class ApiClientTest(unittest.TestCase):
         with self.assertRaisesRegex(ClientError, "operation is not allowed"):
             self.client._request("POST", "/tasks/job_example", payload={})
         self.assertEqual(self.server.requests, [])
+
+    def test_authenticated_get_rejects_redirect_without_followup(self):
+        with self.assertRaises(ClientError) as caught:
+            self.client.task("job_redirect")
+        self.assertNotIn("redirect-target", str(caught.exception))
+        self.assertEqual(
+            [request["path"] for request in self.server.requests],
+            ["/v1/tasks/job_redirect"],
+        )
+
+    def test_paid_post_rejects_redirect_without_followup_or_secret_leak(self):
+        idempotency_key = "redirect-idempotency-secret"
+        self.server.post_redirect = True
+        with self.assertRaises(ClientError) as caught:
+            self.client.generate_image(
+                model="fixture-image",
+                prompt="redirect",
+                idempotency_key=idempotency_key,
+            )
+        self.assertNotIn(idempotency_key, str(caught.exception))
+        self.assertEqual(
+            [request["path"] for request in self.server.requests],
+            ["/v1/images/generations"],
+        )
 
     def test_image_submits_once_with_idempotency(self):
         result = self.client.generate_image(
@@ -245,6 +357,38 @@ class ApiClientTest(unittest.TestCase):
                     self.client.wait_for_task("job_wait", **values)
                 self.assertEqual(self.server.requests, [])
 
+    def test_wait_rejects_nan_and_infinite_timeouts_independently(self):
+        for timeout in (float("nan"), float("inf")):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(
+                    ClientError, "finite non-negative numbers"
+                ):
+                    self.client.wait_for_task(
+                        "job_wait", interval=0, timeout=timeout
+                    )
+                self.assertEqual(self.server.requests, [])
+
+    def test_wait_failed_task_raises_sanitized_task_error(self):
+        with self.assertRaisesRegex(ClientError, "^Task failed$") as caught:
+            self.client.wait_for_task(
+                "job_terminal_failed", interval=0, timeout=2
+            )
+        self.assertEqual(type(caught.exception).__name__, "TaskFailedError")
+        self.assertNotIn("server-controlled-secret", str(caught.exception))
+
+    def test_wait_deadline_bounds_each_task_get(self):
+        started = time.monotonic()
+        with self.assertRaisesRegex(
+            ClientError, "Task state is unknown; do not resubmit"
+        ) as caught:
+            self.client.wait_for_task("job_slow", interval=0, timeout=0.05)
+        elapsed = time.monotonic() - started
+        self.assertEqual(type(caught.exception).__name__, "TaskTimeoutError")
+        self.assertLess(elapsed, 0.5)
+        self.assertFalse(
+            any(request["method"] == "POST" for request in self.server.requests)
+        )
+
     def test_download_does_not_forward_authorization(self):
         result = self.client.download_task("job_download", self.output_dir)
         self.assertEqual(len(result["files"]), 1)
@@ -273,6 +417,57 @@ class ApiClientTest(unittest.TestCase):
         with self.assertRaisesRegex(ClientError, "Download failed"):
             self.client.download_task("job_download_failed", self.output_dir)
         self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_download_rejects_unsafe_redirect_without_partial_file(self):
+        with self.assertRaisesRegex(ClientError, "redirect"):
+            self.client.download_task(
+                "job_redirect_download", self.output_dir
+            )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+        self.assertIsNone(
+            next(
+                request
+                for request in self.server.requests
+                if request["path"] == "/media/redirect-unsafe"
+            )["authorization"]
+        )
+
+    def test_malformed_later_output_rolls_back_earlier_file(self):
+        with self.assertRaisesRegex(ClientError, "Unsafe output URL"):
+            self.client.download_task(
+                "job_malformed_outputs", self.output_dir
+            )
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_download_uses_fixed_basename_for_traversal_shaped_url(self):
+        result = self.client.download_task("job_traversal", self.output_dir)
+        downloaded = Path(result["files"][0])
+        self.assertEqual(downloaded.name, "output-01.png")
+        self.assertEqual(downloaded.parent, self.output_dir)
+
+    def test_download_preserves_preexisting_destination(self):
+        existing = self.output_dir / "output-01.png"
+        existing.write_bytes(b"keep-me")
+        with self.assertRaisesRegex(ClientError, "already exists"):
+            self.client.download_task(
+                "job_no_extension", self.output_dir
+            )
+        self.assertEqual(existing.read_bytes(), b"keep-me")
+
+    def test_download_does_not_follow_existing_destination_symlink(self):
+        external = self.output_dir / "external.bin"
+        external.write_bytes(b"outside")
+        destination = self.output_dir / "output-01.png"
+        try:
+            destination.symlink_to(external)
+        except OSError as error:
+            self.skipTest(f"Symlinks unavailable: {error}")
+        with self.assertRaisesRegex(ClientError, "already exists"):
+            self.client.download_task(
+                "job_no_extension", self.output_dir
+            )
+        self.assertTrue(destination.is_symlink())
+        self.assertEqual(external.read_bytes(), b"outside")
 
     def test_cli_image_parses_parameters_and_emits_json(self):
         stdout = StringIO()
@@ -431,6 +626,60 @@ class ApiClientTest(unittest.TestCase):
             if request["path"] == "/v1/images/generations"
         ]
         self.assertEqual(len(submissions), 1)
+
+    def test_cli_failed_task_emits_json_error(self):
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch.dict(
+            os.environ,
+            {
+                "LINGJING_BASE_URL": self.client.base_url,
+                "LINGJING_API_KEY": "test-key",
+            },
+        ), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "wait",
+                    "job_terminal_failed",
+                    "--interval",
+                    "0",
+                    "--timeout",
+                    "2",
+                ]
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            json.loads(stderr.getvalue()),
+            {
+                "ok": False,
+                "error": {
+                    "type": "client_error",
+                    "message": "Task failed",
+                },
+            },
+        )
+
+    def test_cli_argument_errors_use_json_contract_without_usage_noise(self):
+        cases = (
+            ["unknown-command"],
+            ["image", "--model", "fixture-image"],
+            ["wait", "job_wait", "--timeout", "not-a-number"],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv):
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(argv)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertNotIn("usage:", stderr.getvalue().lower())
+                error = json.loads(stderr.getvalue())
+                self.assertEqual(error["ok"], False)
+                self.assertEqual(
+                    error["error"]["type"], "client_error"
+                )
 
     def test_error_does_not_expose_key(self):
         with self.assertRaises(ApiError) as caught:
