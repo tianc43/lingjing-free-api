@@ -68,6 +68,29 @@ function repositoryWithUnknownJob(): {
   };
 }
 
+function repositoryWithDiscoveringErrorJob(): {
+  repository: SqliteJobRepository;
+  job: JobRecord;
+} {
+  const directory = mkdtempSync(join(tmpdir(), "lingjing-poller-"));
+  directories.push(directory);
+  const repository = new SqliteJobRepository(join(directory, "jobs.sqlite"));
+  const created = repository.createOrGet(fixtureNewJob).job;
+  const submitting = repository.transition(created.id, ["queued"], {
+    status: "submitting",
+    submittedAt: 10_000,
+    upstreamFingerprint: "b".repeat(64)
+  });
+  return {
+    repository,
+    job: repository.transition(submitting.id, ["submitting"], {
+      status: "discovering",
+      upstreamTaskId: "fixture-task",
+      errorCode: "generation_discovery_read_failed"
+    })
+  };
+}
+
 function transportWithTask(task: unknown): {
   transport: LingjingTransport;
   read: ReturnType<typeof vi.fn>;
@@ -129,6 +152,23 @@ describe("LingjingTaskPoller", () => {
       expect(result).toMatchObject({
         status: "processing",
         errorCode: null
+      });
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("preserves a discovering error when polling starts processing", async () => {
+    const { repository, job } = repositoryWithDiscoveringErrorJob();
+    const { transport } = transportWithTask({ status: 0 });
+    const poller = new LingjingTaskPoller({ repository, transport });
+
+    try {
+      const result = await poller.poll(job);
+
+      expect(result).toMatchObject({
+        status: "processing",
+        errorCode: "generation_discovery_read_failed"
       });
     } finally {
       repository.close();

@@ -112,7 +112,7 @@ export class LingjingTaskPoller implements TaskPoller {
         ["discovering", "unknown"],
         {
           status: "processing",
-          errorCode: null
+          ...(job.status === "unknown" ? { errorCode: null } : {})
         }
       );
     }
