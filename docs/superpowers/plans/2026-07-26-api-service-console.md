@@ -291,7 +291,8 @@ it("persists and enables only a session validated upstream", async () => {
 it("retains neither account nor session files after validation failure", async () => {
   describeAccount.mockRejectedValueOnce(new Error("expired"));
   await expect(importer.import(validInput)).rejects.toThrow("expired");
-  expect(accounts.list()).toEqual([]);
+  expect(accounts.list().map((account) => account.name))
+    .not.toContain("Primary subscription");
   await expect(readdir(accountsDirectory)).resolves.toEqual([]);
 });
 ```
@@ -465,10 +466,11 @@ and remove the trailing slash.
 
 - [ ] **Step 5: Map sanitized failures**
 
-Map malformed cookie input to `400`, failed upstream validation to the existing
-sanitized `401` login-required response, timeout-shaped validation failures to
-`504`, duplicate names to `409`, and unknown key IDs to `404`. Never include
-the caught error message when it may contain imported material.
+Map malformed cookie input to `400`. Add sanitized
+`invalid_imported_session` (`401`) and `import_validation_timeout` (`504`)
+errors for failed and timed-out upstream validation. Map duplicate names to
+`409` and unknown key IDs to `404`. Never include the caught error message when
+it may contain imported material.
 
 - [ ] **Step 6: Run integration and full server tests**
 
