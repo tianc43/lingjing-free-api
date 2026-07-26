@@ -53,6 +53,21 @@ function repositoryWithProcessingJob(): {
   };
 }
 
+function repositoryWithUnknownJob(): {
+  repository: SqliteJobRepository;
+  job: JobRecord;
+} {
+  const { repository, job } = repositoryWithProcessingJob();
+  return {
+    repository,
+    job: repository.transition(job.id, ["processing"], {
+      status: "unknown",
+      unknownHoldUntil: 20_000,
+      errorCode: "generation_discovery_timeout"
+    })
+  };
+}
+
 function transportWithTask(task: unknown): {
   transport: LingjingTransport;
   read: ReturnType<typeof vi.fn>;
@@ -101,6 +116,43 @@ describe("LingjingTaskPoller", () => {
       }
     );
     repository.close();
+  });
+
+  it("clears a recovered unknown error when polling resumes processing", async () => {
+    const { repository, job } = repositoryWithUnknownJob();
+    const { transport } = transportWithTask({ status: 0 });
+    const poller = new LingjingTaskPoller({ repository, transport });
+
+    try {
+      const result = await poller.poll(job);
+
+      expect(result).toMatchObject({
+        status: "processing",
+        errorCode: null
+      });
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("clears a recovered unknown error when polling completes", async () => {
+    const { repository, job } = repositoryWithUnknownJob();
+    const { transport } = transportWithTask({
+      status: 1,
+      taskResults: [{ imageUrl: "https://media.example/final.png" }]
+    });
+    const poller = new LingjingTaskPoller({ repository, transport });
+
+    try {
+      const result = await poller.poll(job);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        errorCode: null
+      });
+    } finally {
+      repository.close();
+    }
   });
 
   it("keeps status one without media recoverable and consults assets", async () => {

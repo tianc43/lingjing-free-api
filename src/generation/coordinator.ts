@@ -502,7 +502,8 @@ implements GenerationCoordinator {
         return;
       }
       current = this.transition(current.id, ["unknown"], {
-        status: "processing"
+        status: "processing",
+        errorCode: null
       });
       this.refreshProcessingLease(current, runtime);
     }
@@ -588,7 +589,8 @@ implements GenerationCoordinator {
         status: "processing",
         creationCode: asset.creationCode,
         upstreamTaskId: asset.taskId,
-        discoveredAt: this.now()
+        discoveredAt: this.now(),
+        errorCode: null
       }
     );
     this.refreshProcessingLease(processing, runtime);

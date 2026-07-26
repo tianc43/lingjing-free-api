@@ -761,7 +761,7 @@ describe("LingjingGenerationCoordinator", () => {
       if (app.repository.findById(unknown.id)?.status === "processing") break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    expect(app.repository.findById(unknown.id)?.status).toBe("processing");
+    const processing = app.repository.findById(unknown.id);
     now = 101;
     app.capacity.expireUnknown(now);
 
@@ -769,7 +769,14 @@ describe("LingjingGenerationCoordinator", () => {
     app.setTaskStatuses("fixture-processing-lease-task", [1]);
     await app.registry.waitUntilIdle();
     expect(remainedActive).toBe(true);
-    expect(app.repository.findById(unknown.id)?.status).toBe("completed");
+    expect(processing).toMatchObject({
+      status: "processing",
+      errorCode: null
+    });
+    expect(app.repository.findById(unknown.id)).toMatchObject({
+      status: "completed",
+      errorCode: null
+    });
     expect(app.submitCount()).toBe(0);
   });
 
@@ -812,11 +819,14 @@ describe("LingjingGenerationCoordinator", () => {
     now = 101;
     app.capacity.expireUnknown(now);
 
-    const statusWhileBlocked = app.repository.findById(unknown.id)?.status;
+    const processingWhileBlocked = app.repository.findById(unknown.id);
     const activeWhileBlocked = app.capacity.activeJobIds().includes(unknown.id);
     gate.release();
     await app.registry.waitUntilIdle();
-    expect(statusWhileBlocked).toBe("processing");
+    expect(processingWhileBlocked).toMatchObject({
+      status: "processing",
+      errorCode: null
+    });
     expect(activeWhileBlocked).toBe(true);
     expect(app.repository.findById(unknown.id)?.status).toBe("completed");
     expect(app.submitCount()).toBe(0);

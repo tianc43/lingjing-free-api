@@ -110,7 +110,10 @@ export class LingjingTaskPoller implements TaskPoller {
       return this.options.repository.transition(
         job.id,
         ["discovering", "unknown"],
-        { status: "processing" }
+        {
+          status: "processing",
+          errorCode: null
+        }
       );
     }
 
@@ -148,7 +151,8 @@ export class LingjingTaskPoller implements TaskPoller {
       {
         status: "completed",
         completedAt: this.now(),
-        result
+        result,
+        errorCode: null
       }
     );
   }
