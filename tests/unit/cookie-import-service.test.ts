@@ -3,14 +3,21 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
+import {
+  CookieImportRollbackError,
+  CookieImportService
+} from "../../src/accounts/cookie-import-service.js";
 import type { AccountRuntimeRegistry } from "../../src/accounts/runtime-registry.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
 import { parseConfig } from "../../src/config.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
-const filesystem = vi.hoisted(() => ({ failRemove: false, removeCalls: 0 }));
+const filesystem = vi.hoisted(() => ({
+  events: [] as string[],
+  failRemove: false,
+  removeCalls: 0
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -18,6 +25,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ...actual,
     rm: (...arguments_: Parameters<typeof actual.rm>) => {
       filesystem.removeCalls += 1;
+      filesystem.events.push("session");
       if (filesystem.failRemove) {
         return Promise.reject(new Error("fixture session cleanup failure"));
       }
@@ -31,6 +39,7 @@ const temporaryDirectories: string[] = [];
 afterEach(() => {
   filesystem.failRemove = false;
   filesystem.removeCalls = 0;
+  filesystem.events = [];
   for (const directory of temporaryDirectories.splice(0)) {
     removeTestDirectory(directory);
   }
@@ -167,37 +176,44 @@ describe("CookieImportService", () => {
     }
   });
 
-  it("reports incomplete rollback and still removes the account when session cleanup fails", async () => {
-    const { accounts, importer, runtimes, store } = await fixture();
+  it("keeps a disabled account tombstone and does not delete its row when session cleanup fails", async () => {
+    const { accounts, config, importer, runtimes, store } = await fixture();
     const removeUnbound = vi.spyOn(accounts, "removeUnbound");
     runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
     filesystem.failRemove = true;
 
     try {
       const failure = await importer.import(validInput).catch((error: unknown) => error);
-      if (!(failure instanceof AggregateError)) {
-        throw new TypeError("Expected an AggregateError");
-      }
-      expect(failure.message).toBe("Cookie import failed and rollback was incomplete");
-      expect(failure.cause).toMatchObject({ message: "upstream refresh failure" });
-      expect(failure.errors).toEqual([
-        expect.objectContaining({ message: "upstream refresh failure" }),
-        expect.objectContaining({ message: "Failed to remove imported session" })
-      ]);
+      expect(failure).toBeInstanceOf(CookieImportRollbackError);
+      expect(failure).toMatchObject({
+        code: "cookie_import_rollback_incomplete",
+        message: "Cookie import failed and rollback was incomplete"
+      });
       expect(JSON.stringify(failure)).not.toContain("fixture-csrf");
       expect(JSON.stringify(failure)).not.toContain("accounts");
-      expect(removeUnbound).toHaveBeenCalledTimes(1);
-      expect(accounts.list().map((account) => account.name))
-        .not.toContain("Primary subscription");
+      expect(removeUnbound).not.toHaveBeenCalled();
+      expect(accounts.list()).toContainEqual(
+        expect.objectContaining({
+          name: "Primary subscription",
+          enabled: false
+        })
+      );
+      await expect(readdir(join(config.dataDirectory, "accounts")))
+        .resolves.toHaveLength(1);
     } finally {
       store.close();
     }
   });
 
-  it("reports incomplete rollback and still removes the session when database cleanup fails", async () => {
+  it("removes the session before row cleanup and keeps the disabled row when row cleanup fails", async () => {
     const { accounts, config, describeAccount, runtimes, store } = await fixture();
     const removeUnbound = vi.fn(() => {
+      filesystem.events.push("row");
       throw new Error("fixture database cleanup failure");
+    });
+    const update = vi.fn<SqliteAccountRepository["update"]>((id, patch) => {
+      if (patch.enabled === false) filesystem.events.push("disable");
+      return accounts.update(id, patch);
     });
     const importer = new CookieImportService({
       accounts: {
@@ -205,7 +221,7 @@ describe("CookieImportService", () => {
         findById: accounts.findById.bind(accounts),
         recordObservation: accounts.recordObservation.bind(accounts),
         removeUnbound,
-        update: accounts.update.bind(accounts)
+        update
       },
       config,
       runtimes,
@@ -215,27 +231,38 @@ describe("CookieImportService", () => {
 
     try {
       const failure = await importer.import(validInput).catch((error: unknown) => error);
-      if (!(failure instanceof AggregateError)) {
-        throw new TypeError("Expected an AggregateError");
-      }
-      expect(failure.message).toBe("Cookie import failed and rollback was incomplete");
-      expect(failure.cause).toMatchObject({ message: "upstream refresh failure" });
-      expect(failure.errors).toEqual([
-        expect.objectContaining({ message: "upstream refresh failure" }),
-        expect.objectContaining({ message: "Failed to remove imported account" })
-      ]);
+      expect(failure).toBeInstanceOf(CookieImportRollbackError);
+      expect(failure).toMatchObject({
+        code: "cookie_import_rollback_incomplete",
+        message: "Cookie import failed and rollback was incomplete"
+      });
+      expect(filesystem.events).toEqual(["disable", "session", "row"]);
       expect(removeUnbound).toHaveBeenCalledTimes(1);
       expect(filesystem.removeCalls).toBe(1);
       await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+      expect(accounts.list()).toContainEqual(
+        expect.objectContaining({
+          name: "Primary subscription",
+          enabled: false
+        })
+      );
     } finally {
       store.close();
     }
   });
 
-  it("reports both cleanup failures after attempting both compensations", async () => {
+  it("does not remove the session or row when disabling the account fails", async () => {
     const { accounts, config, describeAccount, runtimes, store } = await fixture();
     const removeUnbound = vi.fn(() => {
-      throw new Error("fixture database cleanup failure");
+      filesystem.events.push("row");
+      accounts.removeUnbound("unreachable");
+    });
+    const update = vi.fn<SqliteAccountRepository["update"]>((id, patch) => {
+      if (patch.enabled === false) {
+        filesystem.events.push("disable");
+        throw new Error("fixture disable failure C:\\private\\session");
+      }
+      return accounts.update(id, patch);
     });
     const importer = new CookieImportService({
       accounts: {
@@ -243,25 +270,37 @@ describe("CookieImportService", () => {
         findById: accounts.findById.bind(accounts),
         recordObservation: accounts.recordObservation.bind(accounts),
         removeUnbound,
-        update: accounts.update.bind(accounts)
+        update
       },
       config,
       runtimes,
       describeAccount
     });
     runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
-    filesystem.failRemove = true;
 
     try {
       const failure = await importer.import(validInput).catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(AggregateError);
-      expect((failure as AggregateError).errors).toEqual([
-        expect.objectContaining({ message: "upstream refresh failure" }),
-        expect.objectContaining({ message: "Failed to remove imported session" }),
-        expect.objectContaining({ message: "Failed to remove imported account" })
-      ]);
-      expect(filesystem.removeCalls).toBe(1);
-      expect(removeUnbound).toHaveBeenCalledTimes(1);
+      expect(failure).toBeInstanceOf(CookieImportRollbackError);
+      expect(failure).toMatchObject({
+        code: "cookie_import_rollback_incomplete",
+        message: "Cookie import failed and rollback was incomplete"
+      });
+      expect(JSON.stringify(failure)).not.toContain("private");
+      expect(filesystem.events).toEqual(["disable"]);
+      expect(filesystem.removeCalls).toBe(0);
+      expect(removeUnbound).not.toHaveBeenCalled();
+      expect(accounts.list()).toContainEqual(
+        expect.objectContaining({
+          name: "Primary subscription",
+          enabled: true
+        })
+      );
+      const account = accounts.list().find(
+        (candidate) => candidate.name === "Primary subscription"
+      );
+      if (account === undefined) throw new Error("Expected retained account");
+      await expect(readdir(join(config.dataDirectory, "accounts", account.id)))
+        .resolves.toEqual(["session-profile.json", "storage-state.json"]);
     } finally {
       store.close();
     }

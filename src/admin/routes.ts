@@ -5,6 +5,7 @@ import type {
 } from "fastify";
 import { existsSync } from "node:fs";
 import { budgetWindows } from "../accounts/budget.js";
+import { CookieImportRollbackError } from "../accounts/cookie-import-service.js";
 import type { BudgetState } from "../accounts/sqlite-admission-repository.js";
 import type { AccountRecord } from "../accounts/types.js";
 import type { ApiKeyRecord } from "../api-keys/types.js";
@@ -260,6 +261,9 @@ const INVALID_COOKIE_IMPORT_MESSAGES = new Set([
 ]);
 
 function importFailure(cause: unknown) {
+  if (cause instanceof CookieImportRollbackError) {
+    return errors.cookieImportRollbackIncomplete();
+  }
   if (
     cause instanceof Error
     && INVALID_COOKIE_IMPORT_MESSAGES.has(cause.message)
@@ -440,6 +444,7 @@ export async function registerAdminRoutes(
           401: errorResponseSchema,
           403: errorResponseSchema,
           409: errorResponseSchema,
+          500: errorResponseSchema,
           504: errorResponseSchema
         }
       })

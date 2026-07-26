@@ -73,6 +73,7 @@ export const errors = {
   csrfExpired: () => new AppError(503, "session_refresh_required", "lingjing_csrf_expired", "Lingjing session refresh required"),
   invalidImportedSession: () => new AppError(401, "authentication_error", "invalid_imported_session", "Imported session is invalid"),
   importValidationTimeout: () => new AppError(504, "upstream_error", "import_validation_timeout", "Imported session validation timed out"),
+  cookieImportRollbackIncomplete: () => new AppError(500, "server_error", "cookie_import_rollback_incomplete", "Cookie import rollback was incomplete"),
   permissionDenied: () => new AppError(403, "permission_denied", "lingjing_permission_denied", "Lingjing permission denied"),
   invalidRequest: (message: string, param: string | null = null) => new AppError(400, "invalid_request_error", "invalid_request", message, param),
   catalogChanged: () => new AppError(409, "invalid_request_error", "model_catalog_changed", "Lingjing model catalog changed"),

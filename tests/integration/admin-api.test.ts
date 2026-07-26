@@ -4,6 +4,7 @@ import type {
   LightMyRequestResponse
 } from "fastify";
 import { budgetWindows } from "../../src/accounts/budget.js";
+import { CookieImportRollbackError } from "../../src/accounts/cookie-import-service.js";
 import { adminCookieOptions } from "../../src/admin/routes.js";
 import {
   createTestApp,
@@ -253,6 +254,44 @@ describe("administrator API", () => {
       error: { code: "import_validation_timeout" }
     });
     importer.import = originalImport;
+  });
+
+  it("returns a dedicated sanitized server error when cookie import rollback is incomplete", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const importer = (fixture.dependencies as unknown as {
+      cookieImporter: { import(): Promise<never> };
+    }).cookieImporter;
+    importer.import = () => Promise.reject(new CookieImportRollbackError());
+
+    const response = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Rollback incomplete",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+        cookie_format: "header",
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
+      }
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        message: "Cookie import rollback was incomplete",
+        type: "server_error",
+        param: null,
+        code: "cookie_import_rollback_incomplete"
+      }
+    });
+    assertNoSensitiveValues(response.body, [
+      "fixture-csrf",
+      "fixture-private-pin",
+      "C:\\private\\session",
+      "upstream refresh failure"
+    ]);
   });
 
   it("creates, lists, disables, enables and revokes a managed API key", async () => {

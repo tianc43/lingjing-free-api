@@ -25,6 +25,15 @@ export interface CookieImportServiceOptions {
   describeAccount?: (session: SessionProvider) => Promise<AccountSnapshot>;
 }
 
+export class CookieImportRollbackError extends Error {
+  readonly code = "cookie_import_rollback_incomplete";
+
+  constructor() {
+    super("Cookie import failed and rollback was incomplete");
+    this.name = "CookieImportRollbackError";
+  }
+}
+
 function observationFrom(snapshot: AccountSnapshot): AccountObservation {
   return {
     healthStatus: "ready",
@@ -63,30 +72,20 @@ export class CookieImportService {
       if (imported === null) throw new Error("Imported account could not be read");
       return imported;
     } catch (cause) {
-      const failures: Error[] = [];
       try {
         this.options.accounts.update(account.id, { enabled: false });
       } catch {
-        failures.push(new Error("Failed to disable imported account"));
+        throw new CookieImportRollbackError();
       }
-      const cleanup = await Promise.allSettled([
-        this.removeNewSession(account.id),
-        Promise.resolve().then(() => {
-          this.options.accounts.removeUnbound(account.id);
-        })
-      ]);
-      if (cleanup[0].status === "rejected") {
-        failures.push(new Error("Failed to remove imported session"));
+      try {
+        await this.removeNewSession(account.id);
+      } catch {
+        throw new CookieImportRollbackError();
       }
-      if (cleanup[1].status === "rejected") {
-        failures.push(new Error("Failed to remove imported account"));
-      }
-      if (failures.length > 0) {
-        throw new AggregateError(
-          [cause, ...failures],
-          "Cookie import failed and rollback was incomplete",
-          { cause }
-        );
+      try {
+        this.options.accounts.removeUnbound(account.id);
+      } catch {
+        throw new CookieImportRollbackError();
       }
       throw cause;
     }
