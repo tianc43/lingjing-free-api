@@ -69,6 +69,11 @@ describe("redactForLog", () => {
       cookie: "fixture-top-level-cookie-secret",
       csrfToken: "fixture-csrf-secret",
       originPin: "fixture-origin-pin-secret",
+      cookie_input: "fixture-cookie-input-secret",
+      cookieInput: "fixture-cookie-input-camel-secret",
+      api_key: "fixture-api-key-secret",
+      apiKey: "fixture-api-key-camel-secret",
+      secret: "fixture-generic-secret",
       prompt: "private prompt",
       input_images: ["https://example.com/image.png?media-secret=yes#fragment-secret"],
       callbackUrl: "https://example.com/callback?query-secret=yes#fragment-secret",
@@ -84,14 +89,21 @@ describe("redactForLog", () => {
         body: { output: "body-secret" }
       },
       err: { code: "safe_error_code", stack: "private-stack" },
-      nested: { cause: { cookie: "fixture-nested-cookie-secret" } }
+      nested: {
+        cause: { cookie: "fixture-nested-cookie-secret" },
+        cookie_input: "fixture-nested-cookie-input-secret",
+        apiKey: "fixture-nested-api-key-secret",
+        secret: "fixture-nested-generic-secret"
+      }
     }, "safe log");
 
     const serialized = output.join("");
     for (const secret of [
       "fixture-top-level-secret", "fixture-top-level-cookie-secret", "fixture-csrf-secret", "fixture-origin-pin-secret",
+      "fixture-cookie-input-secret", "fixture-cookie-input-camel-secret", "fixture-api-key-secret", "fixture-api-key-camel-secret", "fixture-generic-secret",
       "private prompt", "media-secret", "query-secret", "fragment-secret", "request-secret",
-      "fixture-request-cookie-secret", "body-secret", "fixture-response-cookie-secret", "private-stack", "fixture-nested-cookie-secret"
+      "fixture-request-cookie-secret", "body-secret", "fixture-response-cookie-secret", "private-stack", "fixture-nested-cookie-secret",
+      "fixture-nested-cookie-input-secret", "fixture-nested-api-key-secret", "fixture-nested-generic-secret"
     ]) {
       expect(serialized).not.toContain(secret);
     }
@@ -102,10 +114,20 @@ describe("redactForLog", () => {
       err: { code: "safe_error_code" },
       csrfToken: "[REDACTED]",
       originPin: "[REDACTED]",
+      cookie_input: "[REDACTED]",
+      cookieInput: "[REDACTED]",
+      api_key: "[REDACTED]",
+      apiKey: "[REDACTED]",
+      secret: "[REDACTED]",
       prompt: "[REDACTED]",
       input_images: "[REDACTED]",
       callbackUrl: "https://example.com/callback",
-      nested: { cause: "[REDACTED]" }
+      nested: {
+        cause: "[REDACTED]",
+        cookie_input: "[REDACTED]",
+        apiKey: "[REDACTED]",
+        secret: "[REDACTED]"
+      }
     });
   });
 

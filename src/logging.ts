@@ -2,7 +2,8 @@ import pino, { type DestinationStream, type Logger, type LoggerOptions } from "p
 
 const REDACTED = "[REDACTED]";
 const secretKeys = new Set([
-  "authorization", "cookie", "set-cookie", "csrf", "csrftoken", "x-csrf-token", "originpin", "storagestate"
+  "authorization", "cookie", "set-cookie", "csrf", "csrftoken", "x-csrf-token", "originpin", "storagestate",
+  "cookie_input", "cookieinput", "api_key", "apikey", "secret"
 ]);
 const promptKeys = new Set(["prompt", "negative_prompt", "system_prompt", "text", "content"]);
 const mediaKeys = new Set(["input_images", "images", "media", "video", "videos"]);
@@ -97,6 +98,9 @@ const loggerOptions: LoggerOptions = {
       "req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie",
       "csrfToken", "originPin", "prompt", "input_images", "storageState",
       "*.csrfToken", "*.originPin", "*.prompt", "*.input_images", "*.storageState",
+      "cookie_input", "cookieInput", "api_key", "apiKey", "secret",
+      "*.cookie_input", "*.cookieInput", "*.api_key", "*.apiKey", "*.secret",
+      "*.*.cookie_input", "*.*.cookieInput", "*.*.api_key", "*.*.apiKey", "*.*.secret",
       "cause", "*.cause", "*.*.cause"
     ],
     censor: REDACTED
