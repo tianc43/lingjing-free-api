@@ -1,4 +1,4 @@
-import { Cookie, CookieJar, domainMatch } from "tough-cookie";
+import { Cookie, CookieJar, domainMatch, pathMatch } from "tough-cookie";
 import type { SessionProvider, SessionSnapshot } from "./types.js";
 
 const MAX_INPUT_BYTES = 64 * 1024;
@@ -123,11 +123,15 @@ function domainMatchesLingjing(cookie: PlaywrightCookie): boolean {
   return domainMatch(SESSION_ORIGIN.hostname, cookie.domain.replace(/^\./u, "")) === true;
 }
 
+function pathMatchesLingjing(cookie: PlaywrightCookie): boolean {
+  return pathMatch(SESSION_ORIGIN.pathname, cookie.path);
+}
+
 function extractCredentials(cookies: PlaywrightCookie[]): ParsedImport {
   if (cookies.length > MAX_COOKIES) {
     throw new Error("Too many cookies");
   }
-  const csrfCookies = cookies.filter((cookie) => cookie.name === "csrfToken" && domainMatchesLingjing(cookie));
+  const csrfCookies = cookies.filter((cookie) => cookie.name === "csrfToken");
   if (csrfCookies.length === 0) {
     throw new Error("Lingjing csrfToken cookie is required");
   }
@@ -135,7 +139,7 @@ function extractCredentials(cookies: PlaywrightCookie[]): ParsedImport {
     throw new Error("Duplicate Lingjing csrfToken cookie");
   }
   const csrfCookie = csrfCookies[0];
-  if (csrfCookie === undefined || csrfCookie.value.length === 0) {
+  if (csrfCookie === undefined || !domainMatchesLingjing(csrfCookie) || !pathMatchesLingjing(csrfCookie) || csrfCookie.value.length === 0) {
     throw new Error("Lingjing csrfToken cookie is required");
   }
   const pins = cookies.filter((cookie) => cookie.name === "pin").map((cookie) => {

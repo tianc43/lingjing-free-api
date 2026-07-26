@@ -44,6 +44,27 @@ describe("parseCookieImport", () => {
     })).toThrow("Lingjing csrfToken cookie is required");
   });
 
+  it.each([".jd.com", ".jdpay.com"])("rejects duplicate csrfToken cookies across Lingjing and %s", (domain) => {
+    expect(() => parseCookieImport({
+      format: "json",
+      value: JSON.stringify([
+        { name: "csrfToken", value: "fixture-lingjing-csrf", domain: "lingjing.jdcloud.com", path: "/" },
+        { name: "csrfToken", value: "fixture-other-csrf", domain, path: "/" },
+        { name: "pin", value: "fixture-pin", domain: ".jdcloud.com", path: "/" }
+      ])
+    })).toThrow("Duplicate Lingjing csrfToken cookie");
+  });
+
+  it("requires csrfToken to path-match the Lingjing root URL", () => {
+    expect(() => parseCookieImport({
+      format: "json",
+      value: JSON.stringify([
+        { name: "csrfToken", value: "fixture-csrf", domain: "lingjing.jdcloud.com", path: "/other" },
+        { name: "pin", value: "fixture-pin", domain: ".jdcloud.com", path: "/" }
+      ])
+    })).toThrow("Lingjing csrfToken cookie is required");
+  });
+
   it("rejects untrusted, duplicate, conflicting and over-limit cookies", () => {
     expect(() => parseCookieImport({ format: "json", value: "not-json" }))
       .toThrow("Invalid browser cookie JSON");
