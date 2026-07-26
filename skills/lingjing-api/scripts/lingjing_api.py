@@ -128,11 +128,36 @@ def decode_response(request, timeout, api_key, additional_secrets=()):
         raise ApiError(status, "invalid_response", "The API returned invalid JSON") from None
 
 
+def _validated_auth_header(value, field_name):
+    if not isinstance(value, str):
+        raise ClientError(
+            f"{field_name} contains invalid HTTP header characters"
+        )
+    invalid_character = any(
+        ord(character) < 0x20 or ord(character) == 0x7F
+        for character in value
+    )
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        invalid_character = True
+    if invalid_character:
+        raise ClientError(
+            f"{field_name} contains invalid HTTP header characters"
+        )
+    return value
+
+
 def _submission_headers(idempotency_key=None):
-    return {
-        "Idempotency-Key": idempotency_key
+    value = (
+        idempotency_key
         or os.environ.get("LINGJING_IDEMPOTENCY_KEY")
         or f"lingjing-skill-{uuid.uuid4()}"
+    )
+    return {
+        "Idempotency-Key": _validated_auth_header(
+            value, "LINGJING_IDEMPOTENCY_KEY"
+        )
     }
 
 
@@ -227,7 +252,9 @@ class ApiClient:
         if not api_key:
             raise ClientError("LINGJING_API_KEY is required")
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key = _validated_auth_header(
+            api_key, "LINGJING_API_KEY"
+        )
         self.timeout = timeout
 
     def _request(

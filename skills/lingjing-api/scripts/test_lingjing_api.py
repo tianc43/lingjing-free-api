@@ -627,6 +627,65 @@ class ApiClientTest(unittest.TestCase):
         ]
         self.assertEqual(len(submissions), 1)
 
+    def test_cli_rejects_invalid_api_key_header_as_single_json_error(self):
+        invalid_key = "api-secret\r\nX-Leak: api-header-secret"
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch.dict(
+            os.environ,
+            {
+                "LINGJING_BASE_URL": self.client.base_url,
+                "LINGJING_API_KEY": invalid_key,
+            },
+        ), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(["models"])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(self.server.requests, [])
+        self.assertNotIn(invalid_key, stderr.getvalue())
+        self.assertNotIn("api-header-secret", stderr.getvalue())
+        self.assertNotIn("traceback", stderr.getvalue().lower())
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            json.loads(lines[0])["error"]["type"], "client_error"
+        )
+
+    def test_cli_rejects_invalid_idempotency_header_as_single_json_error(self):
+        invalid_key = (
+            "idempotency-secret\r\nX-Leak: idempotency-header-secret"
+        )
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch.dict(
+            os.environ,
+            {
+                "LINGJING_BASE_URL": self.client.base_url,
+                "LINGJING_API_KEY": "test-key",
+                "LINGJING_IDEMPOTENCY_KEY": invalid_key,
+            },
+        ), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "image",
+                    "--model",
+                    "fixture-image",
+                    "--prompt",
+                    "ink dragon",
+                ]
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(self.server.requests, [])
+        self.assertNotIn(invalid_key, stderr.getvalue())
+        self.assertNotIn("idempotency-header-secret", stderr.getvalue())
+        self.assertNotIn("traceback", stderr.getvalue().lower())
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            json.loads(lines[0])["error"]["type"], "client_error"
+        )
+
     def test_cli_failed_task_emits_json_error(self):
         stdout = StringIO()
         stderr = StringIO()
