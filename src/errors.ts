@@ -66,6 +66,7 @@ export const errors = {
   accountNameConflict: () => new AppError(409, "invalid_request_error", "account_name_conflict", "Account name already exists", "name"),
   apiKeyNameConflict: () => new AppError(409, "invalid_request_error", "api_key_name_conflict", "API key name already exists", "name"),
   apiKeyNotFound: () => new AppError(404, "invalid_request_error", "api_key_not_found", "API key not found", "id"),
+  apiKeyRevoked: () => new AppError(409, "invalid_request_error", "api_key_revoked", "Revoked API key cannot be changed", "id"),
   accountNotFound: () => new AppError(404, "invalid_request_error", "account_not_found", "Account not found", "id"),
   adminJobNotFound: () => new AppError(404, "invalid_request_error", "job_not_found", "Job not found", "id"),
   loginRequired: () => new AppError(503, "login_required", "lingjing_session_expired", "Lingjing login required"),

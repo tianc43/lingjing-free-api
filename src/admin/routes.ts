@@ -510,6 +510,9 @@ export async function registerAdminRoutes(
       enabled: boolean,
       reply: FastifyReply
     ) => {
+      const existing = dependencies.apiKeys.list().find((key) => key.id === id);
+      if (existing === undefined) throw errors.apiKeyNotFound();
+      if (existing.revokedAt !== null) throw errors.apiKeyRevoked();
       const key = apiKeyMutation(() => dependencies.apiKeys.setEnabled(id, enabled));
       return noStore(reply).send({ key: apiKeyView(key) });
     };
@@ -522,7 +525,8 @@ export async function registerAdminRoutes(
           200: apiKeyResponseSchema,
           401: errorResponseSchema,
           403: errorResponseSchema,
-          404: errorResponseSchema
+          404: errorResponseSchema,
+          409: errorResponseSchema
         }
       })
     }, (request, reply) => {
@@ -538,7 +542,8 @@ export async function registerAdminRoutes(
           200: apiKeyResponseSchema,
           401: errorResponseSchema,
           403: errorResponseSchema,
-          404: errorResponseSchema
+          404: errorResponseSchema,
+          409: errorResponseSchema
         }
       })
     }, (request, reply) => {

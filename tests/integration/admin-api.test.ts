@@ -277,6 +277,11 @@ describe("administrator API", () => {
     })).toHaveProperty("statusCode", 200);
     expect(await fixture.app.inject({
       method: "GET",
+      url: "/unregistered-api-route",
+      headers: { authorization: managedAuthorization }
+    })).toHaveProperty("statusCode", 404);
+    expect(await fixture.app.inject({
+      method: "GET",
       url: "/v1/models?type=image",
       headers: { authorization: "Bearer fixture-downstream-secret" }
     })).toHaveProperty("statusCode", 200);
@@ -316,10 +321,34 @@ describe("administrator API", () => {
       url: `/admin/api/api-keys/${created.key.id}`
     });
     expect(revoked.statusCode).toBe(200);
+    const revokedKey = revoked.json<{ key: Record<string, unknown> }>().key;
+    expect(revokedKey).toMatchObject({
+      id: created.key.id,
+      enabled: true,
+      revoked_at: expect.any(Number)
+    });
     expect(await fixture.app.inject({
       url: "/v1/models",
       headers: { authorization: managedAuthorization }
     })).toHaveProperty("statusCode", 401);
+
+    for (const action of ["enable", "disable"] as const) {
+      const rejected = await mutate(fixture, cookie, body.csrf_token, {
+        method: "POST",
+        url: `/admin/api/api-keys/${created.key.id}/${action}`
+      });
+      expect(rejected.statusCode).toBe(409);
+      expect(rejected.json()).toMatchObject({
+        error: { code: "api_key_revoked" }
+      });
+    }
+    const afterRejectedUpdates = await fixture.app.inject({
+      url: "/admin/api/api-keys",
+      headers: { cookie }
+    });
+    expect(afterRejectedUpdates.json()).toMatchObject({
+      api_keys: [expect.objectContaining(revokedKey)]
+    });
 
     const unknown = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
@@ -624,7 +653,12 @@ describe("administrator API", () => {
 
     const settings = await fixture.app.inject({
       url: "/admin/api/settings",
-      headers: { cookie, host: "localhost:8000" }
+      headers: {
+        cookie,
+        host: "localhost:8000",
+        "x-forwarded-host": "proxy.example:9443",
+        "x-forwarded-proto": "https"
+      }
     });
     expect(settings.json()).toMatchObject({
       shared_api_key_configured: true,
