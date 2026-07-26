@@ -131,6 +131,38 @@ describe("redactForLog", () => {
     });
   });
 
+  it("redacts key hash aliases from serialized Pino output", () => {
+    const output: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        output.push(chunk.toString("utf8"));
+        callback();
+      }
+    });
+
+    createLogger("info", stream).info({
+      key_hash: "fixture-key-hash-secret",
+      keyHash: "fixture-key-hash-camel-secret",
+      nested: {
+        key_hash: "fixture-nested-key-hash-secret",
+        keyHash: "fixture-nested-key-hash-camel-secret"
+      }
+    }, "safe log");
+
+    const serialized = output.join("");
+    for (const secret of [
+      "fixture-key-hash-secret", "fixture-key-hash-camel-secret",
+      "fixture-nested-key-hash-secret", "fixture-nested-key-hash-camel-secret"
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(JSON.parse(serialized)).toMatchObject({
+      key_hash: "[REDACTED]",
+      keyHash: "[REDACTED]",
+      nested: { key_hash: "[REDACTED]", keyHash: "[REDACTED]" }
+    });
+  });
+
   it("redacts sensitive development error stacks before Pino writes them", () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "development";

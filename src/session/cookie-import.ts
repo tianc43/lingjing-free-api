@@ -1,4 +1,4 @@
-import { Cookie, CookieJar } from "tough-cookie";
+import { Cookie, CookieJar, domainMatch } from "tough-cookie";
 import type { SessionProvider, SessionSnapshot } from "./types.js";
 
 const MAX_INPUT_BYTES = 64 * 1024;
@@ -119,11 +119,15 @@ function parseJsonCookies(value: string): PlaywrightCookie[] {
   return parsed.map(normalizeJsonCookie);
 }
 
+function domainMatchesLingjing(cookie: PlaywrightCookie): boolean {
+  return domainMatch(SESSION_ORIGIN.hostname, cookie.domain.replace(/^\./u, "")) === true;
+}
+
 function extractCredentials(cookies: PlaywrightCookie[]): ParsedImport {
   if (cookies.length > MAX_COOKIES) {
     throw new Error("Too many cookies");
   }
-  const csrfCookies = cookies.filter((cookie) => cookie.name === "csrfToken");
+  const csrfCookies = cookies.filter((cookie) => cookie.name === "csrfToken" && domainMatchesLingjing(cookie));
   if (csrfCookies.length === 0) {
     throw new Error("Lingjing csrfToken cookie is required");
   }
@@ -131,7 +135,7 @@ function extractCredentials(cookies: PlaywrightCookie[]): ParsedImport {
     throw new Error("Duplicate Lingjing csrfToken cookie");
   }
   const csrfCookie = csrfCookies[0];
-  if (csrfCookie === undefined) {
+  if (csrfCookie === undefined || csrfCookie.value.length === 0) {
     throw new Error("Lingjing csrfToken cookie is required");
   }
   const pins = cookies.filter((cookie) => cookie.name === "pin").map((cookie) => {
@@ -141,7 +145,7 @@ function extractCredentials(cookies: PlaywrightCookie[]): ParsedImport {
       throw new Error("Invalid Lingjing pin cookie");
     }
   });
-  if (pins.length === 0 || pins[0] === undefined || pins[0].length === 0) {
+  if (pins.length === 0 || pins[0] === undefined || pins[0].trim().length === 0) {
     throw new Error("Lingjing pin cookie is required");
   }
   if (pins.some((pin) => pin !== pins[0])) {
