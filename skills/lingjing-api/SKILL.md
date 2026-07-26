@@ -1,28 +1,41 @@
 ---
 name: lingjing-api
-description: Use when discovering public Lingjing image or video models, or checking a public media generation task through the Lingjing API.
+description: Invoke a Lingjing Free API public media endpoint for model discovery, text-to-image, text-to-video, image-to-video, task polling, and output download. Use when Codex is asked to create or retrieve Lingjing-generated images or videos through LINGJING_BASE_URL and LINGJING_API_KEY. Excludes all administrator, account, Cookie, balance, deployment, and API-key management operations.
 ---
 
 # Lingjing API
 
-Use this skill only with the public media API. It never accesses account, admin, credential-management, or other non-public routes.
+Use `scripts/lingjing_api.py` only with the public media API.
 
-## Setup
+## Workflow
 
-Set `LINGJING_BASE_URL` to the API version root (for example, `https://example.invalid/v1`) and provide `LINGJING_API_KEY` through the environment. Do not place real keys in commands, files, or prompts.
+1. Check that `LINGJING_BASE_URL` and `LINGJING_API_KEY` exist in the environment without printing their values.
+2. Run `models` for the requested media type and select a compatible model from the returned data. Never guess a model ID.
+3. Treat `image` and `video` generation as potentially billable. Ask for confirmation only when the current user request has not already authorized generation.
+4. Run exactly one `image` or `video` command. Never retry or resubmit a generation command.
+5. For an asynchronous job, run `wait` with its returned task ID. A timeout means the task state is unknown; never resubmit it.
+6. Run `download` when the user requests a local artifact.
 
-## Read public resources
+## Invocation
 
-Discover compatible models:
+Windows PowerShell:
 
 ```powershell
-python scripts/lingjing_api.py models --type video --mode text-to-video
+$skillDir = (Resolve-Path -LiteralPath 'C:\Users\tc\.codex\skills\lingjing-api').Path
+if (-not (Test-Path Env:LINGJING_BASE_URL) -or -not (Test-Path Env:LINGJING_API_KEY)) { throw 'Set LINGJING_BASE_URL and LINGJING_API_KEY' }
+python -X utf8 (Join-Path $skillDir 'scripts\lingjing_api.py') models --type image
 ```
 
-Check a task only when its identifier matches `job_` followed by letters or digits:
+POSIX:
 
-```powershell
-python scripts/lingjing_api.py task job_Example123
+```sh
+skill_dir="$(cd "${CODEX_HOME:-$HOME/.codex}/skills/lingjing-api" && pwd -P)"
+test "${LINGJING_BASE_URL+x}" && test "${LINGJING_API_KEY+x}" || { echo 'Set LINGJING_BASE_URL and LINGJING_API_KEY' >&2; exit 1; }
+python3 "$skill_dir/scripts/lingjing_api.py" models --type image
 ```
 
-The client accepts only the documented public media paths. It rejects admin paths and malformed task identifiers before sending a request.
+Use the same absolute script path with `image`, `video`, `task`, `wait`, or `download`; run `--help` for arguments.
+
+## Boundary
+
+Refuse every `/admin/*`, administrator, account, Cookie, balance, deployment, or API-key management request. State that this Skill does not include management operations.
