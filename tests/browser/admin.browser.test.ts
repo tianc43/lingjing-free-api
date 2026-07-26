@@ -103,6 +103,24 @@ test.beforeAll(async () => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1:4174");
     const hasSession =
       request.headers.cookie?.includes("admin=fixture-session") === true;
+    if (url.pathname === "/v1/models" && request.method === "GET") {
+      const type = url.searchParams.get("type");
+      json(response, {
+        object: "list",
+        data: type === "image"
+          ? [{ id: "browser-image-model" }]
+          : [{ id: "browser-video-model" }]
+      });
+      return;
+    }
+    if (
+      ["/v1/images/generations", "/v1/videos"].includes(url.pathname)
+      && request.method === "POST"
+    ) {
+      const input = await body(request);
+      json(response, { accepted_model: input.model });
+      return;
+    }
     if (url.pathname === "/admin/api/login" && request.method === "POST") {
       if ((await body(request)).password !== "fixture-admin-password") {
         json(response, { error: { code: "invalid_password", message: "Incorrect password" } }, 401);
@@ -443,7 +461,46 @@ test("operator manages API access keys and copies service examples", async ({ pa
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
   await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", { exact: true })).toBeVisible();
-  await expect(page.getByText(/"mode":"text-to-video"/u)).toBeVisible();
+  const imageExample = await page.locator(".command").filter({
+    has: page.getByText("Generate image", { exact: true })
+  }).locator("code").innerText();
+  const videoExample = await page.locator(".command").filter({
+    has: page.getByText("Generate video", { exact: true })
+  }).locator("code").innerText();
+  const executeExample = async (
+    script: string,
+    expectedModel: string
+  ) => {
+    const urls = [...script.matchAll(/curl -sS "([^"]+)"/gu)]
+      .map((match) => match[1]);
+    expect(urls).toHaveLength(2);
+    const [modelsUrl, generationUrl] = urls;
+    expect(modelsUrl).toBeDefined();
+    expect(generationUrl).toBeDefined();
+    expect(script).toContain("jq -er '.data[0].id'");
+    const models = await page.request.get(modelsUrl!, {
+      headers: { authorization: "Bearer fixture-browser-key" }
+    });
+    expect(models.status()).toBe(200);
+    const model = (await models.json() as {
+      data: Array<{ id: string }>;
+    }).data[0]?.id;
+    expect(model).toBe(expectedModel);
+    const generated = await page.request.post(generationUrl!, {
+      headers: { authorization: "Bearer fixture-browser-key" },
+      data: { model }
+    });
+    expect(generated.status()).toBe(200);
+    expect(await generated.json()).toMatchObject({
+      accepted_model: expectedModel
+    });
+  };
+  await executeExample(imageExample, "browser-image-model");
+  await executeExample(videoExample, "browser-video-model");
+  expect(imageExample).not.toContain("fixture-image");
+  expect(videoExample).not.toContain("fixture-video");
+  expect(videoExample).toContain("/v1/videos");
+  expect(videoExample).not.toContain("/videos/generations");
   await page.getByRole("button", { name: "Disable Dify" }).click();
   await expect(page.getByRole("button", { name: "Enable Dify" })).toBeVisible();
   await page.getByRole("button", { name: "Enable Dify" }).click();

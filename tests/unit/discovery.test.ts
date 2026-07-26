@@ -96,6 +96,42 @@ describe("matchAsset", () => {
     });
   });
 
+  it("rejects a pre-submit skew candidate without an exact fingerprint", () => {
+    expect(matchAsset(jobFixture, [
+      asset({
+        createTime: submittedAt - 3_300,
+        reqParam: null
+      })
+    ])).toEqual({ kind: "not-found", candidates: 0 });
+  });
+
+  it("rejects a pre-submit skew candidate without a model identifier", () => {
+    expect(matchAsset(jobFixture, [
+      asset({
+        createTime: submittedAt - 3_300,
+        modelCode: null
+      })
+    ])).toEqual({ kind: "not-found", candidates: 0 });
+  });
+
+  it("rejects pre-submit skew candidates with a wrong fingerprint or model", () => {
+    expect(matchAsset(jobFixture, [
+      asset({
+        id: "wrong-fingerprint",
+        createTime: submittedAt - 3_300,
+        reqParam: {
+          ...submitPayload,
+          params: [{ idx: "1", values: "different request" }]
+        }
+      }),
+      asset({
+        id: "wrong-model",
+        createTime: submittedAt - 3_300,
+        modelCode: "model-v2"
+      })
+    ])).toEqual({ kind: "not-found", candidates: 0 });
+  });
+
   it("returns ambiguous instead of guessing between equal candidates", () => {
     const result = matchAsset(jobFixture, [
       asset(),

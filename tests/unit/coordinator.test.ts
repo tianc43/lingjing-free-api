@@ -662,7 +662,7 @@ describe("LingjingGenerationCoordinator", () => {
   it("keeps a timed-out discovery lock owner registered until its read settles", async () => {
     const app = harness();
     const submittedAt = Date.now();
-    const holdUntil = Date.now() + 30;
+    const holdUntil = Date.now() + 500;
     const payload = {
       apiId: "707",
       refId: "fixture-ref",
@@ -703,7 +703,7 @@ describe("LingjingGenerationCoordinator", () => {
 
     await app.coordinator.resume(unknown.id);
     await gate.started;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 550));
 
     expect(app.repository.findById(unknown.id)?.status).toBe("unknown");
     expect(app.capacity.activeJobIds()).not.toContain(unknown.id);

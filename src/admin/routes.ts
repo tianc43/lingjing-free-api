@@ -126,6 +126,7 @@ function accountView(
     has_session: runtime?.session.describe().hasCsrf
       ?? hasSessionFiles(dependencies, account),
     subject_hash: account.subjectHash,
+    membership: account.membership,
     points_balance: account.pointsBalance,
     total_balance: account.totalBalance,
     max_concurrency: account.maxConcurrency,

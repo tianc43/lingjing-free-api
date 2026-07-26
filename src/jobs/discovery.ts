@@ -108,10 +108,34 @@ export function matchAsset(
   if (job.submittedAt === null) {
     return { kind: "not-found", candidates: 0 };
   }
-  const earliest = job.submittedAt - SUBMISSION_CLOCK_SKEW_MS;
+  const submittedAt = job.submittedAt;
+  const earliest = submittedAt - SUBMISSION_CLOCK_SKEW_MS;
   const candidates = assets.filter((asset) => {
     if (baselineIds.has(asset.id) || asset.createTime < earliest) return false;
     if (!matchesAssetScene(job, asset.scene)) return false;
+    if (asset.createTime < submittedAt) {
+      if (
+        asset.modelCode === null
+        || (
+          asset.modelCode !== job.modelCode
+          && asset.modelCode !== job.apiId
+        )
+        || job.upstreamFingerprint === null
+        || asset.reqParam === null
+      ) {
+        return false;
+      }
+      try {
+        if (
+          fingerprintAssetReqParam(asset.reqParam)
+          !== job.upstreamFingerprint
+        ) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
     if (
       job.modelCode !== null
       && asset.modelCode !== null

@@ -85,6 +85,7 @@ export const accountViewSchema = z.object({
   last_error_code: z.string().nullable(),
   has_session: z.boolean(),
   subject_hash: z.string().nullable(),
+  membership: z.string().nullable(),
   points_balance: z.number().nullable(),
   total_balance: z.number().nullable(),
   max_concurrency: nonNegativeInteger.nullable(),

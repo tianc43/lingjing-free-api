@@ -1,7 +1,4 @@
-import {
-  listRecentAssets,
-  matchAsset
-} from "./discovery.js";
+import { listRecentAssets } from "./discovery.js";
 import { abortable } from "./abort.js";
 import { normalizeJobResult } from "./output-normalizer.js";
 import type { LingjingAsset } from "./assets.js";
@@ -137,10 +134,9 @@ export class LingjingTaskPoller implements TaskPoller {
         signal
       );
       signal?.throwIfAborted();
-      const taskAsset = assets.find((asset) => (
+      const discovered = assets.find((asset) => (
         asset.taskId !== null && asset.taskId === job.upstreamTaskId
       ));
-      const discovered = taskAsset ?? matchAsset(job, assets).asset;
       if (discovered !== undefined) result = normalizeJobResult(discovered);
     }
     if (result === null) return job;

@@ -10,13 +10,13 @@ import {
 import type { AppDependencies } from "../types.js";
 
 export const modelQuerySchema = z.object({
-  type: z.enum(["image", "video"]),
+  type: z.enum(["image", "video"]).optional(),
   mode: z.enum(["text-to-video", "image-to-video"]).optional(),
   refresh: z.enum(["true", "false"]).optional().transform(
     (value) => value === "true"
   )
 }).superRefine((query, context) => {
-  if (query.type === "image" && query.mode !== undefined) {
+  if (query.type !== "video" && query.mode !== undefined) {
     context.addIssue({
       code: "custom",
       path: ["mode"],
@@ -30,6 +30,9 @@ const modelListResponseSchema = z.object({
 });
 
 function sourceTypes(query: z.infer<typeof modelQuerySchema>): SourceType[] {
+  if (query.type === undefined) {
+    return ["image-generation", "text-to-video", "image-to-video"];
+  }
   if (query.type === "image") return ["image-generation"];
   if (query.mode !== undefined) return [query.mode];
   return ["text-to-video", "image-to-video"];

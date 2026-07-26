@@ -55,17 +55,39 @@ export class CookieImportService {
       ]);
       this.options.accounts.recordObservation(account.id, observationFrom(snapshot));
       this.options.accounts.update(account.id, { enabled: true });
-      await this.options.runtimes.refresh(account.id);
+      const runtime = await this.options.runtimes.refresh(account.id);
+      if (runtime?.record.healthStatus !== "ready") {
+        throw new Error("Imported account runtime is not ready");
+      }
       const imported = this.options.accounts.findById(account.id);
       if (imported === null) throw new Error("Imported account could not be read");
       return imported;
     } catch (cause) {
-      await Promise.allSettled([
+      const failures: Error[] = [];
+      try {
+        this.options.accounts.update(account.id, { enabled: false });
+      } catch {
+        failures.push(new Error("Failed to disable imported account"));
+      }
+      const cleanup = await Promise.allSettled([
         this.removeNewSession(account.id),
         Promise.resolve().then(() => {
           this.options.accounts.removeUnbound(account.id);
         })
       ]);
+      if (cleanup[0].status === "rejected") {
+        failures.push(new Error("Failed to remove imported session"));
+      }
+      if (cleanup[1].status === "rejected") {
+        failures.push(new Error("Failed to remove imported account"));
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(
+          [cause, ...failures],
+          "Cookie import failed and rollback was incomplete",
+          { cause }
+        );
+      }
       throw cause;
     }
   }

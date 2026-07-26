@@ -14,13 +14,16 @@ describe("operator documentation", () => {
       "/v1/account",
       "/v1/models",
       "/v1/images/generations",
-      "/v1/videos/generations",
+      "/v1/videos",
       "/v1/tasks/:id",
       "/v1/chat/completions"
     ]) {
       expect(readme).toContain(route);
     }
     expect(readme).toContain("不会自动重放生成请求");
+    expect(readme).toContain("`/v1/videos/generations` 仅作为兼容别名");
+    expect(readme).toContain("Cookie 导入成功后账号已完成验证并启用");
+    expect(readme).toContain("CLI 登录仅用于 legacy 或既有账号会话兼容");
   });
 
   it("documents local and Docker operation without overstating the project boundary", async () => {

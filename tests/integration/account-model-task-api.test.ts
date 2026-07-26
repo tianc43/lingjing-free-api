@@ -149,6 +149,25 @@ describe("account, model, and task API", () => {
     }
   });
 
+  it("lists all supported model sources when no query is provided", async () => {
+    const response = await authorizedInject(fixture.app, {
+      method: "GET",
+      url: "/v1/models"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(fixture.catalogCalls).toEqual([
+      "image-generation",
+      "text-to-video",
+      "image-to-video"
+    ]);
+    expect(response.json<{ data: Array<{ type: string }> }>().data)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "image" }),
+        expect.objectContaining({ type: "video" })
+      ]));
+  });
+
   it("queries only image-to-video when that mode is selected", async () => {
     const response = await authorizedInject(fixture.app, {
       method: "GET",
@@ -185,6 +204,12 @@ describe("account, model, and task API", () => {
         code: "invalid_request"
       }
     });
+
+    const modeWithoutVideoType = await authorizedInject(fixture.app, {
+      method: "GET",
+      url: "/v1/models?mode=text-to-video"
+    });
+    expect(modeWithoutVideoType.statusCode).toBe(400);
   });
 
   it("returns 404 for an unknown local task", async () => {

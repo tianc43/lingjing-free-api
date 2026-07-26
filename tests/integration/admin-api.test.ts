@@ -165,7 +165,8 @@ describe("administrator API", () => {
       account: {
         name: "Imported",
         enabled: true,
-        health_status: "ready"
+        health_status: "ready",
+        membership: "pro"
       }
     });
     expect(response.body).not.toContain("fixture-csrf");
@@ -430,6 +431,7 @@ describe("administrator API", () => {
       "last_checked_at",
       "last_error_code",
       "max_concurrency",
+      "membership",
       "monthly_point_limit",
       "monthly_reserved_points",
       "monthly_used_points",
@@ -527,6 +529,9 @@ describe("administrator API", () => {
       url: `/admin/api/accounts/${createdBody.account.id}/check`
     });
     expect(checked.statusCode).toBe(200);
+    expect(checked.json()).toMatchObject({
+      account: { membership: null }
+    });
     expect(fixture.runtimes.refresh).toHaveBeenLastCalledWith(
       createdBody.account.id
     );
@@ -543,6 +548,10 @@ describe("administrator API", () => {
       headers: { cookie }
     });
     expect(listed.statusCode).toBe(200);
+    const listedAccount = listed.json<{
+      accounts: Array<{ id: string; membership: string | null }>;
+    }>().accounts.find((account) => account.id === createdBody.account.id);
+    expect(listedAccount).toMatchObject({ membership: null });
     assertNoSensitiveValues(
       listed.body,
       [

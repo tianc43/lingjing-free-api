@@ -4,18 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
+import type { AccountRuntimeRegistry } from "../../src/accounts/runtime-registry.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
 import { parseConfig } from "../../src/config.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
-const filesystem = vi.hoisted(() => ({ failRemove: false }));
+const filesystem = vi.hoisted(() => ({ failRemove: false, removeCalls: 0 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     rm: (...arguments_: Parameters<typeof actual.rm>) => {
+      filesystem.removeCalls += 1;
       if (filesystem.failRemove) {
         return Promise.reject(new Error("fixture session cleanup failure"));
       }
@@ -28,6 +30,7 @@ const temporaryDirectories: string[] = [];
 
 afterEach(() => {
   filesystem.failRemove = false;
+  filesystem.removeCalls = 0;
   for (const directory of temporaryDirectories.splice(0)) {
     removeTestDirectory(directory);
   }
@@ -56,7 +59,13 @@ async function fixture(sessionMode: "browser-state" | "cookie-file" = "browser-s
   });
   const store = new SqliteStore(":memory:");
   const accounts = new SqliteAccountRepository(store);
-  const runtimes = { refresh: vi.fn(() => Promise.resolve(null)) };
+  const runtimes = {
+    refresh: vi.fn<Pick<AccountRuntimeRegistry, "refresh">["refresh"]>(
+      () => Promise.resolve({
+        record: { healthStatus: "ready" }
+      } as Awaited<ReturnType<AccountRuntimeRegistry["refresh"]>>)
+    )
+  };
   const describeAccount = vi.fn(() => Promise.resolve({
     subject: "fixture-subject",
     spaceId: 0,
@@ -128,13 +137,56 @@ describe("CookieImportService", () => {
     }
   });
 
-  it("keeps the original failure and removes the account when session cleanup fails", async () => {
+  it("rolls back when runtime refresh returns no runtime", async () => {
+    const { accounts, config, importer, runtimes, store } = await fixture();
+    runtimes.refresh.mockResolvedValueOnce(null);
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("Imported account runtime is not ready");
+      expect(accounts.list().map((account) => account.name))
+        .not.toContain("Primary subscription");
+      await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rolls back when runtime refresh returns a non-ready runtime", async () => {
+    const { accounts, config, importer, runtimes, store } = await fixture();
+    runtimes.refresh.mockResolvedValueOnce({
+      record: { healthStatus: "unhealthy" }
+    } as Awaited<ReturnType<AccountRuntimeRegistry["refresh"]>>);
+
+    try {
+      await expect(importer.import(validInput)).rejects.toThrow("Imported account runtime is not ready");
+      expect(accounts.list().map((account) => account.name))
+        .not.toContain("Primary subscription");
+      await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports incomplete rollback and still removes the account when session cleanup fails", async () => {
     const { accounts, importer, runtimes, store } = await fixture();
+    const removeUnbound = vi.spyOn(accounts, "removeUnbound");
     runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
     filesystem.failRemove = true;
 
     try {
-      await expect(importer.import(validInput)).rejects.toThrow("upstream refresh failure");
+      const failure = await importer.import(validInput).catch((error: unknown) => error);
+      if (!(failure instanceof AggregateError)) {
+        throw new TypeError("Expected an AggregateError");
+      }
+      expect(failure.message).toBe("Cookie import failed and rollback was incomplete");
+      expect(failure.cause).toMatchObject({ message: "upstream refresh failure" });
+      expect(failure.errors).toEqual([
+        expect.objectContaining({ message: "upstream refresh failure" }),
+        expect.objectContaining({ message: "Failed to remove imported session" })
+      ]);
+      expect(JSON.stringify(failure)).not.toContain("fixture-csrf");
+      expect(JSON.stringify(failure)).not.toContain("accounts");
+      expect(removeUnbound).toHaveBeenCalledTimes(1);
       expect(accounts.list().map((account) => account.name))
         .not.toContain("Primary subscription");
     } finally {
@@ -142,7 +194,7 @@ describe("CookieImportService", () => {
     }
   });
 
-  it("keeps the original failure after database cleanup fails", async () => {
+  it("reports incomplete rollback and still removes the session when database cleanup fails", async () => {
     const { accounts, config, describeAccount, runtimes, store } = await fixture();
     const removeUnbound = vi.fn(() => {
       throw new Error("fixture database cleanup failure");
@@ -162,9 +214,54 @@ describe("CookieImportService", () => {
     runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
 
     try {
-      await expect(importer.import(validInput)).rejects.toThrow("upstream refresh failure");
+      const failure = await importer.import(validInput).catch((error: unknown) => error);
+      if (!(failure instanceof AggregateError)) {
+        throw new TypeError("Expected an AggregateError");
+      }
+      expect(failure.message).toBe("Cookie import failed and rollback was incomplete");
+      expect(failure.cause).toMatchObject({ message: "upstream refresh failure" });
+      expect(failure.errors).toEqual([
+        expect.objectContaining({ message: "upstream refresh failure" }),
+        expect.objectContaining({ message: "Failed to remove imported account" })
+      ]);
       expect(removeUnbound).toHaveBeenCalledTimes(1);
+      expect(filesystem.removeCalls).toBe(1);
       await expect(readdir(join(config.dataDirectory, "accounts"))).resolves.toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reports both cleanup failures after attempting both compensations", async () => {
+    const { accounts, config, describeAccount, runtimes, store } = await fixture();
+    const removeUnbound = vi.fn(() => {
+      throw new Error("fixture database cleanup failure");
+    });
+    const importer = new CookieImportService({
+      accounts: {
+        create: accounts.create.bind(accounts),
+        findById: accounts.findById.bind(accounts),
+        recordObservation: accounts.recordObservation.bind(accounts),
+        removeUnbound,
+        update: accounts.update.bind(accounts)
+      },
+      config,
+      runtimes,
+      describeAccount
+    });
+    runtimes.refresh.mockRejectedValueOnce(new Error("upstream refresh failure"));
+    filesystem.failRemove = true;
+
+    try {
+      const failure = await importer.import(validInput).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([
+        expect.objectContaining({ message: "upstream refresh failure" }),
+        expect.objectContaining({ message: "Failed to remove imported session" }),
+        expect.objectContaining({ message: "Failed to remove imported account" })
+      ]);
+      expect(filesystem.removeCalls).toBe(1);
+      expect(removeUnbound).toHaveBeenCalledTimes(1);
     } finally {
       store.close();
     }

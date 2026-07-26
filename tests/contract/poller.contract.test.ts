@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LingjingTaskPoller } from "../../src/jobs/poller.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
+import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import type { JobRecord, NewJob } from "../../src/jobs/types.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
@@ -27,6 +28,11 @@ const fixtureNewJob: NewJob = {
   idempotencyKeyHash: null,
   spaceId: 0
 };
+const fixtureSubmitPayload = {
+  apiId: "707",
+  refId: "fixture-ref",
+  params: [{ idx: "1", values: "fixture prompt" }]
+};
 
 function repositoryWithProcessingJob(): {
   repository: SqliteJobRepository;
@@ -39,7 +45,7 @@ function repositoryWithProcessingJob(): {
   const submitting = repository.transition(created.id, ["queued"], {
     status: "submitting",
     submittedAt: 10_000,
-    upstreamFingerprint: "b".repeat(64)
+    upstreamFingerprint: fingerprintUpstreamPayload(fixtureSubmitPayload)
   });
   const discovering = repository.transition(submitting.id, ["submitting"], {
     status: "discovering"
@@ -79,7 +85,7 @@ function repositoryWithDiscoveringErrorJob(): {
   const submitting = repository.transition(created.id, ["queued"], {
     status: "submitting",
     submittedAt: 10_000,
-    upstreamFingerprint: "b".repeat(64)
+    upstreamFingerprint: fingerprintUpstreamPayload(fixtureSubmitPayload)
   });
   return {
     repository,
@@ -213,6 +219,78 @@ describe("LingjingTaskPoller", () => {
       expect.any(Object)
     );
     repository.close();
+  });
+
+  it("does not bind a same-payload asset owned by another known task", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const read = vi.fn((path: string) => Promise.resolve(
+      path.includes("describeUserTask")
+        ? { data: { task: { status: 1, taskResults: [] } } }
+        : {
+            records: [{
+              id: "different-task-asset",
+              scene: "image-generation",
+              modelCode: "model-v1",
+              createTime: 10_100,
+              taskId: "fixture-different-task",
+              reqParam: fixtureSubmitPayload,
+              imageUrl: "https://media.example/wrong.png",
+              status: 1
+            }]
+          }
+    ));
+    const poller = new LingjingTaskPoller({
+      repository,
+      transport: { read } as unknown as LingjingTransport
+    });
+
+    try {
+      const result = await poller.poll(job);
+
+      expect(result.status).toBe("processing");
+      expect(result.result).toBeNull();
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("binds an asset owned by the exact known task", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const read = vi.fn((path: string) => Promise.resolve(
+      path.includes("describeUserTask")
+        ? { data: { task: { status: 1, taskResults: [] } } }
+        : {
+            records: [{
+              id: "exact-task-asset",
+              scene: "image-generation",
+              modelCode: "model-v1",
+              createTime: 10_100,
+              taskId: "fixture-task",
+              reqParam: fixtureSubmitPayload,
+              imageUrl: "https://media.example/final.png",
+              status: 1
+            }]
+          }
+    ));
+    const poller = new LingjingTaskPoller({
+      repository,
+      transport: { read } as unknown as LingjingTransport
+    });
+
+    try {
+      const result = await poller.poll(job);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        result: {
+          outputs: [{
+            url: "https://media.example/final.png"
+          }]
+        }
+      });
+    } finally {
+      repository.close();
+    }
   });
 
   it("leaves the persisted job recoverable when polling reads fail", async () => {
