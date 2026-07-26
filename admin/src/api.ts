@@ -1,4 +1,4 @@
-import type { Account, AccountImportInput, AccountInput, Job, Overview, Settings } from "./types";
+import type { Account, AccountImportInput, AccountInput, ApiKey, Job, Overview, Settings } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -44,6 +44,17 @@ export class AdminApi {
   async accounts(): Promise<Account[]> { return (await this.request<{ accounts: Account[] }>("/accounts")).accounts; }
   async jobs(): Promise<Job[]> { return (await this.request<{ jobs: Job[] }>("/jobs")).jobs; }
   async settings(): Promise<Settings> { return await this.request("/settings"); }
+  async apiKeys(): Promise<ApiKey[]> { return (await this.request<{ api_keys: ApiKey[] }>("/api-keys")).api_keys; }
+  async createApiKey(name: string): Promise<{ key: ApiKey; api_key: string }> {
+    return await this.request("/api-keys", { method: "POST", body: { name } });
+  }
+  async setApiKeyEnabled(key: ApiKey, enabled: boolean): Promise<ApiKey> {
+    const action = enabled ? "enable" : "disable";
+    return (await this.request<{ key: ApiKey }>(`/api-keys/${encodeURIComponent(key.id)}/${action}`, { method: "POST" })).key;
+  }
+  async revokeApiKey(key: ApiKey): Promise<ApiKey> {
+    return (await this.request<{ key: ApiKey }>(`/api-keys/${encodeURIComponent(key.id)}`, { method: "DELETE" })).key;
+  }
   async createAccount(input: AccountInput): Promise<{ account: Account; login_command: string }> {
     return await this.request("/accounts", { method: "POST", body: input });
   }

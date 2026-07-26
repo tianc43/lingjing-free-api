@@ -480,6 +480,66 @@ dd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.copy-row {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.copy-row code,
+.api-key-secret {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.copy-notice {
+  color: var(--success);
+  font-size: var(--text-xs);
+}
+.api-auth {
+  color: var(--text-secondary);
+  margin-top: var(--space-4);
+}
+.api-key-create {
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+.api-key-list {
+  display: grid;
+}
+.api-key-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(9rem, 1fr) auto minmax(12rem, 1fr) auto;
+  padding: var(--space-3) 0;
+}
+.api-key-row > div:first-child {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.api-key-row code {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.api-key-row dl {
+  gap: var(--space-1);
+}
+.api-key-row dl div {
+  font-size: var(--text-xs);
+}
+.api-examples {
+  margin-top: var(--space-4);
+}
+.api-key-secret {
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  display: block;
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+}
 .notice {
   color: var(--success);
   min-height: 1.4rem;
@@ -703,6 +763,18 @@ nav a {
   .command code {
     grid-column: 1 / -1;
     grid-row: 2;
+  }
+  .api-key-row {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .api-key-row dl,
+  .api-key-row .row-actions {
+    grid-column: 1 / -1;
+  }
+  .copy-row {
+    align-items: start;
+    flex-wrap: wrap;
   }
   table:not(.tasks-table) td:nth-child(3),
   table:not(.tasks-table) th:nth-child(3) {

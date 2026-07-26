@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminApi } from "./api";
 import { AccountDialog } from "./components/account-dialog";
 import { AccountOnboardingDialog } from "./components/account-onboarding-dialog";
+import { ApiKeyDialog } from "./components/api-key-dialog";
 import { AppShell, type PageName } from "./components/app-shell";
 import { AccountsPage } from "./pages/accounts-page";
+import { ApiAccessPage } from "./pages/api-access-page";
 import { LoginPage } from "./pages/login-page";
 import { OverviewPage } from "./pages/overview-page";
 import { SettingsPage } from "./pages/settings-page";
 import { TasksPage } from "./pages/tasks-page";
-import type { Account, AccountImportInput, AccountInput, Job, Overview, Settings } from "./types";
+import type { Account, AccountImportInput, AccountInput, ApiKey, Job, Overview, Settings } from "./types";
 
-type ResourceName = "accounts" | "overview" | "jobs" | "settings";
+type ResourceName = "accounts" | "overview" | "jobs" | "settings" | "apiKeys";
 type ResourceErrors = Partial<Record<ResourceName, string>>;
 type ResourceLoading = Record<ResourceName, boolean>;
 
 function pageFromPath(): PageName {
   const value = location.pathname.replace(/^\/admin\/?/, "");
-  return value === "accounts" || value === "tasks" || value === "settings" ? value : "overview";
+  return value === "accounts" || value === "tasks" || value === "api-access" || value === "settings" ? value : "overview";
 }
 
 function Skeleton() {
@@ -35,7 +37,9 @@ export function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [resourceLoading, setResourceLoading] = useState<ResourceLoading>({ accounts: false, overview: false, jobs: false, settings: false });
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [apiKeySecret, setApiKeySecret] = useState<string | null>(null);
+  const [resourceLoading, setResourceLoading] = useState<ResourceLoading>({ accounts: false, overview: false, jobs: false, settings: false, apiKeys: false });
   const [resourceErrors, setResourceErrors] = useState<ResourceErrors>({});
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +49,7 @@ export function App() {
   const [checking, setChecking] = useState<string | null>(null);
   const api = useMemo(() => new AdminApi(() => {
     setAuthenticated(false);
+    setApiKeySecret(null);
     setError("Your administrator session expired. Sign in again.");
   }), []);
 
@@ -63,9 +68,10 @@ export function App() {
   const loadOverview = useCallback(() => runResource("overview", () => api.overview(), setOverview), [api, runResource]);
   const loadJobs = useCallback(() => runResource("jobs", () => api.jobs(), setJobs), [api, runResource]);
   const loadSettings = useCallback(() => runResource("settings", () => api.settings(), setSettings), [api, runResource]);
+  const loadApiKeys = useCallback(() => runResource("apiKeys", () => api.apiKeys(), setApiKeys), [api, runResource]);
   const load = useCallback(async () => {
-    await Promise.all([loadAccounts(), loadOverview(), loadJobs(), loadSettings()]);
-  }, [loadAccounts, loadJobs, loadOverview, loadSettings]);
+    await Promise.all([loadAccounts(), loadOverview(), loadJobs(), loadSettings(), loadApiKeys()]);
+  }, [loadAccounts, loadApiKeys, loadJobs, loadOverview, loadSettings]);
 
   useEffect(() => {
     void api.session().then(async (ready) => {
@@ -79,11 +85,12 @@ export function App() {
   }, [api, load]);
   const navigate = (next: PageName) => {
     setError(null);
+    setApiKeySecret(null);
     history.pushState({}, "", `/admin/${next === "overview" ? "" : next}`);
     setPage(next);
   };
   useEffect(() => {
-    const listener = () => { setError(null); setPage(pageFromPath()); };
+    const listener = () => { setError(null); setApiKeySecret(null); setPage(pageFromPath()); };
     addEventListener("popstate", listener);
     return () => removeEventListener("popstate", listener);
   }, []);
@@ -92,6 +99,7 @@ export function App() {
     try {
       await api.login(password);
       setError(null);
+      setApiKeySecret(null);
       history.replaceState({}, "", "/admin/accounts");
       setPage("accounts");
       setAuthenticated(true);
@@ -137,8 +145,31 @@ export function App() {
       setChecking(null);
     }
   };
+  const createApiKey = async (name: string) => {
+    const created = await api.createApiKey(name);
+    setApiKeys((current) => [...current, created.key]);
+    setApiKeySecret(created.api_key);
+  };
+  const toggleApiKey = async (key: ApiKey) => {
+    try {
+      const updated = await api.setApiKeyEnabled(key, !key.enabled);
+      setApiKeys((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update API key");
+    }
+  };
+  const revokeApiKey = async (key: ApiKey) => {
+    if (!window.confirm(`Permanently revoke ${key.name}? This cannot be undone.`)) return;
+    try {
+      const updated = await api.revokeApiKey(key);
+      setApiKeys((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not revoke API key");
+    }
+  };
   const logout = () => void api.logout().finally(() => {
     setAuthenticated(false);
+    setApiKeySecret(null);
     setError(null);
     setNotice("");
   });
@@ -151,7 +182,9 @@ export function App() {
       ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account) => void check(account)} checking={checking} />}</>
     : page === "tasks"
         ? <><ResourceFailure error={resourceErrors.jobs} onRetry={() => void loadJobs()} />{resourceLoading.jobs && jobs.length === 0 ? <Skeleton /> : <TasksPage accounts={accounts} jobs={jobs} />}</>
-        : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage accounts={accounts} settings={settings} />}</>;
+        : page === "api-access"
+          ? <><ResourceFailure error={resourceErrors.settings ?? resourceErrors.apiKeys} onRetry={() => { void loadSettings(); void loadApiKeys(); }} />{(settings === null && resourceLoading.settings) || resourceLoading.apiKeys && apiKeys.length === 0 ? <Skeleton /> : settings !== null && <ApiAccessPage settings={settings} keys={apiKeys} onCreate={createApiKey} onToggle={toggleApiKey} onRevoke={revokeApiKey} />}</>
+          : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage accounts={accounts} settings={settings} />}</>;
 
   return <AppShell page={page} onNavigate={navigate} onLogout={logout}>
     {error !== null && <section className="retry-state" role="alert"><p>{error}</p></section>}
@@ -159,5 +192,6 @@ export function App() {
     {pageContent}
     {dialog !== undefined && <AccountDialog account={dialog} onClose={() => setDialog(undefined)} onSave={save} />}
     {onboardingOpen && <AccountOnboardingDialog onClose={() => setOnboardingOpen(false)} onImport={importAccount} />}
+    {apiKeySecret !== null && page === "api-access" && <ApiKeyDialog secret={apiKeySecret} onClose={() => setApiKeySecret(null)} />}
   </AppShell>;
 }

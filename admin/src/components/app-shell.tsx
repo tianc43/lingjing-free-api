@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
-export type PageName = "overview" | "accounts" | "tasks" | "settings";
+export type PageName = "overview" | "accounts" | "tasks" | "api-access" | "settings";
 const links: Array<{ page: PageName; label: string }> = [
-  { page: "overview", label: "Overview" }, { page: "accounts", label: "Accounts" }, { page: "tasks", label: "Tasks" }, { page: "settings", label: "Settings" }
+  { page: "overview", label: "Overview" }, { page: "accounts", label: "Accounts" }, { page: "tasks", label: "Tasks" }, { page: "api-access", label: "API Access" }, { page: "settings", label: "Settings" }
 ];
 
 export function AppShell({ page, onNavigate, onLogout, children }: { page: PageName; onNavigate(page: PageName): void; onLogout(): void; children: ReactNode }) {

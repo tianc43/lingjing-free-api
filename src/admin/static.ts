@@ -9,6 +9,7 @@ const ADMIN_CLIENT_ROUTES = new Set([
   "/admin/",
   "/admin/accounts",
   "/admin/tasks",
+  "/admin/api-access",
   "/admin/settings"
 ]);
 

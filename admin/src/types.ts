@@ -51,6 +51,19 @@ export interface Settings {
   image_wait_timeout_ms: number;
   video_wait_timeout_ms: number;
   docs_enabled: boolean;
+  legacy_api_key_configured: boolean;
+  api_base_url: string;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
 }
 
 export interface AccountInput {

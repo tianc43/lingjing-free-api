@@ -29,8 +29,19 @@ type Account = {
   last_checked_at: number | null;
   updated_at: number;
 };
+type ApiKey = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+};
 let server: Server | undefined;
 let accounts: Account[] = [];
+let apiKeys: ApiKey[] = [];
 let nextId = 1;
 let expireNext = false;
 let failSettings = false;
@@ -190,7 +201,46 @@ test.beforeAll(async () => {
         video_wait_timeout_ms: 900000,
         docs_enabled: false,
         shared_api_key_configured: true,
+        legacy_api_key_configured: true,
+        api_base_url: "http://127.0.0.1:4174/v1",
       });
+      return;
+    }
+    if (url.pathname === "/admin/api/api-keys" && request.method === "GET") {
+      json(response, { api_keys: apiKeys });
+      return;
+    }
+    if (url.pathname === "/admin/api/api-keys" && request.method === "POST") {
+      const input = await body(request);
+      const now = Date.now();
+      const key: ApiKey = {
+        id: `key-browser-${nextId++}`,
+        name: String(input.name),
+        key_prefix: "ljk_browser_",
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+        last_used_at: null,
+        revoked_at: null,
+      };
+      apiKeys = [...apiKeys, key];
+      json(response, { key, api_key: ["ljk_", "fixture-secret-shown-once"].join("") }, 201);
+      return;
+    }
+    const apiKeyToggle = /^\/admin\/api\/api-keys\/([^/]+)\/(enable|disable)$/.exec(url.pathname);
+    if (apiKeyToggle !== null && request.method === "POST") {
+      apiKeys = apiKeys.map((key) => key.id === apiKeyToggle[1]
+        ? { ...key, enabled: apiKeyToggle[2] === "enable", updated_at: Date.now() }
+        : key);
+      json(response, { key: apiKeys.find((key) => key.id === apiKeyToggle[1]) });
+      return;
+    }
+    const apiKeyRevoke = /^\/admin\/api\/api-keys\/([^/]+)$/.exec(url.pathname);
+    if (apiKeyRevoke !== null && request.method === "DELETE") {
+      apiKeys = apiKeys.map((key) => key.id === apiKeyRevoke[1]
+        ? { ...key, revoked_at: Date.now(), updated_at: Date.now() }
+        : key);
+      json(response, { key: apiKeys.find((key) => key.id === apiKeyRevoke[1]) });
       return;
     }
     if (url.pathname === "/admin/api/logout" && request.method === "POST") {
@@ -325,6 +375,7 @@ test.beforeAll(async () => {
         "/admin/",
         "/admin/accounts",
         "/admin/tasks",
+        "/admin/api-access",
         "/admin/settings",
       ].includes(url.pathname)
     ) {
@@ -352,6 +403,7 @@ test.beforeEach(() => {
   failSettings = false;
   failHealth = false;
   nextId = 1;
+  apiKeys = [];
   accounts = [
     {
       id: "seed",
@@ -375,6 +427,30 @@ test.beforeEach(() => {
       updated_at: Date.now(),
     },
   ];
+});
+
+test("operator manages API access keys and copies service examples", async ({ page }) => {
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("Administrator password").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("link", { name: "API Access" }).click();
+  await expect(page.getByText("http://127.0.0.1:4174/v1", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Create API key" }).click();
+  await page.getByLabel("Key name").fill("Dify");
+  await page.getByRole("button", { name: "Create key" }).click();
+  await expect(page.getByRole("dialog").getByText(/^ljk_/u)).toBeVisible();
+  await expect(page.getByText("This key is shown only once")).toBeVisible();
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
+  await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Disable Dify" }).click();
+  await expect(page.getByRole("button", { name: "Enable Dify" })).toBeVisible();
+  await page.getByRole("button", { name: "Enable Dify" }).click();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Revoke Dify" }).click();
+  await expect(page.getByText("Revoked")).toBeVisible();
+  await page.getByRole("link", { name: "Accounts" }).click();
+  await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
 });
 
 for (const viewport of [
