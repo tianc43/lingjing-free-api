@@ -94,7 +94,7 @@ PUBLIC_PATHS = (
     re.compile(r"^/videos$"),
     re.compile(r"^/tasks/job_[A-Za-z0-9]+$"),
 )
-TASK_ID = re.compile(r"^job_[A-Za-z0-9]+$")
+JOB_ID_PATTERN = re.compile(r"^job_[A-Za-z0-9]+$")
 
 class ClientError(Exception):
     pass
@@ -144,7 +144,7 @@ class ApiClient:
         return self._request("GET", "/models" + suffix)
 
     def task(self, job_id):
-        if not TASK_ID.fullmatch(job_id):
+        if not JOB_ID_PATTERN.fullmatch(job_id):
             raise ClientError("Invalid task identifier")
         return self._request("GET", f"/tasks/{job_id}")
 ```
@@ -417,8 +417,8 @@ Expected: `Skill is valid!`, all unit tests PASS, and compilation exits `0`.
 
 - [ ] **Step 4: Run read-only live checks**
 
-Load the existing container's API key into the process without printing it, set
-`LINGJING_BASE_URL=http://127.0.0.1:8000/v1`, then run:
+Load the existing container's API key into the process without printing it,
+configure `LINGJING_BASE_URL` with the local `/v1` URL, then run:
 
 ```powershell
 python -X utf8 skills\lingjing-api\scripts\lingjing_api.py models --type image
