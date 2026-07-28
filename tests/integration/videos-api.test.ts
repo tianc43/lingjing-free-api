@@ -338,6 +338,45 @@ describe("video generation API", () => {
     );
   });
 
+  it("accepts parameters.mode when the resolved model declares a mode parameter", async () => {
+    const resolve = fixture.dependencies.catalog.resolve.bind(
+      fixture.dependencies.catalog
+    );
+    fixture.dependencies.catalog.resolve = async (value, sourceType) => {
+      const current = await resolve(value, sourceType);
+      return {
+        ...current,
+        parameters: [
+          ...current.parameters,
+          {
+            idx: "7",
+            key: "mode",
+            displayName: "Quality mode",
+            required: true,
+            kind: "enum",
+            defaultValue: "std",
+            options: ["std", "pro", "4k"]
+          }
+        ]
+      };
+    };
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos/generations",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video",
+        parameters: { mode: "pro" }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requests[0]?.sourceType).toBe("text-to-video");
+    expect(requests[0]?.values.mode).toBe("pro");
+  });
+
   it("requires mode and an input image for image-to-video", async () => {
     for (const payload of [
       {

@@ -35,6 +35,11 @@ import {
   waitedJob
 } from "./generation.js";
 
+const VIDEO_ALWAYS_RESERVED_FIELDS = new Set(
+  [...VIDEO_CONTROL_FIELDS].filter((field) => field !== "mode")
+);
+const VIDEO_SOURCE_MODE_FIELD = new Set(["mode"]);
+
 export function registerVideoRoutes(
   app: FastifyInstance,
   dependencies: AppDependencies
@@ -70,7 +75,10 @@ export function registerVideoRoutes(
       const input = videoApiRequestSchema.parse(
         multipart?.body ?? request.body
       );
-      assertNoControlCollisions(input.parameters, VIDEO_CONTROL_FIELDS);
+      assertNoControlCollisions(
+        input.parameters,
+        VIDEO_ALWAYS_RESERVED_FIELDS
+      );
       media.push(...mediaFromStrings(input.input_images ?? []));
       if (input.mode === "image-to-video" && media.length === 0) {
         throw errors.invalidRequest(
@@ -84,6 +92,18 @@ export function registerVideoRoutes(
         input.mode,
         true
       );
+      if (
+        !model.parameters.some(
+          (parameter) =>
+            parameter.kind !== "image-list"
+            && parameter.key === "mode"
+        )
+      ) {
+        assertNoControlCollisions(
+          input.parameters,
+          VIDEO_SOURCE_MODE_FIELD
+        );
+      }
       const imageParameter = model.parameters.find(
         (parameter) => parameter.kind === "image-list"
       );
