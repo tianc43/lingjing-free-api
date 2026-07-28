@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { AppError } from "../../src/errors.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import {
@@ -346,9 +347,47 @@ describe("LingjingGenerationCoordinator", () => {
       status: "failed",
       errorCode: "generation_submit_rejected"
     });
+    expect(app.warningLogs).toEqual([{
+      bindings: {
+        account_id: app.selectedAccountId,
+        api_id: "707",
+        error_code: "unknown_submit_failure",
+        job_id: handle.job.id,
+        model: "707"
+      },
+      message: "generation submit rejected"
+    }]);
     expect(app.submitCount()).toBe(1);
     await expect(app.registry.drainSubmitCriticalSections(0))
       .resolves.toBeUndefined();
+  });
+
+  it("logs only safe mapped upstream details for a rejected submit", async () => {
+    const app = harness();
+    app.failNextSubmit(new AppError(
+      403,
+      "permission_error",
+      "lingjing_permission_denied",
+      "private upstream message"
+    ));
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.warningLogs).toEqual([{
+      bindings: {
+        account_id: app.selectedAccountId,
+        api_id: "707",
+        error_code: "lingjing_permission_denied",
+        job_id: handle.job.id,
+        model: "707",
+        upstream_status_code: 403
+      },
+      message: "generation submit rejected"
+    }]);
+    expect(JSON.stringify(app.warningLogs)).not.toContain(
+      "private upstream message"
+    );
   });
 
   it("holds capacity when discovery is ambiguous", async () => {

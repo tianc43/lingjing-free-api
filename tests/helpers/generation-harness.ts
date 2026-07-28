@@ -147,6 +147,10 @@ export interface GenerationHarness {
   submitCount: () => number;
   maximumCriticalConcurrency: () => number;
   criticalHistory: () => string[];
+  warningLogs: Array<{
+    bindings: Record<string, unknown>;
+    message: string;
+  }>;
   addAssetsPerSubmit(count: 1 | 2): void;
   resolveAmbiguity(): void;
   disconnectNextSubmit(): void;
@@ -226,6 +230,10 @@ export function createGenerationHarness(options: {
   const events: string[] = [];
   const boundActions: string[] = [];
   const budgetEvents: string[] = [];
+  const warningLogs: Array<{
+    bindings: Record<string, unknown>;
+    message: string;
+  }> = [];
   let submissions = 0;
   let uploadCalls = 0;
   let chargeCalls = 0;
@@ -533,6 +541,11 @@ export function createGenerationHarness(options: {
     capacity,
     scheduler,
     admissions,
+    logger: {
+      warn: (bindings, message) => {
+        warningLogs.push({ bindings, message });
+      }
+    },
     prepareMedia: (input) => {
       events.push(`prepare:admitted=${String(capacity.counts().admitted)}`);
       if (input.source.type !== "prepared") {
@@ -577,6 +590,7 @@ export function createGenerationHarness(options: {
     submitCount: () => submissions,
     maximumCriticalConcurrency: () => maxCriticalConcurrency,
     criticalHistory: () => [...criticalEvents],
+    warningLogs,
     addAssetsPerSubmit: (count) => {
       assetsPerSubmit = count;
     },

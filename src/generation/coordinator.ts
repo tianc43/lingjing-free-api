@@ -5,7 +5,7 @@ import {
 } from "../accounts/scheduler.js";
 import type { AccountRuntime } from "../accounts/runtime.js";
 import type { SqliteAdmissionRepository } from "../accounts/sqlite-admission-repository.js";
-import { errors } from "../errors.js";
+import { AppError, errors } from "../errors.js";
 import { abortable } from "../jobs/abort.js";
 import { assetsFromResponse } from "../jobs/assets.js";
 import type { CapacityManager } from "../jobs/capacity.js";
@@ -78,6 +78,9 @@ export interface LingjingGenerationCoordinatorOptions {
     SqliteAdmissionRepository,
     "charge" | "failAndRelease" | "resolveUnknown"
   >;
+  logger?: {
+    warn(bindings: Record<string, unknown>, message: string): void;
+  };
   prepareMedia(input: MediaInput): Promise<PreparedMedia>;
   createUploadService?: (
     runtime: AccountRuntime,
@@ -148,12 +151,16 @@ implements GenerationCoordinator {
   private readonly now: () => number;
   private readonly sleep: Sleep;
   private readonly notifier: JobUpdateNotifier;
+  private readonly logger: {
+    warn(bindings: Record<string, unknown>, message: string): void;
+  };
   private readonly pollerAbort = new AbortController();
 
   constructor(private readonly options: LingjingGenerationCoordinatorOptions) {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.notifier = options.notifier ?? new JobUpdateNotifier();
+    this.logger = options.logger ?? { warn: () => undefined };
   }
 
   stopPollers(): void {
@@ -374,6 +381,18 @@ implements GenerationCoordinator {
                   ["submitting"],
                   "generation_submit_rejected"
                 );
+                this.logger.warn({
+                  account_id: runtime.record.id,
+                  api_id: model.apiId,
+                  error_code: cause instanceof AppError
+                    ? cause.code
+                    : "unknown_submit_failure",
+                  job_id: submitting.id,
+                  model: request.model,
+                  ...(cause instanceof AppError
+                    ? { upstream_status_code: cause.statusCode }
+                    : {})
+                }, "generation submit rejected");
                 throw cause;
               }
             }

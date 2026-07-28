@@ -278,6 +278,7 @@ export async function startServer(
       capacity,
       scheduler,
       admissions,
+      logger,
       prepareMedia,
       registry,
       assetDiscoveryTimeoutMs: config.assetDiscoveryTimeoutMs,
