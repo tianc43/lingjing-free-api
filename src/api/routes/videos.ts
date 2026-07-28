@@ -31,7 +31,7 @@ import {
   throwFailed,
   validateDynamicValues,
   validateMediaCount,
-  VIDEO_CONTROL_FIELDS,
+  VIDEO_ALWAYS_RESERVED_FIELDS,
   waitedJob
 } from "./generation.js";
 
@@ -70,7 +70,10 @@ export function registerVideoRoutes(
       const input = videoApiRequestSchema.parse(
         multipart?.body ?? request.body
       );
-      assertNoControlCollisions(input.parameters, VIDEO_CONTROL_FIELDS);
+      assertNoControlCollisions(
+        input.parameters,
+        VIDEO_ALWAYS_RESERVED_FIELDS
+      );
       media.push(...mediaFromStrings(input.input_images ?? []));
       if (input.mode === "image-to-video" && media.length === 0) {
         throw errors.invalidRequest(

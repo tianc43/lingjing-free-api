@@ -302,6 +302,47 @@ describe("video generation API", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("passes a model-specific mode parameter without changing the source type", async () => {
+    const resolve = fixture.dependencies.catalog.resolve.bind(
+      fixture.dependencies.catalog
+    );
+    fixture.dependencies.catalog.resolve = async (value, sourceType) => {
+      const current = await resolve(value, sourceType);
+      return {
+        ...current,
+        parameters: [
+          ...current.parameters,
+          {
+            idx: "8",
+            key: "mode",
+            displayName: "生成模式",
+            required: true,
+            kind: "enum",
+            defaultValue: "std",
+            options: ["std", "pro"]
+          }
+        ]
+      };
+    };
+
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video",
+        parameters: { mode: "std" }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requests[0]).toMatchObject({
+      sourceType: "text-to-video",
+      values: { mode: "std" }
+    });
+  });
+
   it("uses the upstream default for a model parameter instead of the public alias", async () => {
     const resolve = fixture.dependencies.catalog.resolve.bind(
       fixture.dependencies.catalog
