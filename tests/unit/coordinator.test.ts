@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { AppError } from "../../src/errors.js";
+import { mapUpstreamError } from "../../src/lingjing/error-map.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import {
@@ -388,6 +389,33 @@ describe("LingjingGenerationCoordinator", () => {
     expect(JSON.stringify(app.warningLogs)).not.toContain(
       "private upstream message"
     );
+  });
+
+  it("logs sanitized original upstream diagnostics for a rejected submit", async () => {
+    const app = harness();
+    app.failNextSubmit(mapUpstreamError({
+      code: "MODEL_ACCESS_DENIED",
+      message: "prompt=\"private prompt\" token=private-token; subscription required"
+    }, 422));
+
+    const handle = await app.coordinator.create(fixtureRequest());
+    await app.registry.waitUntilIdle();
+
+    expect(app.warningLogs).toEqual([{
+      bindings: {
+        account_id: app.selectedAccountId,
+        api_id: "707",
+        error_code: "lingjing_upstream_error",
+        job_id: handle.job.id,
+        model: "707",
+        upstream_business_code: "MODEL_ACCESS_DENIED",
+        upstream_error_message: "prompt=[REDACTED] token=[REDACTED]; subscription required",
+        upstream_http_status_code: 422
+      },
+      message: "generation submit rejected"
+    }]);
+    expect(JSON.stringify(app.warningLogs)).not.toContain("private prompt");
+    expect(JSON.stringify(app.warningLogs)).not.toContain("private-token");
   });
 
   it("holds capacity when discovery is ambiguous", async () => {

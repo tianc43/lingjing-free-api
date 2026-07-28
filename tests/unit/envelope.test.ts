@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { unwrapEnvelope } from "../../src/lingjing/envelope.js";
+import { upstreamDiagnostics } from "../../src/lingjing/error-map.js";
 
 describe("unwrapEnvelope", () => {
   it("returns a successful result", () => {
@@ -22,6 +23,29 @@ describe("unwrapEnvelope", () => {
       throw new Error("Expected unwrapEnvelope to throw");
     } catch (error) {
       expect(error).toMatchObject({ statusCode: 502, code: "lingjing_upstream_error" });
+    }
+  });
+
+  it("preserves sanitized upstream diagnostics separately from the mapped error", () => {
+    try {
+      unwrapEnvelope({
+        error: {
+          code: "MODEL_ACCESS_DENIED",
+          message: "prompt=\"private prompt\" token=private-token; model is unavailable https://example.test/a?secret=value"
+        },
+        result: null
+      }, 422);
+      throw new Error("Expected unwrapEnvelope to throw");
+    } catch (error) {
+      expect(error).toMatchObject({
+        statusCode: 502,
+        code: "lingjing_upstream_error"
+      });
+      expect(upstreamDiagnostics(error)).toEqual({
+        httpStatusCode: 422,
+        businessCode: "MODEL_ACCESS_DENIED",
+        message: "prompt=[REDACTED] token=[REDACTED]; model is unavailable [URL]"
+      });
     }
   });
 

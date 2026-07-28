@@ -26,7 +26,7 @@ import type {
   JobStatus,
   JobTransition
 } from "../jobs/types.js";
-import { SubmitAmbiguousError } from "../lingjing/error-map.js";
+import { SubmitAmbiguousError, upstreamDiagnostics } from "../lingjing/error-map.js";
 import type { MediaInput, PreparedMedia } from "../media/types.js";
 import type { NormalizedModel } from "../models/types.js";
 import { buildPayload } from "../models/payload-builder.js";
@@ -376,6 +376,7 @@ implements GenerationCoordinator {
               );
             } catch (cause) {
               if (!(cause instanceof SubmitAmbiguousError)) {
+                const diagnostics = upstreamDiagnostics(cause);
                 failAndRelease(
                   submitting.id,
                   ["submitting"],
@@ -389,9 +390,18 @@ implements GenerationCoordinator {
                     : "unknown_submit_failure",
                   job_id: submitting.id,
                   model: request.model,
-                  ...(cause instanceof AppError
+                  ...(diagnostics === undefined && cause instanceof AppError
                     ? { upstream_status_code: cause.statusCode }
-                    : {})
+                    : {}),
+                  ...(diagnostics?.businessCode === undefined
+                    ? {}
+                    : { upstream_business_code: diagnostics.businessCode }),
+                  ...(diagnostics?.message === undefined
+                    ? {}
+                    : { upstream_error_message: diagnostics.message }),
+                  ...(diagnostics?.httpStatusCode === undefined
+                    ? {}
+                    : { upstream_http_status_code: diagnostics.httpStatusCode })
                 }, "generation submit rejected");
                 throw cause;
               }
