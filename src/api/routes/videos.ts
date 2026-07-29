@@ -36,13 +36,6 @@ import {
 } from "./generation.js";
 
 const VIDEO_DYNAMIC_CONTROL_FIELDS = ["mode", "duration"] as const;
-const VIDEO_ALWAYS_RESERVED_FIELDS = new Set(
-  [...VIDEO_CONTROL_FIELDS].filter(
-    (field) => !VIDEO_DYNAMIC_CONTROL_FIELDS.includes(
-      field as (typeof VIDEO_DYNAMIC_CONTROL_FIELDS)[number]
-    )
-  )
-);
 
 export function registerVideoRoutes(
   app: FastifyInstance,

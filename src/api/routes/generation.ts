@@ -26,7 +26,6 @@ export const IMAGE_CONTROL_FIELDS = new Set([
 export const VIDEO_ALWAYS_RESERVED_FIELDS = new Set([
   "model",
   "prompt",
-  "duration",
   "resolution",
   "ratio",
   "input_images",
