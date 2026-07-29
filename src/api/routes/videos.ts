@@ -31,7 +31,7 @@ import {
   throwFailed,
   validateDynamicValues,
   validateMediaCount,
-  VIDEO_CONTROL_FIELDS,
+  VIDEO_ALWAYS_RESERVED_FIELDS,
   waitedJob
 } from "./generation.js";
 

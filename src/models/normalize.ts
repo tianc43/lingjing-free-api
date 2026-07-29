@@ -99,10 +99,10 @@ function normalizeParameter(raw: ObjectRecord): NormalizedParameter {
     || type.includes("picfileupload")
     || type.includes("image-list")
     ? "image-list"
-    : type.includes("boolean") || type.includes("switch")
-      ? "boolean"
-      : options !== undefined
-        ? "enum"
+    : options !== undefined
+      ? "enum"
+      : type.includes("boolean") || type.includes("switch")
+        ? "boolean"
         : type.includes("number")
           || type.includes("int")
           || type.includes("long")

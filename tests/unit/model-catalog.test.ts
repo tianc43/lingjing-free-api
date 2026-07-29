@@ -299,6 +299,32 @@ describe("dynamic model normalization", () => {
     });
   });
 
+  it("treats a switch with string options as an enum", () => {
+    const sound = normalizeModels("text-to-video", [{
+      apiId: "567",
+      aiModelName: "Kling 3.0 Omni",
+      parametersMeta: [{
+        index: "1",
+        fieldName: "sound",
+        required: false,
+        fieldType: "boolean",
+        componentType: "switch",
+        defaultValue: "on",
+        selectorValues: [
+          { key: "on", value: "开启" },
+          { key: "off", value: "关闭" }
+        ]
+      }]
+    }])[0]?.parameters[0];
+
+    expect(sound).toMatchObject({
+      key: "sound",
+      kind: "enum",
+      defaultValue: "on",
+      options: ["on", "off"]
+    });
+  });
+
   it("normalizes the current console detail metadata without guessing billing", () => {
     const models = normalizeModels("image-generation", [{
       apiId: "707",
