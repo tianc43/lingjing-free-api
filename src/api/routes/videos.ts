@@ -35,10 +35,14 @@ import {
   waitedJob
 } from "./generation.js";
 
+const VIDEO_DYNAMIC_CONTROL_FIELDS = ["mode", "duration"] as const;
 const VIDEO_ALWAYS_RESERVED_FIELDS = new Set(
-  [...VIDEO_CONTROL_FIELDS].filter((field) => field !== "mode")
+  [...VIDEO_CONTROL_FIELDS].filter(
+    (field) => !VIDEO_DYNAMIC_CONTROL_FIELDS.includes(
+      field as (typeof VIDEO_DYNAMIC_CONTROL_FIELDS)[number]
+    )
+  )
 );
-const VIDEO_SOURCE_MODE_FIELD = new Set(["mode"]);
 
 export function registerVideoRoutes(
   app: FastifyInstance,
@@ -92,16 +96,27 @@ export function registerVideoRoutes(
         input.mode,
         true
       );
+      for (const field of VIDEO_DYNAMIC_CONTROL_FIELDS) {
+        if (
+          !model.parameters.some(
+            (parameter) =>
+              parameter.kind !== "image-list"
+              && parameter.key === field
+          )
+        ) {
+          assertNoControlCollisions(
+            input.parameters,
+            new Set([field])
+          );
+        }
+      }
       if (
-        !model.parameters.some(
-          (parameter) =>
-            parameter.kind !== "image-list"
-            && parameter.key === "mode"
-        )
+        input.duration !== undefined
+        && Object.hasOwn(input.parameters ?? {}, "duration")
       ) {
-        assertNoControlCollisions(
-          input.parameters,
-          VIDEO_SOURCE_MODE_FIELD
+        throw errors.invalidRequest(
+          "duration cannot be provided both as a control field and a model parameter",
+          "duration"
         );
       }
       const imageParameter = model.parameters.find(

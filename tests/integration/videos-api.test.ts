@@ -377,6 +377,64 @@ describe("video generation API", () => {
     expect(requests[0]?.values.mode).toBe("pro");
   });
 
+  it("accepts exactly the string duration options declared by the resolved model", async () => {
+    const webDurationOptions = Array.from(
+      { length: 13 },
+      (_, index) => String(index + 3)
+    );
+    const resolve = fixture.dependencies.catalog.resolve.bind(
+      fixture.dependencies.catalog
+    );
+    fixture.dependencies.catalog.resolve = async (value, sourceType) => {
+      const current = await resolve(value, sourceType);
+      return {
+        ...current,
+        parameters: current.parameters.map((parameter) => {
+          if (parameter.key !== "duration") return parameter;
+          const duration = { ...parameter };
+          delete duration.minimum;
+          delete duration.maximum;
+          return {
+            ...duration,
+            kind: "enum" as const,
+            defaultValue: "5",
+            options: webDurationOptions
+          };
+        })
+      };
+    };
+
+    for (const duration of webDurationOptions) {
+      const response = await authorizedInject(fixture.app, {
+        method: "POST",
+        url: "/v1/videos/generations",
+        payload: {
+          model: "fixture-video",
+          prompt: "fixture prompt",
+          mode: "text-to-video",
+          parameters: { duration }
+        }
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const invalid = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos/generations",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video",
+        parameters: { duration: "not-in-web-catalog" }
+      }
+    });
+
+    expect(invalid.statusCode).toBe(400);
+    expect(requests.map((request) => request.values.duration)).toEqual(
+      webDurationOptions
+    );
+  });
+
   it("requires mode and an input image for image-to-video", async () => {
     for (const payload of [
       {
@@ -509,6 +567,23 @@ describe("video generation API", () => {
       });
       expect(response.statusCode).toBe(400);
     }
+    expect(requests).toHaveLength(0);
+  });
+
+  it("rejects ambiguous duration controls", async () => {
+    const response = await authorizedInject(fixture.app, {
+      method: "POST",
+      url: "/v1/videos/generations",
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture",
+        mode: "text-to-video",
+        duration: 5,
+        parameters: { duration: 6 }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
     expect(requests).toHaveLength(0);
   });
 
