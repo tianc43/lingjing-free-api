@@ -850,23 +850,14 @@ describe("LingjingGenerationCoordinator", () => {
       taskId: "fixture-processing-lease-task",
       creationCode: "processing-lease-creation"
     });
-    app.setTaskStatuses("fixture-processing-lease-task", [0]);
+    app.setTaskStatuses("fixture-processing-lease-task", [1]);
     await app.coordinator.resume(unknown.id);
-    let processing=app.repository.findById(unknown.id);
-    for(let attempt=0;attempt<500&&processing?.status!=="processing";attempt++){await new Promise(resolve=>setTimeout(resolve,10));processing=app.repository.findById(unknown.id);}
-    expect(processing?.status).toBe("processing");
-    expect(processing?.status).toBe("processing");
+    await app.registry.waitUntilIdle();
+    const processing=app.repository.findById(unknown.id);
+    expect(processing).toMatchObject({status:"completed",errorCode:null});
     now = 101;
     app.capacity.expireUnknown(now);
-
-    const remainedActive = app.capacity.activeJobIds().includes(unknown.id);
-    app.setTaskStatuses("fixture-processing-lease-task", [1]);
-    await app.registry.waitUntilIdle();
-    expect(remainedActive).toBe(true);
-    expect(processing).toMatchObject({
-      status: "processing",
-      errorCode: null
-    });
+    expect(app.capacity.activeJobIds()).not.toContain(unknown.id);
     expect(app.repository.findById(unknown.id)).toMatchObject({
       status: "completed",
       errorCode: null

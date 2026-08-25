@@ -12,7 +12,7 @@ interface LoginPage {
   url(): string;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   isClosed(): boolean;
-  waitForTimeout(timeout: number): Promise<void>;
+  waitForTimeout(timeout:number):Promise<void>;context?():{cookies(url:string):Promise<Array<{name:string;value:string}>>};
 }
 
 interface LoginContext {
@@ -36,35 +36,30 @@ export function parseLoginArguments(args: string[]): { accountId?: string } {
 }
 
 export async function waitForAuthenticatedPage(page: LoginPage): Promise<string> {
-  for (;;) {
+  let attempts=0;for (;;) {
     try {
+      const cookies=await page.context?.().cookies("https://lingjing.jdcloud.com");const csrf=cookies?.find(cookie=>cookie.name==="csrfToken"&&cookie.value.trim().length>0),pin=cookies?.find(cookie=>cookie.name==="pin"&&cookie.value.trim().length>0);if(csrf&&pin)return decodeURIComponent(pin.value);
       const authentication = await page.evaluate(async () => {
         if (location.origin !== "https://lingjing.jdcloud.com") {
           return { authenticated: false, originPin: null };
         }
-        const response = await fetch("/api/user/describeBaseInfo");
-        const envelope: unknown = await response.json();
+        let response=await fetch("/api/auth/validation");let envelope:unknown=await response.json();if(typeof envelope!=="object"||envelope===null||(envelope as{error?:unknown;result?:unknown}).error||(envelope as{result?:unknown}).result==null){response=await fetch("/api/user/describeBaseInfo");envelope=await response.json();}
         if (typeof envelope !== "object" || envelope === null) {
           return { authenticated: false, originPin: null };
         }
         const value = envelope as { error?: unknown; result?: unknown };
-        const account = (window as Window & { JDCloud?: { account?: { originPin?: unknown } } }).JDCloud?.account;
-        return {
-          authenticated: !value.error && value.result !== undefined && value.result !== null,
-          originPin: typeof account?.originPin === "string" ? account.originPin : null
-        };
+        const account = (window as Window & { JDCloud?: { account?: { originPin?: unknown } } }).JDCloud?.account,result=value.result as Record<string,unknown>|null,pin=typeof account?.originPin==="string"?account.originPin:result&&typeof result["pin"]==="string"?result["pin"]:result&&typeof result["originPin"]==="string"?result["originPin"]:null;
+        return {authenticated:!value.error&&result!==null,originPin:pin};
       });
       if (page.isClosed()) throw new Error("Login cancelled before completion.");
-      if (authentication.authenticated && authentication.originPin !== null && authentication.originPin.trim().length > 0) {
-        return authentication.originPin;
-      }
-      await page.waitForTimeout(1_000);
+      if(authentication.authenticated){if(authentication.originPin!==null&&authentication.originPin.trim().length>0)return authentication.originPin;const cookies=await page.context?.().cookies("https://lingjing.jdcloud.com");const pinCookie=cookies?.find(cookie=>cookie.name==="pin"&&cookie.value.trim().length>0);if(pinCookie)return decodeURIComponent(pinCookie.value);return "authenticated-session";}
+      attempts+=1;if(attempts%30===0)console.log(`仍在等待登录，当前页面: ${new URL(page.url()).origin}`);await page.waitForTimeout(1_000);
     } catch (error) {
       if (error instanceof Error && error.message === "Login cancelled before completion.") throw error;
       if (page.isClosed()) {
         throw new Error("Login cancelled before completion.");
       }
-      await page.waitForTimeout(1_000);
+      attempts+=1;if(attempts%30===0)console.log(`仍在等待登录，当前页面: ${new URL(page.url()).origin}`);await page.waitForTimeout(1_000);
     }
   }
 }

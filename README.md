@@ -114,7 +114,7 @@ docker compose down
 验收命令：
 
 ```bash
-npm run check                 # lint + 双 TypeScript + 702 个 Vitest
+npm run check                 # lint + 双 TypeScript + 715 个 Vitest
 npm run build                 # Server + Admin production build
 npm run test:browser          # SQLite 8 项 + PostgreSQL 7 项 Browser acceptance
 npm run test:minio            # 已启动 S3-compatible endpoint 时运行真实 MinIO adapter test
@@ -392,3 +392,4 @@ live 输出仅允许模型 display name、带引号的预计点数、本地 job 
 - [协议与可变的网页端细节](docs/protocol.md)
 - [安全模型与凭据轮换](docs/security.md)
 - [故障排查与安全命令](docs/troubleshooting.md)
+- [内部发布就绪清单](docs/release-readiness.md)

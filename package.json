@@ -38,7 +38,9 @@
     "test:browser:sqlite": "playwright test tests/browser/admin.browser.test.ts --reporter=line",
     "test:browser:postgres": "pwsh -NoProfile -File tests/fixtures/run-postgres-browser.ps1",
     "test:browser": "npm run test:browser:sqlite && npm run test:browser:postgres",
-    "capture:protocol": "tsx src/cli/capture-protocol.ts"
+    "capture:protocol": "tsx src/cli/capture-protocol.ts",
+    "inspect:video-catalog": "node --env-file=.env --import tsx src/cli/inspect-video-catalog.ts",
+    "backup:local": "tsx src/cli/backup-local.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1116.0",

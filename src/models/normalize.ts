@@ -211,9 +211,7 @@ export function normalizeModels(
       ?? nonEmptyString(raw.scene)
       ?? nonEmptyString(raw.shortSenceCode)
       ?? sourceType;
-    const priceQuerySchema = isPlainObject(raw.priceQuerySchema)
-      ? raw.priceQuerySchema
-      : null;
+    const rawPrice=isPlainObject(raw.priceQuerySchema)?raw.priceQuerySchema:null,priceService=nonEmptyString(raw.priceQueryService)??nonEmptyString(raw.priceService)??nonEmptyString(rawPrice?.priceQueryService),priceParams=isPlainObject(raw.priceQueryParams)?raw.priceQueryParams:isPlainObject(rawPrice?.params)?rawPrice.params:null;const priceQuerySchema=rawPrice===null&&priceService===undefined?null:{...(rawPrice??{}),...(priceService===undefined?{}:{priceQueryService:priceService}),...(priceParams===null?{}:{params:Object.fromEntries(Object.entries(priceParams).filter((entry):entry is [string,string|number|boolean]=>typeof entry[1]==="string"||typeof entry[1]==="number"||typeof entry[1]==="boolean"))})};
 
     return {
       id: asString(raw.id) ?? apiId,

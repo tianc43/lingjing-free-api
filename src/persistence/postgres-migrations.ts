@@ -17,4 +17,21 @@ CREATE INDEX budget_account_windows_idx ON budget_entries(account_id,day_window_
 CREATE INDEX assets_expiry_idx ON job_assets(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX pending_uploads_expiry_idx ON pending_uploads(status,expires_at);
 CREATE INDEX webhook_due_idx ON webhook_outbox(status,next_attempt_at);
+`},{version:3,name:"compatibility-columns",sql:`
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_error_code text;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS membership text;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS points_balance numeric;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS total_balance numeric;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_checked_at bigint;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS api_id text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS model_code text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS space_id integer;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS upstream_fingerprint text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS submitted_at bigint;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS recovery_claim_token text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS recovery_claimed_by text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS recovery_claim_expires_at bigint;
+CREATE TABLE IF NOT EXISTS job_request_snapshots(job_id text PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,payload_json jsonb NOT NULL,created_at bigint NOT NULL,updated_at bigint NOT NULL);
+CREATE INDEX IF NOT EXISTS jobs_worker_active_idx ON jobs(status,updated_at);
+CREATE INDEX IF NOT EXISTS recovery_claim_idx ON jobs(recovery_claim_expires_at,updated_at);
 `}];

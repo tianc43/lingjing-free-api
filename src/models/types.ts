@@ -13,6 +13,8 @@ export interface NormalizedParameter {
   maxFiles?: number;
 }
 
+export interface NormalizedPriceQuery {priceQueryService?:string;params?:Record<string,string|number|boolean>;[key:string]:unknown;}
+
 export interface NormalizedModel {
   id: string;
   apiId: string;
@@ -24,7 +26,7 @@ export interface NormalizedModel {
   sceneCode: string;
   expectedAssetScene: string;
   uploadStrategy: "general" | "materials";
-  priceQuerySchema: Record<string, unknown> | null;
+  priceQuerySchema: NormalizedPriceQuery | null;
   parameters: NormalizedParameter[];
   pricing: unknown;
   rawRevision: string;

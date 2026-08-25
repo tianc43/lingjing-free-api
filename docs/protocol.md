@@ -2,6 +2,41 @@
 
 本文记录实现时经过测试和代码契约**逆向验证**的灵境 Web 端行为，不是官方文档。以下路径、字段、状态、上传策略和错误文案都属于实现细节，**可能变化**；一旦网页端更新，应先用隔离账号重新验证 fixture 与契约，再更新适配器。
 
+## 2026-08-25 已登录浏览器采集与受控实测
+
+本轮使用已登录的网页端，读取首页和“视频生成”页加载的请求、可见表单及已加载前端脚本；所有 `_t` 时间戳、账号标识、Cookie、CSRF 和完整查询值均未记录。随后经明确授权完成一笔受控文生视频实测；图生视频已完成参数和首帧选择，但因余额不足没有受理任务。
+
+| 模块 | 路径与方法 | 本轮证据 | 已确认的输入/用途 |
+|---|---|---|---|
+| 登录与账号 | `GET /api/auth/validation`、`GET /api/user/describeBaseInfo` | 页面实际请求 | 校验会话，读取账号基础信息。 |
+| 钱包与会员 | `GET /api/wallet/describeAccountCoupons`、`GET /api/memberSubscription/messages`、`GET /joycreator/member/queryMemberList` | 页面实际请求 | 点数、订阅消息和会员列表。 |
+| 空间与资产 | `GET /joycreator/team/space/menu/list`、`GET /joycreator/space/asset/list` | 页面实际请求 | 后者当前可见查询包含 `spaceId`、`assetType`、`currentPage`、`pageSize`。 |
+| 模型目录 | `POST /joycreator/AIModelApiConsole/getBySourceType` | 页面实际请求 + 已加载脚本 | 请求体为 `{ "sourceType": "..." }`；视频页由此加载动态模型与参数。 |
+| 单模型详情 | `POST /joycreator/AIModelApiConsole/getByApiId` | 已加载脚本 | 请求体为 `{ "apiId": "..." }`。 |
+| 报价 | `POST /joycreator/AIModelApiConsole/calculatePrice` | 页面实际请求 + 已加载脚本 | 随当前模型/参数刷新报价；必须在提交前重新查询。 |
+| 提交 | `POST /joycreator/AIModelApiConsole/executeByApiId` | 已加载脚本 + 文生视频实测受理 | 通用模型执行入口；原始请求体仍需由动态目录和表单构造，禁止硬编码。 |
+| 图生素材上传 | `POST /joycreator/AIModelApiConsole/uploadMaterials` | 已加载脚本 | `multipart/form-data`：`sceneCode`、`modelCode`、`spaceId`、`file`。 |
+| 任务读取 | `POST /openApi/modelmarket/describeUserTask` | 已加载脚本 | 请求体为 `{ "params": { "taskId": "..." } }`。 |
+
+视频页当前可见三种模式：文生视频、图生视频、参考生视频。图生视频要求首帧图；当前表单暴露模型、时长、分辨率、画幅和“生成音频”开关，说明这些都必须从动态模型目录而不是写死的枚举中取值。
+
+任务读取的当前前端处理字段包括 `status`、`url`、`watermarkUrl`、`imageUrl`、`width`、`height`、`taskType`、`taskResults`、`reqParam`、`name` 和 `errMsg`。这证明轮询响应不能只依赖单一输出 URL。
+
+### 受控视频验收记录
+
+| 流程 | 运行时模型与参数 | 页面报价 | 结果 |
+|---|---|---:|---|
+| 文生视频 | Seedance 2.0 mini；4s；480p；16:9；同步音频关闭；联网搜索关闭；最小无敏感提示词 | 92 点 | `executeByApiId` 已受理，任务立即进入“生成中”，随后在作品流中出现可播放的 4s 视频。页面余额从 170 变为 76；显示差额与报价不完全相同，账务必须以平台结算记录为准。 |
+| 图生视频 | Seedance 2.0 mini；4s；480p；16:9；同步音频关闭；联网搜索关闭；已有生成图首帧 | 92 点 | 当前余额 76，低于报价；未受理任务，未重复提交。 |
+| 图生视频备选 | 海螺 Hailuo-2.3-Fast；默认 6s；1080p | 231 点 | 高于当前余额，未提交。 |
+| 图生视频（新账号） | Seedance-1.5-pro；5s；720p；16:9；同步音频关闭；已有图生作品首帧；最小无敏感提示词 | 32 点 | `executeByApiId` 已受理，作品流立即新增“生成中”任务；两次短轮询后仍为异步处理。页面未展示 taskId，禁止重新提交。 |
+
+文生与图生均由动态目录决定 `apiId`、`refId`、`sceneCode`、`modelCode`、参数 `idx`、可选值和报价查询结构；这些内部 ID 不在浏览器可见 DOM 中，应先调用 `getBySourceType`，再以 `getByApiId` 获取详情后构造请求。图生使用现有平台资产作为首帧时不经过 `uploadMaterials`；该 multipart 路径仅适用于外部文件需要上送的模型策略。
+
+网页作品流的“一键同款”会导航到 `/image-to-video?from=assets&generationId=...` 并回填首帧、模型、提示词和动态参数。该路径可验证已有资产复用的图生流程，但不得把 `generationId` 当作稳定公开 API，也不得在日志中记录其值。
+
+**实现前结论：**下一步应把上述真实路径收敛为一个协议适配层，再实现账号、模型、报价、上传、提交、资产发现和轮询。提交必须绑定模型详情和报价快照、只发送一次；余额不足时要在提交前失败，绝不降级到其他收费系统或自动重试。
+
 ## 会话、来源与信封
 
 默认 origin 为 `https://lingjing.jdcloud.com`。Playwright `storage-state.json` 载入 CookieJar；名为 `csrfToken` 的 Cookie 值会镜像到每个上游请求的 `x-csrf-token` header。服务接收 `Set-Cookie` 并以私有权限原子回写状态文件。Cookie、CSRF、`originPin` 和完整 URL 查询串不得进入日志。
@@ -29,7 +64,7 @@
 - `POST /joycreator/AIModelApiConsole/getByApiId`
 - `GET /api/user/describeBaseInfo`
 - `GET /joycreator/team/space/menu/list`
-- `GET /joycreator/member/queryMember?pin=...`
+- `GET /joycreator/member/queryMemberList`
 - `GET /api/wallet/describeAccountCoupons`
 
 目录对外只返回白名单字段。内部 `apiId`、`refId`、场景、价格签名与上传元数据不会原样透出。

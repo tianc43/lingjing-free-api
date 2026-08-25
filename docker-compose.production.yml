@@ -82,6 +82,12 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
     networks: [backend]
 
 networks:
