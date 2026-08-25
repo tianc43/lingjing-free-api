@@ -241,7 +241,7 @@ curl -sS http://127.0.0.1:8000/v1/videos \
     "duration": 5,
     "resolution": "720p",
     "ratio": "16:9",
-    "response_mode": "wait"
+    "response_mode": "async"
   }'
 ```
 
@@ -261,14 +261,18 @@ curl -sS http://127.0.0.1:8000/v1/videos \
 
 ### 异步任务
 
-`response_mode=async` 立即返回 HTTP 202、`Location: /v1/tasks/<id>` 和任务对象。等待模式超时但任务仍在运行时也返回 202。
+`POST /v1/videos` 默认异步并立即返回 HTTP 202、`Location: /v1/videos/<id>` 和任务对象；`/v1/videos/generations` 才是默认等待的兼容入口。等待模式超时但任务仍在运行时也返回 202。
 
 ```bash
+curl -sS http://127.0.0.1:8000/v1/videos/JOB_ID \
+  -H "Authorization: Bearer $LINGJING_API_KEY"
+
+# 兼容任务查询同样可用
 curl -sS http://127.0.0.1:8000/v1/tasks/JOB_ID \
   -H "Authorization: Bearer $LINGJING_API_KEY"
 ```
 
-状态为 `queued`、`submitting`、`discovering`、`processing`、`unknown`、`completed` 或 `failed`；输出只在可确认后出现。
+状态为 `queued`、`submitting`、`discovering`、`processing`、`unknown`、`completed` 或 `failed`；输出只在可确认并归档后出现。返回的 `/v1/assets/<id>` 需要相同 Project API Key，可用 HTTP Range 播放或下载。
 
 ### Chat Completions 与 SSE
 
