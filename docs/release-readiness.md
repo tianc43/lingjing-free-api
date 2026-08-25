@@ -12,7 +12,7 @@
 
 ## Required before immediate real use
 
-1. Establish a new Lingjing session with `npm run login` or Admin Cookie import.
+1. Run `npm run live:preflight`, then establish a new Lingjing session with `npm run login` or Admin Cookie import.
 2. Run `npm run inspect:video-catalog` and verify at least one T2V/I2V model and sufficient points.
 3. Run one controlled quote; submit only after the displayed point cost is accepted.
 4. Start in SQLite + local object mode for the simplest 3–5 user deployment.
