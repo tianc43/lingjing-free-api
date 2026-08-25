@@ -114,7 +114,7 @@ docker compose down
 验收命令：
 
 ```bash
-npm run check                 # lint + 双 TypeScript + 715 个 Vitest
+npm run check                 # lint + 双 TypeScript + 718 个 Vitest
 npm run build                 # Server + Admin production build
 npm run test:browser          # SQLite 8 项 + PostgreSQL 7 项 Browser acceptance
 npm run test:minio            # 已启动 S3-compatible endpoint 时运行真实 MinIO adapter test
