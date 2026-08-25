@@ -18,6 +18,10 @@
 4. Start in SQLite + local object mode for the simplest 3–5 user deployment.
 5. Back up `data/` before the first real generation.
 
+## Current acceptance state
+
+The automated release candidate is complete. Live acceptance is intentionally waiting for one user-supplied current Lingjing session. Do not repeatedly run Catalog or paid tests while `npm run live:preflight` reports `ready_accounts: 0`. The next useful action is exclusively Admin Cookie import or CLI login; after it reports at least one ready account, run Catalog inspection and quote-only preflight before any submission.
+
 ## Remaining release gaps
 
 - PostgreSQL Admin Cookie Import is implemented; a current valid Lingjing Cookie is still required for real generation.
