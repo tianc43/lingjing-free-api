@@ -56,5 +56,5 @@ npm run check
 npm run build
 npm run test:browser
 npm audit --audit-level=moderate
-# Current baseline: Vitest 718/718, Browser 15/15, npm audit 0.
+# Current baseline: Vitest 718/718, Browser 16/16, npm audit 0.
 ```
