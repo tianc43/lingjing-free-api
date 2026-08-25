@@ -35,6 +35,16 @@ npm run backup:local -- ./data ./backups/pre-release
 
 The backup contains SQLite, sessions and local objects plus a SHA-256 manifest. To restore, stop the service, move the current `data/` aside, copy the backup contents (except `manifest.json`) into `data/`, and start the service. Never merge two live data directories.
 
+## Local smoke
+
+With the service running, use:
+
+```bash
+npm run smoke:local
+```
+
+`status=ready` means the service, Admin and video Catalog are available. `status=needs_login` means the local service is healthy but no current Lingjing session can load video models; import a Cookie or run login before generation.
+
 ## Acceptance commands
 
 ```bash
