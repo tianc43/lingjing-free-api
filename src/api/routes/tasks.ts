@@ -7,6 +7,10 @@ import {
   errorResponseSchema,
   routeSchema
 } from "../schema.js";
+import {
+  requestPrincipal,
+  requireScope
+} from "../principal.js";
 import type { AppDependencies } from "../types.js";
 
 const taskParamsSchema = z.object({
@@ -60,8 +64,10 @@ export function registerTaskRoutes(
     })
   }, async (request, reply) => {
     const params = taskParamsSchema.parse(request.params);
+    const principal = requestPrincipal(request);
     const job = dependencies.repository.findById(params.id);
-    if (job === null) throw taskNotFound();
+    if (job === null || job.projectId !== principal.projectId) throw taskNotFound();
+    requireScope(request, job.kind === "video" ? "video:read" : "image:read");
     return noStore(reply).send(presentTask(job));
   });
 
@@ -77,13 +83,20 @@ export function registerTaskRoutes(
     })
   }, async (request, reply) => {
     const query = taskListQuerySchema.parse(request.query);
+    const principal = requestPrincipal(request);
+    const canReadVideo = principal.scopes.includes("video:read");
+    const canReadImage = principal.scopes.includes("image:read");
+    if (!canReadVideo && !canReadImage) requireScope(request, "video:read");
     const jobs = dependencies.repository.list({
+      projectId: principal.projectId,
       limit: query.limit,
       ...(query.status === undefined ? {} : { status: query.status })
     });
     return noStore(reply).send({
       object: "list",
-      data: jobs.map(presentTask)
+      data: jobs.filter((job) => (
+        job.kind === "video" ? canReadVideo : canReadImage
+      )).map(presentTask)
     });
   });
 }

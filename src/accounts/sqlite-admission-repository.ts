@@ -18,6 +18,9 @@ export interface BudgetUsageBreakdown {
 
 interface JobRow {
   id: string;
+  user_id: string;
+  project_id: string;
+  api_key_id: string | null;
   kind: "image" | "video";
   source_type: JobRecord["sourceType"];
   model: string;
@@ -39,6 +42,11 @@ interface JobRow {
   completed_at: number | null;
   failed_at: number | null;
   unknown_hold_until: number | null;
+  processing_deadline_at: number | null;
+  reconcile_after: number | null;
+  uncertainty_reason: string | null;
+  poll_attempts: number;
+  last_polled_at: number | null;
   error_code: string | null;
   result_json: string | null;
   created_at: number;
@@ -53,12 +61,14 @@ interface AccountBudgetRow {
 }
 
 const JOB_SELECT_COLUMNS = `
-  id, kind, source_type, model, api_id, model_code, expected_asset_scene,
+  id, user_id, project_id, api_key_id, kind, source_type, model, api_id,
+  model_code, expected_asset_scene,
   request_fingerprint, idempotency_key_hash, space_id, account_id, quoted_points,
   quote_known,
   status, creation_code, upstream_task_id, upstream_fingerprint, submitted_at,
-  discovered_at, completed_at, failed_at, unknown_hold_until, error_code,
-  result_json, created_at, updated_at
+  discovered_at, completed_at, failed_at, unknown_hold_until,
+  processing_deadline_at, reconcile_after, uncertainty_reason, poll_attempts,
+  last_polled_at, error_code, result_json, created_at, updated_at
 `;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
@@ -74,9 +84,39 @@ function parseResult(value: string | null): JobRecord["result"] {
   return value === null ? null : JSON.parse(value) as JobRecord["result"];
 }
 
+function appendLedger(
+  database: Database.Database,
+  job: JobRow,
+  type: "hold" | "charge" | "release" | "refund" | "adjustment",
+  reason: string,
+  now: number
+): void {
+  database.prepare(`
+    INSERT INTO usage_ledger (
+      id, job_id, user_id, project_id, api_key_id, account_id,
+      entry_type, points, reason, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(job_id, entry_type, reason) DO NOTHING
+  `).run(
+    `led_${randomBytes(16).toString("hex")}`,
+    job.id,
+    job.user_id,
+    job.project_id,
+    job.api_key_id,
+    job.account_id,
+    type,
+    job.quote_known === 1 ? job.quoted_points : 0,
+    reason,
+    now
+  );
+}
+
 function jobFromRow(row: JobRow): JobRecord {
   return {
     id: row.id,
+    userId: row.user_id,
+    projectId: row.project_id,
+    apiKeyId: row.api_key_id,
     kind: row.kind,
     sourceType: row.source_type,
     model: row.model,
@@ -97,6 +137,11 @@ function jobFromRow(row: JobRow): JobRecord {
     completedAt: row.completed_at,
     failedAt: row.failed_at,
     unknownHoldUntil: row.unknown_hold_until,
+    processingDeadlineAt: row.processing_deadline_at,
+    reconcileAfter: row.reconcile_after,
+    uncertaintyReason: row.uncertainty_reason,
+    pollAttempts: row.poll_attempts,
+    lastPolledAt: row.last_polled_at,
     errorCode: row.error_code,
     result: parseResult(row.result_json),
     createdAt: row.created_at,
@@ -170,6 +215,40 @@ export class SqliteAdmissionRepository {
         return { outcome: "account_unavailable" };
       }
 
+      const projectPlan = database.prepare(`
+        SELECT pl.daily_limit_points, pl.monthly_limit_points, pl.max_concurrency, pl.max_queued_requests
+        FROM projects p JOIN users u ON u.id=p.user_id
+        JOIN plans pl ON pl.id=p.plan_id
+        WHERE p.id=? AND p.user_id=? AND p.status='active' AND u.status='active' AND pl.enabled=1
+      `).get(input.projectId ?? "prj_legacy", input.userId ?? "usr_legacy") as {
+        daily_limit_points:number; monthly_limit_points:number; max_concurrency:number; max_queued_requests:number;
+      } | undefined;
+      if (projectPlan === undefined) return { outcome: "project_quota_exhausted" };
+      const projectCounts = database.prepare(`
+        SELECT
+          SUM(CASE WHEN status IN ('submitting','discovering','processing') OR (status='unknown' AND unknown_hold_until IS NOT NULL AND unknown_hold_until>?) THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS queued
+        FROM jobs WHERE project_id=?
+      `).get(Date.now(),input.projectId ?? "prj_legacy") as {active:number|null;queued:number|null};
+      if (
+        (projectPlan.max_concurrency!==0 && (projectCounts.active??0)>=projectPlan.max_concurrency)
+        || (projectPlan.max_queued_requests!==0 && (projectCounts.queued??0)>=projectPlan.max_queued_requests)
+      ) return { outcome:"project_capacity_exhausted" };
+      const projectUsage = database.prepare(`
+        SELECT COALESCE(SUM(be.quoted_points),0) AS used
+        FROM budget_entries be JOIN jobs j ON j.id=be.job_id
+        WHERE j.project_id=? AND be.state IN ('reserved','charged')
+          AND ((?='day' AND be.day_window_start=?) OR (?='month' AND be.month_window_start=?))
+      `);
+      const projectId = input.projectId ?? "prj_legacy";
+      const dayUsed = (projectUsage.get(projectId,"day",windows.dayWindowStart,"day",windows.dayWindowStart) as {used:number}).used;
+      const monthUsed = (projectUsage.get(projectId,"month",windows.monthWindowStart,"month",windows.monthWindowStart) as {used:number}).used;
+      if (input.quotedPoints === null && (projectPlan.daily_limit_points!==0 || projectPlan.monthly_limit_points!==0)) return { outcome:"project_quota_exhausted" };
+      if (input.quotedPoints !== null && (
+        (projectPlan.daily_limit_points!==0 && dayUsed+input.quotedPoints>projectPlan.daily_limit_points)
+        || (projectPlan.monthly_limit_points!==0 && monthUsed+input.quotedPoints>projectPlan.monthly_limit_points)
+      )) return { outcome: "project_quota_exhausted" };
+
       const usage = database.prepare(`
         SELECT
           COALESCE(SUM(CASE
@@ -204,17 +283,22 @@ export class SqliteAdmissionRepository {
       const quoteKnown = input.quotedPoints === null ? 0 : 1;
       database.prepare(`
         INSERT INTO jobs (
-          id, kind, source_type, model, api_id, model_code, expected_asset_scene,
-          request_fingerprint, idempotency_key_hash, space_id, account_id,
-          quoted_points, quote_known, status, created_at, updated_at
+          id, user_id, project_id, api_key_id, kind, source_type, model, api_id,
+          model_code, expected_asset_scene, request_fingerprint,
+          idempotency_key_hash, space_id, account_id, quoted_points,
+          quote_known, status, created_at, updated_at
         ) VALUES (
-          @id, @kind, @sourceType, @model, @apiId, @modelCode, @expectedAssetScene,
-          @requestFingerprint, @idempotencyKeyHash, @spaceId, @accountId,
-          @storedQuotedPoints, @quoteKnown, 'queued', @now, @now
+          @id, @userId, @projectId, @apiKeyId, @kind, @sourceType, @model,
+          @apiId, @modelCode, @expectedAssetScene, @requestFingerprint,
+          @idempotencyKeyHash, @spaceId, @accountId, @storedQuotedPoints,
+          @quoteKnown, 'queued', @now, @now
         )
       `).run({
         id,
         ...input,
+        userId: input.userId ?? "usr_legacy",
+        projectId: input.projectId ?? "prj_legacy",
+        apiKeyId: input.apiKeyId ?? null,
         storedQuotedPoints,
         quoteKnown,
         now
@@ -237,6 +321,9 @@ export class SqliteAdmissionRepository {
         now,
         now
       );
+      const admitted = this.findJob(database, id);
+      if (admitted === undefined) throw new Error("Admitted job could not be read");
+      appendLedger(database, admitted, "hold", "quoted_generation_cost", now);
       database.prepare(`
         UPDATE accounts SET last_selected_at = ?, updated_at = ? WHERE id = ?
       `).run(now, now, input.accountId);
@@ -248,17 +335,23 @@ export class SqliteAdmissionRepository {
 
   charge(jobId: string): void {
     this.store.immediate((database) => {
+      const job = this.findJob(database, jobId);
+      if (job === undefined) throw new Error(`Job ${jobId} does not exist`);
       const changed = database.prepare(`
         UPDATE budget_entries
         SET state = 'charged', updated_at = ?
         WHERE job_id = ? AND state = 'reserved'
       `).run(Date.now(), jobId).changes;
-      if (changed !== 0) return;
+      if (changed !== 0) {
+        appendLedger(database, job, "charge", "upstream_submit_may_have_occurred", Date.now());
+        return;
+      }
       const current = database.prepare("SELECT state FROM budget_entries WHERE job_id = ?").get(jobId) as {
         state: "reserved" | "charged" | "released";
       } | undefined;
       if (current === undefined) throw new Error(`Budget entry for job ${jobId} does not exist`);
       if (current.state === "released") throw new Error(`Budget entry for job ${jobId} is released`);
+      appendLedger(database, job, "charge", "upstream_submit_may_have_occurred", Date.now());
     });
   }
 
@@ -337,6 +430,13 @@ export class SqliteAdmissionRepository {
         SET state = ?, updated_at = ?
         WHERE job_id = ? AND account_id = ?
       `).run(state, now, jobId, accountId);
+      appendLedger(
+        database,
+        current,
+        action === "charge" ? "charge" : "release",
+        `admin_resolved_unknown_${action}`,
+        now
+      );
       database.prepare(`
         UPDATE jobs
         SET status = 'failed',
@@ -358,12 +458,17 @@ export class SqliteAdmissionRepository {
 
   releasePreSubmit(jobId: string): void {
     this.store.immediate((database) => {
+      const job = this.findJob(database, jobId);
+      if (job === undefined) throw new Error(`Job ${jobId} does not exist`);
       const changed = database.prepare(`
         UPDATE budget_entries
         SET state = 'released', updated_at = ?
         WHERE job_id = ? AND state = 'reserved'
       `).run(Date.now(), jobId).changes;
-      if (changed !== 0) return;
+      if (changed !== 0) {
+        appendLedger(database, job, "release", "pre_submit_release", Date.now());
+        return;
+      }
       const current = database.prepare("SELECT state FROM budget_entries WHERE job_id = ?").get(jobId) as {
         state: "reserved" | "charged" | "released";
       } | undefined;
@@ -407,6 +512,9 @@ export class SqliteAdmissionRepository {
         SET state = 'released', updated_at = ?
         WHERE job_id = ? AND state = 'reserved'
       `).run(now, jobId).changes;
+      if (released !== 0) {
+        appendLedger(database, current, "release", errorCode, now);
+      }
       if (released === 0) {
         const budget = database.prepare(
           "SELECT state FROM budget_entries WHERE job_id = ?"

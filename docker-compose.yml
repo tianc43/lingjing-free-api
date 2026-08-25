@@ -16,6 +16,7 @@ services:
       LINGJING_DATA_DIRECTORY: /app/data
       DB_PATH: /app/data/lingjing.db
       LINGJING_MAX_CONCURRENCY: ${LINGJING_MAX_CONCURRENCY:-5}
+      OUTPUT_RETENTION_MS: ${OUTPUT_RETENTION_MS:-604800000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "127.0.0.1:8000:8000"

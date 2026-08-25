@@ -175,6 +175,38 @@ describe("chat completions API", () => {
     await fixture.close();
   });
 
+  it("propagates principal and enforces the scope of the resolved capability", async () => {
+    const imageKey = fixture.dependencies.apiKeys.create("Chat image", {
+      scopes: ["image:create"]
+    });
+    const imageResponse = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { ["authorization"]: `Bearer ${imageKey.secret}` },
+      payload: {
+        model: "fixture-image",
+        messages: [{ role: "user", content: "draw" }]
+      }
+    });
+    expect(imageResponse.statusCode).toBe(200);
+    expect(requests.at(-1)?.principal?.apiKeyId).toBe(imageKey.record.id);
+
+    const wrongScopeKey = fixture.dependencies.apiKeys.create("Chat wrong scope", {
+      scopes: ["video:create"]
+    });
+    const deniedResponse = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { ["authorization"]: `Bearer ${wrongScopeKey.secret}` },
+      payload: {
+        model: "fixture-image",
+        messages: [{ role: "user", content: "draw" }]
+      }
+    });
+    expect(deniedResponse.statusCode).toBe(403);
+    expect(deniedResponse.json()).toMatchObject({ error: { code: "api_scope_denied" } });
+  });
+
   it("returns a standard non-stream chat completion with every image output", async () => {
     finalJob = job("image", [
       imageOutput,
@@ -217,6 +249,11 @@ describe("chat completions API", () => {
       }
     });
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "image",
       sourceType: "image-generation",
       model: "707",
@@ -264,6 +301,11 @@ describe("chat completions API", () => {
       }]
     });
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "video",
       sourceType: "image-to-video",
       model: "808",

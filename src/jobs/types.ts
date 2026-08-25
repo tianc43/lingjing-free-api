@@ -10,6 +10,9 @@ export type JobStatus =
   | "failed";
 
 export interface NewJob {
+  userId?: string;
+  projectId?: string;
+  apiKeyId?: string | null;
   kind: "image" | "video";
   sourceType: SourceType;
   model: string;
@@ -34,6 +37,13 @@ export interface JobResult {
   outputs: JobOutput[];
 }
 
+export interface JobFence {
+  workerId: string;
+  leaseToken: string;
+  fencingToken: number;
+  now: number;
+}
+
 export interface JobTransition {
   status: JobStatus;
   creationCode?: string | null;
@@ -44,12 +54,26 @@ export interface JobTransition {
   completedAt?: number;
   failedAt?: number;
   unknownHoldUntil?: number | null;
+  processingDeadlineAt?: number | null;
+  reconcileAfter?: number | null;
+  uncertaintyReason?: string | null;
+  pollAttempts?: number;
+  lastPolledAt?: number | null;
   errorCode?: string | null;
+  archivedResult?: JobResult;
   result?: JobResult | null;
 }
 
 export interface JobListFilter {
+  projectId?: string;
   status?: JobStatus;
+  kind?: "image" | "video";
+  before?: number;
+  limit: number;
+}
+
+export interface ReconciliationFilter {
+  dueAt: number;
   limit: number;
 }
 
@@ -66,6 +90,11 @@ export interface JobRecord extends NewJob {
   completedAt: number | null;
   failedAt: number | null;
   unknownHoldUntil: number | null;
+  processingDeadlineAt?: number | null;
+  reconcileAfter?: number | null;
+  uncertaintyReason?: string | null;
+  pollAttempts?: number;
+  lastPolledAt?: number | null;
   errorCode: string | null;
   result: JobResult | null;
   createdAt: number;

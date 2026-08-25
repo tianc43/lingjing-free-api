@@ -1,0 +1,7 @@
+import type { SqliteAssetRepository, JobAssetRecord } from "./asset-repository.js";
+import type { PreparedMedia } from "./types.js";
+export class OutputArchiver{
+ constructor(private readonly assets:SqliteAssetRepository,private readonly fetchOutput:(url:URL,options:{kind:"image";maxBytes:number})=>Promise<PreparedMedia>,private readonly maxBytes:number,private readonly retentionMs=7*24*60*60_000){}
+ async archiveAll(input:{jobId:string;userId:string;projectId:string;outputs:Array<{url:string;posterUrl:string|null;width:number|null;height:number|null;duration:number|null;format:string|null}>}){try{const archived=[];for(const output of input.outputs){const asset=await this.archive({...input,url:output.url,role:"output"});let posterUrl=output.posterUrl;if(output.posterUrl!==null){const poster=await this.archive({...input,url:output.posterUrl,role:"poster"});posterUrl=`/v1/assets/${poster.id}`;}archived.push({...output,url:`/v1/assets/${asset.id}`,posterUrl});}return archived;}catch(cause){await this.assets.deleteForJob(input.jobId,["output","poster"]);throw cause;}}
+ async archive(input:{jobId:string;userId:string;projectId:string;url:string;role:"output"|"poster"}):Promise<JobAssetRecord>{const media=await this.fetchOutput(new URL(input.url),{kind:"image",maxBytes:this.maxBytes});try{return await this.assets.persist({...input,media,maxBytes:this.maxBytes,expiresAt:Date.now()+this.retentionMs});}finally{await media.dispose();}}
+}

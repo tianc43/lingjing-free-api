@@ -25,14 +25,49 @@ export interface Account {
 export interface Job {
   id: string;
   account_name: string;
-  kind: string;
+  kind: "image" | "video";
   model: string;
   status: string;
   quoted_points: number | null;
   budget_state: string | null;
+  submitted_at?: number | null;
+  discovered_at?: number | null;
+  completed_at?: number | null;
+  failed_at?: number | null;
   created_at: number;
   updated_at: number;
   error_code: string | null;
+  outputs: Array<{url:string;poster_url:string|null;width:number|null;height:number|null;duration:number|null;format:string|null}>;
+}
+
+export interface PlaygroundParameter {
+  key: string;
+  display_name: string;
+  required: boolean;
+  type: "string" | "number" | "boolean" | "enum" | "image-list";
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  options?: string[];
+}
+
+export interface PlaygroundModel {
+  id: string;
+  display_name: string;
+  type: "image" | "video";
+  mode?: "text-to-video" | "image-to-video";
+  capabilities: { text: boolean; input_images: boolean };
+  parameters: PlaygroundParameter[];
+  pricing: unknown;
+}
+
+export interface PlaygroundInput {
+  kind: "image" | "video";
+  model: string;
+  prompt: string;
+  mode?: "text-to-video" | "image-to-video";
+  input_image?: string;
+  parameters: Record<string, unknown>;
 }
 
 export interface Overview {
@@ -42,6 +77,11 @@ export interface Overview {
   balance: { available_points: number };
   recent_failures: Job[];
 }
+
+export interface WebhookDelivery {id:string;project_id:string;job_id:string;event_type:string;status:"pending"|"delivered"|"dead";attempts:number;next_attempt_at:number;last_error:string|null;delivered_at:number|null;created_at:number;}
+export interface WebhookEndpoint { id:string; project_id:string; url:string; secret:string; enabled:boolean; }
+export interface UsageEntry { id:string; job_id:string; user_id:string; project_id:string; api_key_id:string|null; account_id:string; type:"hold"|"charge"|"release"|"refund"|"adjustment"; points:number; reason:string; created_at:number; }
+export interface UsageData { summary:{ held_points:number; charged_points:number; released_points:number; refunded_points:number; adjusted_points:number; net_points:number; entry_count:number }; entries:UsageEntry[]; }
 
 export interface Settings {
   shared_api_key_configured: boolean;
@@ -53,13 +93,39 @@ export interface Settings {
   docs_enabled: boolean;
   legacy_api_key_configured: boolean;
   api_base_url: string;
+  output_retention_ms:number;
 }
+
+export interface Plan { id:string; name:string; enabled:boolean; allowed_modes:("text-to-video"|"image-to-video")[]; allowed_models:string[]; max_duration_seconds:number; allowed_resolutions:string[]; daily_limit_points:number; monthly_limit_points:number; max_concurrency:number; max_queued_requests:number; created_at:number; updated_at:number; }
+
+export interface User {
+  id: string;
+  name: string;
+  status: "active" | "disabled";
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Project {
+  id: string;
+  user_id: string;
+  name: string;
+  status: "active" | "disabled";
+  created_at: number;
+  updated_at: number;
+}
+
+export type ApiKeyScope = "models:read" | "video:create" | "video:read" | "image:create" | "image:read";
 
 export interface ApiKey {
   id: string;
+  user_id: string;
+  project_id: string;
   name: string;
   key_prefix: string;
+  scopes: ApiKeyScope[];
   enabled: boolean;
+  expires_at: number | null;
   created_at: number;
   updated_at: number;
   last_used_at: number | null;

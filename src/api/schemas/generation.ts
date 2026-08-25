@@ -32,6 +32,7 @@ export const videoApiRequestSchema = z.object({
   resolution: z.string().min(1).optional(),
   ratio: z.string().min(1).optional(),
   input_images: inputImagesSchema.optional(),
+  input_asset_ids: z.array(z.string().min(1)).max(14).optional(),
   response_mode: z.enum(["wait", "async"]).default("wait"),
   parameters: parametersSchema.optional()
 }).strict();
@@ -82,6 +83,7 @@ export interface VideoApiRequest {
   resolution?: string;
   ratio?: string;
   input_images?: string[];
+  input_asset_ids?: string[];
   response_mode?: "wait" | "async";
   parameters?: Record<string, unknown>;
 }

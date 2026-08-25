@@ -18,8 +18,42 @@ describe("SQLite API key repository", () => {
     expect(JSON.stringify(store.read((db) =>
       db.prepare("SELECT * FROM api_keys").get()
     ))).not.toContain(created.secret);
+    const principal = keys.authenticate(created.secret);
+    expect(principal).toMatchObject({
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      apiKeyId: created.record.id,
+      legacy: false
+    });
+    expect(principal?.scopes).toEqual(expect.arrayContaining([
+      "models:read",
+      "video:create",
+      "video:read"
+    ]) as unknown);
     expect(keys.verify(created.secret)).toBe(true);
     expect(keys.list()[0]?.lastUsedAt).toEqual(expect.any(Number));
+    store.close();
+  });
+
+  it("persists project ownership, scopes and expiry for restricted keys", () => {
+    const store = new SqliteStore(":memory:");
+    const keys = new SqliteApiKeyRepository(store);
+    const now = Date.now();
+    const created = keys.create("Restricted", {
+      scopes: ["models:read", "video:read"],
+      expiresAt: now + 60_000
+    });
+
+    expect(created.record).toMatchObject({
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      scopes: ["models:read", "video:read"],
+      expiresAt: now + 60_000
+    });
+    expect(keys.authenticate(created.secret)?.scopes).toEqual([
+      "models:read",
+      "video:read"
+    ]);
     store.close();
   });
 

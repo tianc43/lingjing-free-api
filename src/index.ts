@@ -18,22 +18,40 @@ import { errors } from "./errors.js";
 import {
   LingjingGenerationCoordinator
 } from "./generation/coordinator.js";
+import { SqliteExecutionRepository } from "./generation/execution-repository.js";
+import { SqliteRequestSnapshotRepository } from "./generation/request-snapshot-repository.js";
 import { JobRunnerRegistry } from "./generation/runner-registry.js";
 import { CapacityManager } from "./jobs/capacity.js";
+import { SqliteIdentityRepository } from "./identity/sqlite-identity-repository.js";
 import {
   removeOrphanTemporaryFiles,
   StartupRecovery
 } from "./jobs/recovery.js";
+import { ArchiveRecoveryWorker } from "./jobs/archive-recovery-worker.js";
+import { MaintenanceScheduler } from "./jobs/maintenance-scheduler.js";
+import { ReconciliationWorker } from "./jobs/reconciliation-worker.js";
 import { SqliteJobRepository } from "./jobs/sqlite-repository.js";
+import { SqliteWorkerLeaseRepository } from "./jobs/worker-lease-repository.js";
 import type { LingjingTransport } from "./lingjing/types.js";
 import { createLogger } from "./logging.js";
 import { prepareDataUri } from "./media/data-uri.js";
 import { RemoteMediaFetcher } from "./media/remote-fetcher.js";
 import { createTempBudget } from "./media/temp-budget.js";
 import { createPreparedTempFileFromBuffer } from "./media/temp-files.js";
+import { UploadRepository } from "./media/upload-repository.js";
+import { OutputArchiver } from "./media/output-archiver.js";
+import { SqliteAssetRepository } from "./media/asset-repository.js";
+import { LocalObjectStore } from "./media/object-store.js";
+import { S3ObjectStore } from "./media/s3-object-store.js";
+import { S3Client } from "@aws-sdk/client-s3";
 import { createPreparedTempFileFromStream } from "./media/temp-files.js";
 import type { MediaInput, PreparedMedia } from "./media/types.js";
 import { SqliteStore } from "./persistence/sqlite-store.js";
+import { startPostgresEntrypoint } from "./persistence/postgres-entrypoint.js";
+import { SqliteUsageRepository } from "./usage/sqlite-usage-repository.js";
+import { SqliteWebhookRepository } from "./webhooks/sqlite-webhook-repository.js";
+import { WebhookDeliveryWorker } from "./webhooks/delivery-worker.js";
+import { SqlitePlanRepository } from "./plans/sqlite-plan-repository.js";
 
 const SHUTDOWN_DRAIN_MS = 30_000;
 const SHUTDOWN_RUNNER_WAIT_MS = 30_000;
@@ -93,17 +111,15 @@ function lazyService<T extends object>(service: () => T): T {
   });
 }
 
-export interface RunningServer {
-  app: FastifyInstance;
-  dependencies: AppDependencies;
-  repository: SqliteJobRepository;
-  registry: JobRunnerRegistry;
-  stop(): Promise<void>;
-}
+interface RunningServerBase { app: FastifyInstance; stop(): Promise<void>; }
+export interface SqliteRunningServer extends RunningServerBase { driver:"sqlite"; dependencies:AppDependencies; repository:SqliteJobRepository; registry:JobRunnerRegistry; }
+export interface PostgresRunningServer extends RunningServerBase { driver:"postgres"; runtime:Awaited<ReturnType<typeof startPostgresEntrypoint>>; }
+export type RunningServer=SqliteRunningServer|PostgresRunningServer;
 
 export interface StartServerOptions {
   transport?: LingjingTransport;
   registry?: JobRunnerRegistry;
+  postgresRuntimes?: import("./lingjing/postgres-account-transport-resolver.js").RuntimeLookup;
   shutdown?: {
     submitDrainTimeoutMs?: number;
     runnerIdleTimeoutMs?: number;
@@ -126,6 +142,7 @@ export interface ShutdownServerOptions {
   repository: Pick<SqliteJobRepository, "close">;
   runtimes?: Pick<AccountRuntimeRegistry, "close">;
   store?: Pick<SqliteStore, "close">;
+  maintenance?: Pick<MaintenanceScheduler, "close">;
   submitDrainTimeoutMs?: number;
   runnerIdleTimeoutMs?: number;
 }
@@ -143,6 +160,7 @@ export async function shutdownServer(
     options.submitDrainTimeoutMs ?? SHUTDOWN_DRAIN_MS
   );
   options.recovery.close();
+  await options.maintenance?.close();
   options.coordinator.stopPollers();
   options.app.server.closeAllConnections();
 
@@ -165,6 +183,8 @@ export async function shutdownServer(
   options.store?.close();
 }
 
+export function startServer(env:{DATABASE_DRIVER:"postgres"}&Record<string,string|undefined>,options:StartServerOptions):Promise<PostgresRunningServer>;
+export function startServer(env?:NodeJS.ProcessEnv|Record<string,string|undefined>,options?:StartServerOptions):Promise<SqliteRunningServer>;
 export async function startServer(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
   options: StartServerOptions = {}
@@ -172,12 +192,29 @@ export async function startServer(
   const processStart = Date.now();
   const config = parseConfig(env);
   const logger = createLogger(config.logLevel);
+  if(config.databaseDriver==="postgres"){
+    if(options.transport===undefined)throw new Error("PostgreSQL runtime currently requires an explicit Lingjing transport");
+    const runtime=await startPostgresEntrypoint(config,options.transport,options.postgresRuntimes);
+    return {driver:"postgres",app:runtime.app,runtime,stop:()=>runtime.close()};
+  }
   const store = new SqliteStore(config.dbPath);
   const accounts = new SqliteAccountRepository(store);
+  const identities = new SqliteIdentityRepository(store);
+  const usage = new SqliteUsageRepository(store);
+  const plans = new SqlitePlanRepository(store);
+  const webhooks = new SqliteWebhookRepository(store);
   const apiKeys = new SqliteApiKeyRepository(store);
   accounts.ensureLegacyAccount("data/auth");
   const repository = new SqliteJobRepository(store);
   const admissions = new SqliteAdmissionRepository(store);
+  const executions = new SqliteExecutionRepository(store);
+  const snapshots = new SqliteRequestSnapshotRepository(store);
+  const objectStore=config.objectStore.mode==="local"
+    ? new LocalObjectStore(join(config.dataDirectory,"objects"))
+    : new S3ObjectStore(new S3Client({region:config.objectStore.region,...(config.objectStore.endpoint===null?{}:{endpoint:config.objectStore.endpoint}),forcePathStyle:config.objectStore.forcePathStyle}),config.objectStore.bucket,config.objectStore.prefix);
+  const assets = new SqliteAssetRepository(store,objectStore);
+  const uploads=new UploadRepository(store,objectStore,assets);
+  const workerLeases = new SqliteWorkerLeaseRepository(store);
   const capacity = new CapacityManager(
     config.maxConcurrency,
     config.maxQueuedRequests
@@ -197,6 +234,7 @@ export async function startServer(
   });
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
+  let maintenance: MaintenanceScheduler | undefined;
 
   try {
     await runtimes.ready();
@@ -273,11 +311,18 @@ export async function startServer(
       });
     };
 
+    const outputArchiver=new OutputArchiver(assets,(url,archiveOptions)=>media.fetchOutput(url,archiveOptions),config.maxVideoBytes,config.outputRetentionMs);
     const coordinator = new LingjingGenerationCoordinator({
       repository,
       capacity,
       scheduler,
       admissions,
+      executions,
+      outputArchiver,
+      snapshots,
+      assets,
+      maxPersistedInputBytes: config.maxImageBytes,
+      workerLeases,
       logger,
       prepareMedia,
       registry,
@@ -290,6 +335,7 @@ export async function startServer(
       capacity,
       registry,
       resumeJob: coordinator.recoveryResumeRunner,
+      resumeQueuedJob: coordinator.queuedRecoveryRunner,
       scheduler,
       admissions,
       unknownCapacityHoldMs: config.unknownCapacityHoldMs,
@@ -304,6 +350,7 @@ export async function startServer(
         options.shutdown?.submitDrainTimeoutMs ?? SHUTDOWN_DRAIN_MS
       );
       recovery.close();
+      await maintenance?.close();
       coordinator.stopPollers();
       await withTimeout(
         registry.waitUntilIdle(),
@@ -318,6 +365,27 @@ export async function startServer(
     // Recovery must have restored capacity and scheduled all durable work
     // before the first socket can accept traffic.
     await recovery.start();
+    const archiveRecovery=new ArchiveRecoveryWorker(repository,outputArchiver,workerLeases,`archive_${process.pid.toString(10)}`);
+    const reconciler = new ReconciliationWorker({
+      repository,
+      executions,
+      workerLeases,
+      runtimes,
+      workerId: `reconciler_${process.pid.toString(10)}`
+    });
+    maintenance = new MaintenanceScheduler({
+      reconcile: async () => {
+        await reconciler.scan();
+        await archiveRecovery.scan();
+        await new WebhookDeliveryWorker(webhooks).scan();
+      },
+      cleanupAssets: (olderThan) => assets.deleteUnbound(olderThan),
+      cleanupExpiredAssets:(now)=>assets.deleteExpired(now),
+      cleanupExpiredUploads:(now)=>uploads.cleanupExpired(now),
+      intervalMs: 60_000,
+      unboundAssetRetentionMs: 60 * 60_000
+    });
+    await maintenance.start();
 
     const compatibilityRuntime = (): AccountRuntime => {
       const runtime = runtimes.listEnabled()[0];
@@ -326,6 +394,10 @@ export async function startServer(
     };
     const dependencies: AppDependencies = {
       config,
+      webhooks,
+      plans,
+      usage,
+      identities,
       apiKeys,
       cookieImporter,
       logger,
@@ -340,6 +412,9 @@ export async function startServer(
       coordinator,
       capacity,
       recovery,
+      objectStore,
+      uploads,
+      assets,
       media
     };
     const app = await buildApp(dependencies);
@@ -351,6 +426,7 @@ export async function startServer(
       repository,
       runtimes,
       store,
+      ...(maintenance === undefined ? {} : { maintenance }),
       ...options.shutdown
     });
     await app.listen({ host: config.host, port: config.port });
@@ -365,6 +441,7 @@ export async function startServer(
         repository,
         runtimes,
         store,
+        ...(maintenance === undefined ? {} : { maintenance }),
         ...options.shutdown
       }).catch((cause: unknown) => {
         stopPromise = undefined;
@@ -373,7 +450,7 @@ export async function startServer(
       return stopPromise;
     };
 
-    return { app, dependencies, repository, registry, stop };
+    return { driver:"sqlite",app, dependencies, repository, registry, stop };
   } catch (cause) {
     try {
       if (startupCleanup === undefined) {
@@ -399,12 +476,7 @@ function directInvocation(): boolean {
     && pathToFileURL(resolve(script)).href === import.meta.url;
 }
 
-interface SignalStopRuntime {
-  stop(): Promise<void>;
-  dependencies: {
-    logger: Pick<AppDependencies["logger"], "error">;
-  };
-}
+interface SignalStopRuntime {stop():Promise<void>;dependencies?:{logger:Pick<AppDependencies["logger"],"error">};}
 
 interface ExitCodeTarget {
   exitCode?: string | number | undefined;
@@ -419,7 +491,7 @@ export function createSignalStopHandler(
     if (stopping) return;
     stopping = true;
     void runtime.stop().catch((cause: unknown) => {
-      runtime.dependencies.logger.error(
+      runtime.dependencies?.logger.error(
         {
           error_code: cause instanceof Error
             ? "shutdown_failed"

@@ -31,9 +31,13 @@ type Account = {
 };
 type ApiKey = {
   id: string;
+  user_id: string;
+  project_id: string;
   name: string;
   key_prefix: string;
+  scopes: string[];
   enabled: boolean;
+  expires_at: number | null;
   created_at: number;
   updated_at: number;
   last_used_at: number | null;
@@ -233,9 +237,13 @@ test.beforeAll(async () => {
       const now = Date.now();
       const key: ApiKey = {
         id: `key-browser-${nextId++}`,
+        user_id: String(input.user_id ?? "usr_legacy"),
+        project_id: String(input.project_id ?? "prj_legacy"),
         name: String(input.name),
         key_prefix: "ljk_browser_",
+        scopes: Array.isArray(input.scopes) ? input.scopes.map(String) : ["video:create"],
         enabled: true,
+        expires_at: null,
         created_at: now,
         updated_at: now,
         last_used_at: null,
@@ -451,7 +459,7 @@ test("operator manages API access keys and copies service examples", async ({ pa
   await page.goto("http://127.0.0.1:4174/admin/");
   await page.getByLabel("Administrator password").fill("fixture-admin-password");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("link", { name: "API Access" }).click();
+  await page.getByRole("link", { name: "API keys" }).click();
   await expect(page.getByText("http://127.0.0.1:4174/v1", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Create API key" }).click();
   await page.getByLabel("Key name").fill("Dify");
@@ -473,19 +481,10 @@ test("operator manages API access keys and copies service examples", async ({ pa
   ) => {
     const urls = [...script.matchAll(/curl -sS "([^"]+)"/gu)]
       .map((match) => match[1]);
-    expect(urls).toHaveLength(2);
-    const [modelsUrl, generationUrl] = urls;
-    expect(modelsUrl).toBeDefined();
+    expect(urls).toHaveLength(1);
+    const generationUrl = urls[0];
     expect(generationUrl).toBeDefined();
-    expect(script).toContain("jq -er '.data[0].id'");
-    const models = await page.request.get(modelsUrl!, {
-      headers: { authorization: "Bearer fixture-browser-key" }
-    });
-    expect(models.status()).toBe(200);
-    const model = (await models.json() as {
-      data: Array<{ id: string }>;
-    }).data[0]?.id;
-    expect(model).toBe(expectedModel);
+    const model = expectedModel;
     const generated = await page.request.post(generationUrl!, {
       headers: { authorization: "Bearer fixture-browser-key" },
       data: { model }
@@ -501,13 +500,13 @@ test("operator manages API access keys and copies service examples", async ({ pa
   expect(videoExample).not.toContain("fixture-video");
   expect(videoExample).toContain("/v1/videos");
   expect(videoExample).not.toContain("/videos/generations");
-  await page.getByRole("button", { name: "Disable Dify" }).click();
-  await expect(page.getByRole("button", { name: "Enable Dify" })).toBeVisible();
-  await page.getByRole("button", { name: "Enable Dify" }).click();
+  await page.getByRole("button", { name: "Disable" }).click();
+  await expect(page.getByRole("button", { name: "Enable" })).toBeVisible();
+  await page.getByRole("button", { name: "Enable" }).click();
   page.once("dialog", (dialog) => void dialog.accept());
-  await page.getByRole("button", { name: "Revoke Dify" }).click();
+  await page.getByRole("button", { name: "Revoke" }).click();
   await expect(page.getByText("Revoked")).toBeVisible();
-  await page.getByRole("link", { name: "Accounts" }).click();
+  await page.getByRole("link", { name: "Subscriptions" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
 });
 
@@ -657,6 +656,8 @@ for (const viewport of [
     ).resolves.toBe(true);
   });
 
+test("moves focus to the page heading on history navigation", async ({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("Administrator password").fill("fixture-admin-password");await page.getByRole("button",{name:"Sign in"}).click();await page.getByRole("link",{name:"Runtime"}).click();await expect(page.getByRole("heading",{name:"Settings"})).toBeFocused();await page.goBack();await expect(page.getByRole("heading",{name:"Accounts"})).toBeFocused();});
+
 test("keeps initial session 401 signed out but expires an established session", async ({
   page,
 }) => {
@@ -687,9 +688,9 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
     .fill("fixture-admin-password");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
-  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("link", { name: "Runtime" }).click();
   await expect(page.getByText("Settings unavailable")).toBeVisible();
-  await page.getByRole("link", { name: "Accounts" }).click();
+  await page.getByRole("link", { name: "Subscriptions" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
 });
 
@@ -720,7 +721,7 @@ test("shows executable login commands for legacy and generated accounts", async 
     "aria-valuetext",
     "Charged 12, reserved 3, limit 10",
   );
-  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("link", { name: "Runtime" }).click();
   await expect(page.getByText("npm run login", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
@@ -740,7 +741,7 @@ test("logout clears an app action failure before returning to sign in", async ({
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.evaluate(() => { history.pushState({}, "", "/admin/settings"); dispatchEvent(new PopStateEvent("popstate")); });
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
-  await page.getByRole("link", { name: "Accounts" }).click();
+  await page.getByRole("link", { name: "Subscriptions" }).click();
   await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();

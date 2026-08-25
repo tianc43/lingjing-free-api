@@ -632,16 +632,42 @@ describe("SqliteJobRepository", () => {
     second.close();
   });
 
-  it("lists jobs by status and limit without content fields", () => {
-    const repository = new SqliteJobRepository(":memory:");
-    const first = repository.createOrGet(fixtureNewJob).job;
-    const second = repository.createOrGet({ ...fixtureNewJob, kind: "video" }).job;
+  it("lists jobs by project, status and limit without crossing ownership", () => {
+    const store = new SqliteStore(":memory:");
+    store.immediate((database) => {
+      const now = Date.now();
+      database.prepare("INSERT INTO users(id,name,status,created_at,updated_at) VALUES ('usr_other','Other','active',?,?)").run(now, now);
+      database.prepare("INSERT INTO projects(id,user_id,name,status,created_at,updated_at) VALUES ('prj_other','usr_other','Other','active',?,?)").run(now, now);
+    });
+    const repository = new SqliteJobRepository(store);
+    const first = repository.createOrGet({
+      ...fixtureNewJob,
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      apiKeyId: null
+    }).job;
+    const second = repository.createOrGet({
+      ...fixtureNewJob,
+      kind: "video",
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      apiKeyId: null
+    }).job;
     repository.transition(first.id, ["queued"], { status: "failed", errorCode: "safe" });
 
-    expect(repository.list({ status: "queued", limit: 1 }).map((job) => job.id)).toEqual([
-      second.id
-    ]);
+    expect(repository.list({
+      projectId: "prj_legacy",
+      status: "queued",
+      limit: 1
+    }).map((job) => job.id)).toEqual([second.id]);
+    expect(repository.list({ projectId: "prj_other", limit: 10 })).toEqual([]);
+    expect(second).toMatchObject({
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      apiKeyId: null
+    });
     repository.close();
+    store.close();
   });
 
   it("checkpoints and closes once, then rejects later operations", () => {

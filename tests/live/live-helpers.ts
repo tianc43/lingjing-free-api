@@ -13,7 +13,7 @@ import type {
 import { parseConfig } from "../../src/config.js";
 import {
   startServer,
-  type RunningServer
+  type SqliteRunningServer
 } from "../../src/index.js";
 import { LingjingClient } from "../../src/lingjing/client.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
@@ -100,7 +100,7 @@ export interface SubmitCountingTransport {
 }
 
 export interface LiveRuntime {
-  runtime: RunningServer;
+  runtime: SqliteRunningServer;
   inject(options: InjectOptions): Promise<LightMyRequestResponse>;
   submitCount(): number;
   assertLegacyAdminUsage(
@@ -862,7 +862,7 @@ export async function startLiveRuntime(
   const directory = await mkdtemp(join(tmpdir(), "lingjing-live-"));
   const apiKey = randomBytes(32).toString("hex");
   const adminPassword = randomBytes(32).toString("hex");
-  let runtime: RunningServer | undefined;
+  let runtime: SqliteRunningServer | undefined;
   try {
     const runtimeEnvironment = liveEnvironment(
       env,

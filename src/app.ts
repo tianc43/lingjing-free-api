@@ -11,16 +11,19 @@ import Fastify, {
   type FastifyRequest,
   type FastifySchema
 } from "fastify";
-import { isAuthorized } from "./api/auth.js";
+import { authenticateBearer, isAuthorized } from "./api/auth.js";
+import { bindPrincipal } from "./api/principal.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerAdminStatic } from "./admin/static.js";
 import { registerErrorHandler } from "./api/error-handler.js";
+import { registerAssetRoutes } from "./api/routes/assets.js";
 import { registerAccountRoutes } from "./api/routes/account.js";
 import { registerChatRoutes } from "./api/routes/chat.js";
 import { registerImageRoutes } from "./api/routes/images.js";
 import { registerModelRoutes } from "./api/routes/models.js";
 import { registerSystemRoutes } from "./api/routes/system.js";
 import { registerTaskRoutes } from "./api/routes/tasks.js";
+import { registerUploadRoutes } from "./api/routes/uploads.js";
 import { registerVideoRoutes } from "./api/routes/videos.js";
 import {
   bearerSecurity,
@@ -148,15 +151,13 @@ export async function buildApp(
   registerSystemRoutes(app, dependencies);
   await app.register(async function protectedApi(protectedApp) {
     protectedApp.addHook("onRequest", (request): Promise<void> => {
-      if (
-        !isAuthorized(
-          request.headers.authorization,
-          dependencies.config.apiKey,
-          dependencies.apiKeys
-        )
-      ) {
-        return Promise.reject(errors.authentication());
-      }
+      const principal = authenticateBearer(
+        request.headers.authorization,
+        dependencies.config.apiKey,
+        dependencies.apiKeys
+      );
+      if (principal === null) return Promise.reject(errors.authentication());
+      bindPrincipal(request, principal);
       return Promise.resolve();
     });
 
@@ -183,10 +184,12 @@ export async function buildApp(
     }
 
     registerAccountRoutes(protectedApp, dependencies);
+    registerAssetRoutes(protectedApp,dependencies);
     registerChatRoutes(protectedApp, dependencies);
     registerImageRoutes(protectedApp, dependencies);
     registerModelRoutes(protectedApp, dependencies);
     registerTaskRoutes(protectedApp, dependencies);
+    registerUploadRoutes(protectedApp,dependencies);
     registerVideoRoutes(protectedApp, dependencies);
 
     if (dependencies.config.docsEnabled) {

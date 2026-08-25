@@ -1,12 +1,12 @@
 # Lingjing Free API
 
-把一个或多个已登录的灵境网页会话封装为本机、单操作者的 OpenAI 风格 HTTP 适配器，提供图片生成、视频生成、任务查询、Chat Completions 兼容入口和同源管理控制台。
+把一个或多个已登录的灵境网页订阅组成可调度账号池，对外提供项目隔离的文生视频、图生视频和兼容图片 API，并配套 User、Project、Plan、API Key、Usage、Webhook 与同源管理控制台。
 
 ## 项目边界
 
 本项目调用的是灵境网页端接口，不是京东云官方开放 API，也不代表官方支持的集成方式。**订阅不等于官方 API**：网页会员、点数或套餐只说明账号可在网页产品中使用相应能力，不会自动获得稳定的 API 合约、SLA、商用授权或免额外计费。网页接口、字段、模型目录和风控规则可能随时变化，详见 [docs/protocol.md](docs/protocol.md)。
 
-请遵守服务条款、内容规范和所在地法律。每次生成都可能消耗真实点数；本项目不会绕过计费、权限或内容审核。当前版本只面向可信机器上的**单操作者**运行；多个上游账号仍共用一个单用户 API 边界，不是多租户网关。
+请遵守服务条款、内容规范和所在地法律。每次生成都可能消耗真实点数；本项目不会绕过计费、权限或内容审核。当前部署仍面向可信机器上的**单管理员**（管理平面仍是单用户），但下游调用已按 User → Project → API Key 隔离；它不是公网计费 SaaS，也尚未提供 RBAC、支付或官方 SLA。
 
 ## 环境要求
 
@@ -74,11 +74,53 @@ Start-Process 'http://127.0.0.1:8000/admin/'
 
 生产 Compose 的同一镜像包含 `dist/index.js` 与 `dist/admin`，只发布 `127.0.0.1:8000`，只把 `./data` 挂载到 `/app/data`，容器以非 root `node` 用户运行，并启用 `cap_drop: ALL` 与 `no-new-privileges`。`LINGJING_DATA_DIRECTORY=/app/data` 使 SQLite 之外的账号会话也落在该持久化挂载中。不要把 `docker-compose.test.yml` 用于生产；它只有全假凭据、隔离网络和可删除的 smoke 数据卷。
 
+使用 MinIO 持久化输入资产：
+
+```bash
+cp .env.production.example .env.production
+# 将所有 change-me 替换为独立强随机值
+docker compose --env-file .env.production -f docker-compose.production.yml up -d --build --wait
+```
+
+可用隔离 MinIO 验证 Adapter 的 Put/Get/Range/Delete：先启动一个 S3-compatible Endpoint 并设置 `S3_ENDPOINT`、`S3_BUCKET` 与标准 AWS 凭据，再运行 `npm run test:minio`。
+
+输出视频和 Poster 默认保留 7 天，可通过 `OUTPUT_RETENTION_MS` 调整；Maintenance 会删除过期对象，过期 Asset URL 返回 404。
+
+PostgreSQL 模式需要设置 `DATABASE_DRIVER=postgres` 与 `DATABASE_URL`。当前 Compose 中 PostgreSQL 服务位于 `future-postgres` profile；启动完整依赖可使用 `docker compose --profile future-postgres --env-file .env.production -f docker-compose.production.yml up -d --build --wait`。切换前必须停止 API/Worker，先完成离线迁移，禁止 SQLite/PostgreSQL 生产双写。
+
+离线迁移与审计：
+
+```bash
+# 预检，不写目标库
+npm run migrate:postgres -- data/lingjing.db --dry-run --require-empty-target --manifest=migration-dry-run.json
+# 正式迁移
+npm run migrate:postgres -- data/lingjing.db --require-empty-target --manifest=migration-final.json
+# PostgreSQL + Local/S3/MinIO 对象快速审计
+npm run audit:postgres-objects
+# 维护窗口内流式 SHA-256 全量审计
+npm run audit:postgres-objects -- --full-checksum
+```
+
+`--manifest` 不覆盖已有文件；对象缺失、大小或校验和不匹配时审计命令返回退出码 2。
+
+该拓扑在默认 `DATABASE_DRIVER=sqlite` 时使用 SQLite 保存权威业务元数据；切换后由 PostgreSQL 保存业务元数据，MinIO 只保存媒体对象；`minio-init` 创建私有 Bucket，API 通过内部网络使用 path-style S3。MinIO Console 不发布到宿主机。PostgreSQL/Redis 拓扑仍属于下一阶段。
+
 停止服务：
 
 ```bash
 docker compose down
 ```
+
+验收命令：
+
+```bash
+npm run check                 # lint + 双 TypeScript + 702 个 Vitest
+npm run build                 # Server + Admin production build
+npm run test:browser          # SQLite 8 项 + PostgreSQL 7 项 Browser acceptance
+npm run test:minio            # 已启动 S3-compatible endpoint 时运行真实 MinIO adapter test
+```
+
+PostgreSQL Browser 命令会自动启动并清理隔离 PostgreSQL 容器，等待 `/healthz` 后再运行 Playwright。
 
 ## 管理控制台、预算与账号登录
 
@@ -93,7 +135,7 @@ docker compose down
 1. 打开 `<origin>/admin/`，用 `LINGJING_ADMIN_PASSWORD` 登录，再进入“灵境”账号页。
 2. 在灵境网页完成登录。在浏览器开发者工具的一个已认证请求中手工复制 `Cookie` Header，或从浏览器导出 Cookie JSON；选择相应格式粘贴到控制台并填写账号名称/预算。网页控制台**不能**自动读取跨域 Cookie，也不能读取带 `HttpOnly` 属性的 Cookie，这是浏览器的同源与 Cookie 安全边界。
 3. 提交导入并等待控制台验证；成功响应表示账号已经启用，可确认显示的会员和余额摘要。导入响应和账号列表不会回显 Cookie。
-4. 进入“API 访问”，创建一个有辨识度名称的 API Key，立即复制并保存到调用方的安全密钥存储。明文 Key 只在成功创建时显示一次，之后只能看到前缀和状态。
+4. 在“Users & projects”创建下游调用主体，在“Plans”分配视频能力、日/月点数与并发限制，再进入“API keys”为指定 Project 创建最小权限 Key。明文 Key 与 Webhook Secret 只在成功创建或轮换时显示一次。
 5. 使用控制台显示的 Base URL（通常为 `<origin>/v1`）和 `Authorization: Bearer ${LINGJING_API_KEY}` 调用。这里的 `${LINGJING_API_KEY}` 是调用方环境变量；迁移后应赋值为刚创建的托管 Key，而不是把 Key 写进代码。
 6. 怀疑泄露时先禁用 Key 验证调用会得到 401；确认不再需要时撤销。禁用可以重新启用，撤销是终态，不能重新启用或恢复同一明文值。
 
@@ -128,12 +170,15 @@ Authorization: Bearer $LINGJING_API_KEY
 | GET | `/v1/models?type=image` | 图片模型目录 |
 | GET | `/v1/models?type=video&mode=text-to-video` | 视频模型目录 |
 | POST | `/v1/images/generations` | 图片生成，JSON 或 multipart |
-| POST | `/v1/videos` | 文生视频或图生视频 |
+| POST | `/v1/videos` | canonical 异步文生/图生视频，默认 202 |
+| GET | `/v1/videos/:id` | 当前 Project 的单个视频任务 |
+| GET | `/v1/videos?limit=20&before=...` | 当前 Project 的视频任务列表 |
+| POST | `/v1/videos/:id/cancel` | 仅在上游提交前取消 |
 | GET | `/v1/tasks/:id` | 单任务状态 |
 | GET | `/v1/tasks?limit=20&status=unknown` | 最近任务列表 |
 | POST | `/v1/chat/completions` | OpenAI 风格非流式或 SSE 生成 |
 
-`/v1/videos/generations` 仅作为兼容别名；新调用应使用 canonical `/v1/videos`。
+`/v1/videos/generations` 仅作为兼容别名，默认等待结果；新调用应使用默认异步的 canonical `/v1/videos`。管理端还提供 Subscriptions、Users & projects、Plans、Usage、Webhooks、API keys 和 Playground 页面。
 
 以下示例假设 shell 已设置 `LINGJING_API_KEY`，不会在命令中写死密钥。
 
@@ -313,6 +358,8 @@ Remove-Item Env:LIVE_VIDEO_TEST
 Remove-Item Env:LIVE_TEST
 ```
 
+运行前必须先通过 `npm run login` 或管理控制台 Cookie 导入建立 `data/auth` / `data/accounts` 下的有效 Session；若 Session 文件缺失，或 Live Flags 未显式设置，不得声称完成真实 T2V/I2V E2E。
+
 图片测试只有在 `LIVE_TEST=1` 时运行；视频还必须同时满足 `LIVE_VIDEO_TEST=1`。每次生成前都会重新读取余额、当前模型元数据和报价，动态构造模型必填参数；若没有可确认报价、参数不兼容或余额不足，会在提交前安全失败，不会改用其他收费系统。图片和视频测试各自包装真实 transport，并断言计费提交 `submitOnce` 恰好发生一次；完成后还会确认任务绑定到 `legacy`，且 quoted usage 可从管理 API 读取。
 
 live 输出仅允许模型 display name、带引号的预计点数、本地 job ID、脱敏状态和数字余额变化。Prompt、生成 URL、上游 task ID、账号身份和 Cookie 都不会写入输出或验收记录。媒体下载使用固定 DNS、逐跳重定向检查和字节上限，文件仅写入已忽略的 `outputs/`。
@@ -338,7 +385,7 @@ live 输出仅允许模型 display name、带引号的预计点数、本地 job 
 - 日志会脱敏凭据、查询串、Prompt 和媒体，但仍不要把 debug 日志随意外发。
 - 远程媒体只允许公网 HTTP(S)，解析地址会固定并拦截本机、私网、保留地址和危险重定向。
 - `/app/data` 是容器唯一持久化凭据/数据库挂载；定期备份并限制宿主机权限。
-- 多个上游账号共享同一个下游 API 边界；本项目没有下游用户隔离、租户配额或 RBAC，只适合单操作者。
+- 下游任务、资产、用量与幂等键按 Project/API Key 隔离；Plan 可限制视频模式、模型、时长、分辨率、点数、并发和排队。管理平面仍是单管理员密码，没有 RBAC、支付和多管理员协作。
 
 完整说明：
 

@@ -45,6 +45,7 @@ export interface StartupRecoveryOptions {
   capacity: CapacityManager;
   registry: JobRunnerRegistry;
   resumeJob: (job: JobRecord, lease: CapacityLease) => Promise<void>;
+  resumeQueuedJob?: (job: JobRecord, lease: CapacityLease) => Promise<void>;
   scheduler?: Pick<AccountScheduler, "tryRestore" | "expireUnknown">;
   admissions?: Pick<
     SqliteAdmissionRepository,
@@ -97,7 +98,9 @@ export class StartupRecovery {
       await this.options.cleanupOrphans?.();
       this.chargeCompletedJobs();
       this.releaseFailedReservations();
-      this.failInterruptedQueuedJobs();
+      if (this.options.resumeQueuedJob === undefined) {
+        this.failInterruptedQueuedJobs();
+      }
       for (const promise of this.scheduleRecoverableJobs()) {
         void promise.catch(() => undefined);
       }
@@ -185,8 +188,15 @@ export class StartupRecovery {
 
   private scheduleRecoverableJobs(): Promise<void>[] {
     const jobs = this.options.repository.recoverable(this.now());
+    if (this.options.resumeQueuedJob !== undefined) {
+      jobs.unshift(...this.options.repository.list({ status: "queued", limit: 1_000 }));
+    }
     const scheduled: Promise<void>[] = [];
     for (const persisted of jobs) {
+      if (persisted.status === "queued" && this.options.resumeQueuedJob !== undefined) {
+        scheduled.push(this.scheduleQueued(persisted));
+        continue;
+      }
       const prepared = this.prepare(persisted);
       if (prepared !== null) {
         scheduled.push(this.schedule(prepared.job, prepared.lease));
@@ -198,7 +208,7 @@ export class StartupRecovery {
   private prepare(
     persisted: JobRecord
   ): { job: JobRecord; lease: CapacityLease } | null {
-    this.options.admissions?.charge(persisted.id);
+    if (persisted.status !== "queued") this.options.admissions?.charge(persisted.id);
     const runtime = this.options.scheduler?.tryRestore(persisted);
     if (runtime === null) {
       const recoveryNow = this.now();
@@ -253,10 +263,31 @@ export class StartupRecovery {
     return { job, lease };
   }
 
+  private async scheduleQueued(job: JobRecord): Promise<void> {
+    const globalLease = await this.options.capacity
+      .admit(`queued-recovery-${job.id}`)
+      .acquire(job.id);
+    const runtime = this.options.scheduler?.tryRestore(job);
+    if (runtime === null) {
+      globalLease.release();
+      return;
+    }
+    let lease = globalLease;
+    if (runtime !== undefined) {
+      const accountLease = await runtime.capacity
+        .admit(`queued-recovery-${job.id}`)
+        .acquire(job.id);
+      lease = combineCapacityLeases(globalLease, accountLease);
+    }
+    await this.schedule(job, lease);
+  }
+
   private schedule(job: JobRecord, lease: CapacityLease): Promise<void> {
     return this.options.registry.startOnce(
       job.id,
-      () => this.options.resumeJob(job, lease)
+      () => job.status === "queued" && this.options.resumeQueuedJob !== undefined
+        ? this.options.resumeQueuedJob(job, lease)
+        : this.options.resumeJob(job, lease)
     ).promise;
   }
 

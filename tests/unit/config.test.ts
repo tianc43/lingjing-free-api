@@ -14,7 +14,11 @@ describe("parseConfig", () => {
     expect(config.maxConcurrency).toBe(5);
     expect(config.sessionMode).toBe("browser-state");
     expect(config.dataDirectory).toBe("./data");
+    expect(config.outputRetentionMs).toBe(604_800_000);
+    expect(config.redisUrl).toBeNull();
   });
+
+  it("requires a URL for PostgreSQL and preserves it for bootstrap",()=>{expect(()=>parseConfig({...validEnv,DATABASE_DRIVER:"postgres"})).toThrow(/DATABASE_URL/u);const config=parseConfig({...validEnv,DATABASE_DRIVER:"postgres",DATABASE_URL:"postgres://db/lingjing"});expect(config.databaseDriver).toBe("postgres");expect(config.databaseUrl).toBe("postgres://db/lingjing");});
 
   it("accepts an explicit data directory for server-derived account sessions", () => {
     expect(parseConfig({ ...validEnv, DATA_DIRECTORY: "./private-data" }).dataDirectory)

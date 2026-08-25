@@ -10,11 +10,15 @@ import type { SqliteApiKeyRepository } from "../api-keys/sqlite-api-key-reposito
 import type { GenerationCoordinator } from "../generation/types.js";
 import type { CapacityManager } from "../jobs/capacity.js";
 import type { SqliteJobRepository } from "../jobs/sqlite-repository.js";
+import type { SqliteIdentityRepository } from "../identity/sqlite-identity-repository.js";
 import type { JobOutput, JobStatus } from "../jobs/types.js";
 import type { AccountService } from "../lingjing/account.js";
 import type { LingjingTransport } from "../lingjing/types.js";
 import type { CatalogService } from "../models/catalog.js";
 import type { SessionProvider } from "../session/types.js";
+import type { SqliteUsageRepository } from "../usage/sqlite-usage-repository.js";
+import type { SqliteWebhookRepository } from "../webhooks/sqlite-webhook-repository.js";
+import type { SqlitePlanRepository } from "../plans/sqlite-plan-repository.js";
 import type {
   PreparedMedia,
   TempBudget
@@ -34,7 +38,7 @@ extends Pick<CatalogService, "resolve"> {
 
 export type JobRepository = Pick<
   SqliteJobRepository,
-  "findById" | "list"
+  "findById" | "list" | "cancelQueued"
 >;
 
 export interface AdminRuntimeRegistry {
@@ -52,6 +56,14 @@ export interface AdminRuntimeView {
 
 export interface AdminDependencies {
   config: AppConfig;
+  webhooks: Pick<SqliteWebhookRepository, "configure" | "list" | "setEnabled" | "deliveries" | "replay">;
+  plans: Pick<SqlitePlanRepository, "create" | "list" | "assign" | "assertVideo">;
+  usage: Pick<SqliteUsageRepository, "list" | "summary">;
+  identities: Pick<
+    SqliteIdentityRepository,
+    | "createUser" | "listUsers" | "setUserStatus"
+    | "createProject" | "listProjects" | "setProjectStatus"
+  >;
   apiKeys: Pick<
     SqliteApiKeyRepository,
     "create" | "list" | "setEnabled" | "revoke" | "verify"
@@ -67,11 +79,16 @@ export interface AdminDependencies {
   >;
   runtimes: AdminRuntimeRegistry;
   repository: JobRepository;
-  coordinator: Pick<GenerationCoordinator, "resolveUnknown">;
+  coordinator: Pick<GenerationCoordinator, "create" | "resolveUnknown">;
+  catalog: ModelCatalog;
 }
 
 export interface AppDependencies {
   config: AppConfig;
+  webhooks: AdminDependencies["webhooks"];
+  plans: AdminDependencies["plans"];
+  usage: AdminDependencies["usage"];
+  identities: AdminDependencies["identities"];
   apiKeys: AdminDependencies["apiKeys"];
   cookieImporter: AdminDependencies["cookieImporter"];
   adminStaticRoot?: string;
@@ -87,6 +104,9 @@ export interface AppDependencies {
   coordinator: GenerationCoordinator;
   capacity: Pick<CapacityManager, "counts">;
   recovery: RecoveryService;
+  uploads?: Pick<import("../media/upload-repository.js").UploadRepository,"create"|"complete">;
+  objectStore?: import("../media/object-store.js").ObjectStore;
+  assets?: Pick<import("../media/asset-repository.js").SqliteAssetRepository,"findById"|"prepared">;
   media: {
     createRequestBudget(): TempBudget;
     prepareStream(

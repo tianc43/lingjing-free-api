@@ -11,6 +11,7 @@ import { removeTestDirectory } from "./cleanup.js";
 import { CapacityManager } from "../../src/jobs/capacity.js";
 import { DiscoveryLock } from "../../src/jobs/discovery-lock.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
+import { SqliteWorkerLeaseRepository } from "../../src/jobs/worker-lease-repository.js";
 import { SubmitAmbiguousError } from "../../src/lingjing/error-map.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import type { PreparedMedia, UploadedMaterial } from "../../src/media/types.js";
@@ -188,10 +189,17 @@ export function createGenerationHarness(options: {
   accountCapacityMaxQueuedRequests?: number;
   catalogFailure?: Error;
   initialTaskStatuses?: number[];
+  workerLeaseDurationMs?: number;
+  workerLeaseHeartbeatMs?: number;
+  processingTimeoutMs?: number;
+  reconciliationDelayMs?: number;
+  configureWorkerLeases?(leases: SqliteWorkerLeaseRepository): void;
 } = {}): GenerationHarness {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-generation-"));
   const store = new SqliteStore(join(directory, "jobs.sqlite"));
   const repository = new SqliteJobRepository(store);
+  const workerLeases = new SqliteWorkerLeaseRepository(store);
+  options.configureWorkerLeases?.(workerLeases);
   const accounts = new SqliteAccountRepository(store);
   const legacy = accounts.ensureLegacyAccount("data/auth");
   accounts.update(legacy.id, { priority: 1 });
@@ -541,6 +549,19 @@ export function createGenerationHarness(options: {
     capacity,
     scheduler,
     admissions,
+    workerLeases,
+    ...(options.workerLeaseDurationMs === undefined ? {} : {
+      workerLeaseDurationMs: options.workerLeaseDurationMs
+    }),
+    ...(options.workerLeaseHeartbeatMs === undefined ? {} : {
+      workerLeaseHeartbeatMs: options.workerLeaseHeartbeatMs
+    }),
+    ...(options.processingTimeoutMs === undefined ? {} : {
+      processingTimeoutMs: options.processingTimeoutMs
+    }),
+    ...(options.reconciliationDelayMs === undefined ? {} : {
+      reconciliationDelayMs: options.reconciliationDelayMs
+    }),
     logger: {
       warn: (bindings, message) => {
         warningLogs.push({ bindings, message });

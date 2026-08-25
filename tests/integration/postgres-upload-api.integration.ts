@@ -1,0 +1,16 @@
+import { Readable } from "node:stream";
+import { bootstrapPostgres } from "../../src/persistence/postgres-bootstrap.js";
+import { createPostgresRepositoryGraph } from "../../src/persistence/postgres-repository-graph.js";
+import { createPostgresApiRuntime } from "../../src/persistence/postgres-api-runtime.js";
+import type { ObjectStore } from "../../src/media/object-store.js";
+const runtime=await bootstrapPostgres(process.env["DATABASE_URL"]??"postgres://lingjing:fixture-postgres@127.0.0.1:15432/lingjing");
+const graph=createPostgresRepositoryGraph(runtime);await graph.accounts.update("legacy",{enabled:true});
+const key=await graph.identities.createApiKey({userId:"usr_legacy",projectId:"prj_legacy",name:"Upload",scopes:["video:create"],expiresAt:null});
+const objects=new Map<string,Buffer>();
+const store:ObjectStore={presignPut:storageKey=>Promise.resolve({key:storageKey,url:"https://s3.example/signed",headers:{"content-type":"image/png"},expiresAt:Date.now()+10000}),put:()=>Promise.reject(new Error("unused")),get:storageKey=>Promise.resolve(objects.has(storageKey)?{key:storageKey,size:objects.get(storageKey)?.length??0,openRead:()=>Readable.from([objects.get(storageKey)??Buffer.alloc(0)]),remove:()=>Promise.resolve()}:null),remove:storageKey=>{objects.delete(storageKey);return Promise.resolve();}};
+const app=await createPostgresApiRuntime(graph,store),headers={authorization:["Bearer",key.secret].join(" ")};
+const created=await app.inject({method:"POST",url:"/v1/uploads",headers,payload:{filename:"f.png",content_type:"image/png",size_bytes:3}}),id=created.json<{id:string}>().id;
+const pending=await runtime.pool.query<{storage_key:string}>("SELECT storage_key FROM pending_uploads WHERE id=$1",[id]),storageKey=pending.rows[0]?.storage_key;if(!storageKey)throw new Error("pending upload missing");objects.set(storageKey,Buffer.from("abc"));
+if((await app.inject({method:"POST",url:`/v1/uploads/${id}/complete`,headers})).statusCode!==200)throw new Error("upload complete failed");
+if((await app.inject({method:"POST",url:"/v1/videos",headers,payload:{model:"m",prompt:"i2v",mode:"image-to-video",input_asset_ids:[id]}})).statusCode!==202)throw new Error("asset video admission failed");
+if((await graph.assets.findById(id))?.jobId===null)throw new Error("asset not bound");await app.close();await graph.close();console.log("postgres upload API integration passed");

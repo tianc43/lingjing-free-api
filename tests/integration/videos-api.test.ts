@@ -266,6 +266,11 @@ describe("video generation API", () => {
       }]
     });
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "video",
       sourceType: "text-to-video",
       model: "fixture-video",
@@ -282,6 +287,60 @@ describe("video generation API", () => {
     expect(waitedTimeout).toBe(
       fixture.dependencies.config.videoWaitTimeoutMs
     );
+  });
+
+  it("persists the authenticated managed key principal on video requests", async () => {
+    const createdKey = fixture.dependencies.apiKeys.create("Video owner");
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/videos",
+      headers: { ["authorization"]: `Bearer ${createdKey.secret}` },
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requests.at(-1)?.principal).toEqual({
+      userId: createdKey.record.userId,
+      projectId: createdKey.record.projectId,
+      apiKeyId: createdKey.record.id
+    });
+  });
+
+  it("rejects video creation when the managed key lacks video:create", async () => {
+    const restrictedKey = fixture.dependencies.apiKeys.create("Read only video", {
+      scopes: ["models:read", "video:read"]
+    });
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/videos",
+      headers: { ["authorization"]: `Bearer ${restrictedKey.secret}` },
+      payload: {
+        model: "fixture-video",
+        prompt: "fixture prompt",
+        mode: "text-to-video"
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "api_scope_denied" } });
+  });
+
+  it("defaults the canonical video endpoint to asynchronous 202", async () => {
+    initialJob = videoJob("processing");
+    finalJob = initialJob;
+    const response = await authorizedInject(fixture.app, { method:"POST",url:"/v1/videos",payload:{model:"fixture-video",prompt:"fixture",mode:"text-to-video"} });
+    expect(response.statusCode).toBe(202);
+  });
+
+  it("lists, reads and cancels project-owned queued videos", async () => {
+    const queued = fixture.repository.createOrGet({kind:"video",sourceType:"text-to-video",model:"fixture-video",apiId:"a",modelCode:null,expectedAssetScene:"video",requestFingerprint:"f".repeat(64),idempotencyKeyHash:null,spaceId:1}).job;
+    const listed=await authorizedInject(fixture.app,{method:"GET",url:"/v1/videos?limit=10"});expect(listed.statusCode).toBe(200);expect(listed.json<{data:Array<{id:string}>}>().data.map((item)=>item.id)).toContain(queued.id);
+    expect((await authorizedInject(fixture.app,{method:"GET",url:`/v1/videos/${queued.id}`})).statusCode).toBe(200);
+    const cancelled=await authorizedInject(fixture.app,{method:"POST",url:`/v1/videos/${queued.id}/cancel`});expect(cancelled.statusCode).toBe(200);expect(cancelled.json()).toMatchObject({status:"failed",error:{code:"cancelled_before_submit"}});
   });
 
   it("accepts the executable video API alias", async () => {
@@ -498,6 +557,8 @@ describe("video generation API", () => {
     expect(requests).toHaveLength(0);
   });
 
+  it("rejects unavailable persistent input asset IDs without creating a job", async()=>{const before=requests.length;const response=await authorizedInject(fixture.app,{method:"POST",url:"/v1/videos",payload:{model:"fixture-video",prompt:"fixture",mode:"image-to-video",input_asset_ids:["missing"]}});expect(response.statusCode).toBe(400);expect(requests).toHaveLength(before);});
+
   it("maps image-to-video input URLs into image media", async () => {
     const response = await authorizedInject(fixture.app, {
       method: "POST",
@@ -512,6 +573,11 @@ describe("video generation API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "video",
       sourceType: "image-to-video",
       model: "fixture-video",
@@ -545,6 +611,11 @@ describe("video generation API", () => {
     const media = requests[0]?.media[0];
     expect(media?.source.type).toBe("prepared");
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "video",
       sourceType: "image-to-video",
       model: "fixture-video",

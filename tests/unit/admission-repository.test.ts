@@ -94,6 +94,46 @@ describe("budgetWindows", () => {
 });
 
 describe("SqliteAdmissionRepository", () => {
+  it("writes hold, charge and release ledger entries atomically with budget state", () => {
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath, {
+      dailyPointLimit: 100,
+      monthlyPointLimit: 100
+    });
+    const store = new SqliteStore(databasePath);
+    const admissions = new SqliteAdmissionRepository(store);
+    const first = admissions.reserveOrGet(inputFor(accountId, "a"));
+    if (first.outcome !== "created") throw new Error("Fixture admission failed");
+    expect(store.read((database) => database.prepare(`
+      SELECT entry_type, points, reason FROM usage_ledger WHERE job_id = ?
+      ORDER BY created_at, entry_type
+    `).all(first.job.id))).toEqual([{
+      entry_type: "hold",
+      points: 7,
+      reason: "quoted_generation_cost"
+    }]);
+    admissions.charge(first.job.id);
+    admissions.charge(first.job.id);
+    expect(store.read((database) => database.prepare(`
+      SELECT entry_type, COUNT(*) AS count FROM usage_ledger WHERE job_id = ?
+      GROUP BY entry_type ORDER BY entry_type
+    `).all(first.job.id))).toEqual([
+      { entry_type: "charge", count: 1 },
+      { entry_type: "hold", count: 1 }
+    ]);
+
+    const second = admissions.reserveOrGet(inputFor(accountId, "b"));
+    if (second.outcome !== "created") throw new Error("Fixture admission failed");
+    admissions.failAndRelease(second.job.id, ["queued"], "fixture_pre_submit_failure");
+    expect(store.read((database) => database.prepare(`
+      SELECT entry_type, reason FROM usage_ledger WHERE job_id = ?
+      ORDER BY entry_type
+    `).all(second.job.id))).toEqual([
+      { entry_type: "hold", reason: "quoted_generation_cost" },
+      { entry_type: "release", reason: "fixture_pre_submit_failure" }
+    ]);
+    store.close();
+  });
   it("persists the job ID already bound to capacity", () => {
     const now = Date.parse("2026-07-24T03:00:00Z");
     const databasePath = temporaryDatabasePath();
@@ -173,6 +213,21 @@ describe("SqliteAdmissionRepository", () => {
     })).toThrowError(/canonical/u);
     expect(accounts.usage(accountId, windows).dayUsedPoints).toBe(7);
     store.close();
+  });
+
+  it("rejects a second project reservation beyond the plan limit", () => {
+    const databasePath = temporaryDatabasePath();
+    const accountId = createReadyAccount(databasePath, { dailyPointLimit: 100, monthlyPointLimit: 100 });
+    const store = new SqliteStore(databasePath);
+    store.immediate((database) => database.prepare("UPDATE plans SET daily_limit_points=10 WHERE id='plan_legacy'").run());
+    const admissions = new SqliteAdmissionRepository(store);
+    expect(admissions.reserveOrGet(inputFor(accountId, "a")).outcome).toBe("created");
+    expect(admissions.reserveOrGet(inputFor(accountId, "b")).outcome).toBe("project_quota_exhausted");
+    store.close();
+  });
+
+  it("rejects queued work beyond the project plan queue limit", () => {
+    const databasePath=temporaryDatabasePath();const accountId=createReadyAccount(databasePath,{dailyPointLimit:100,monthlyPointLimit:100});const store=new SqliteStore(databasePath);store.immediate(db=>db.prepare("UPDATE plans SET max_queued_requests=1 WHERE id='plan_legacy'").run());const admissions=new SqliteAdmissionRepository(store);expect(admissions.reserveOrGet(inputFor(accountId,"a")).outcome).toBe("created");expect(admissions.reserveOrGet(inputFor(accountId,"b")).outcome).toBe("project_capacity_exhausted");store.close();
   });
 
   it("allows one of two simultaneous seven-point reservations under a ten-point limit", async () => {

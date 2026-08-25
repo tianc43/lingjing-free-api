@@ -300,6 +300,34 @@ describe("image generation API", () => {
     }
   });
 
+  it("propagates the managed key principal and enforces image:create", async () => {
+    const allowedKey = fixture.dependencies.apiKeys.create("Image owner");
+    const accepted = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: { ["authorization"]: `Bearer ${allowedKey.secret}` },
+      payload: { model: "fixture-image", prompt: "fixture" }
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(requests.at(-1)?.principal).toEqual({
+      userId: allowedKey.record.userId,
+      projectId: allowedKey.record.projectId,
+      apiKeyId: allowedKey.record.id
+    });
+
+    const deniedKey = fixture.dependencies.apiKeys.create("Image reader", {
+      scopes: ["models:read", "image:read"]
+    });
+    const rejected = await fixture.app.inject({
+      method: "POST",
+      url: "/v1/images/generations",
+      headers: { ["authorization"]: `Bearer ${deniedKey.secret}` },
+      payload: { model: "fixture-image", prompt: "fixture" }
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(rejected.json()).toMatchObject({ error: { code: "api_scope_denied" } });
+  });
+
   it("returns an OpenAI-style waited image result", async () => {
     const response = await authorizedInject(fixture.app, {
       method: "POST",
@@ -326,6 +354,11 @@ describe("image generation API", () => {
       data: [{ url: "https://media.example/result-one.png" }]
     });
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "image",
       sourceType: "image-generation",
       model: "fixture-image",
@@ -379,6 +412,11 @@ describe("image generation API", () => {
     const media = requests[0]?.media[0];
     expect(media?.source.type).toBe("prepared");
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "image",
       sourceType: "image-generation",
       model: "fixture-image",
@@ -492,6 +530,11 @@ describe("image generation API", () => {
     expect(response.statusCode).toBe(200);
     expect(outputFetches).toEqual([]);
     expect(requests).toEqual([{
+      principal: {
+        userId: "usr_legacy",
+        projectId: "prj_legacy",
+        apiKeyId: "key_legacy_environment"
+      },
       kind: "image",
       sourceType: "image-generation",
       model: "fixture-image",

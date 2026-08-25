@@ -11,6 +11,9 @@ export interface AppConfig {
   sessionProfilePath: string;
   dataDirectory: string;
   dbPath: string;
+  databaseDriver:"sqlite"|"postgres";
+  databaseUrl:string|null;
+  redisUrl:string|null;
   maxConcurrency: number;
   modelCacheTtlMs: number;
   assetDiscoveryTimeoutMs: number;
@@ -26,6 +29,8 @@ export interface AppConfig {
   maxQueuedRequests: number;
   logLevel: string;
   docsEnabled: boolean;
+  outputRetentionMs: number;
+  objectStore: { mode:"local" } | { mode:"s3"; bucket:string; region:string; endpoint:string|null; prefix:string; forcePathStyle:boolean };
 }
 
 const positiveInteger = z.coerce.number().int().positive();
@@ -43,6 +48,13 @@ const configSchema = z.object({
   LINGJING_DATA_DIRECTORY: z.string().min(1).optional(),
   DATA_DIRECTORY: z.string().min(1).default("./data"),
   DB_PATH: z.string().default("./data/lingjing.db"),
+  DATABASE_DRIVER:z.enum(["sqlite","postgres"]).default("sqlite"),
+  DATABASE_URL:z.string().default(""),
+  REDIS_URL:z.string().default(""),
+  OBJECT_STORE: z.enum(["local","s3"]).default("local"),
+  S3_BUCKET: z.string().default(""), S3_REGION:z.string().default("us-east-1"),
+  S3_ENDPOINT:z.string().default(""), S3_PREFIX:z.string().default("lingjing"),
+  S3_FORCE_PATH_STYLE:z.enum(["true","false"]).default("false"),
   LINGJING_MAX_CONCURRENCY: positiveInteger.default(5),
   MODEL_CACHE_TTL_MS: positiveInteger.default(300_000),
   ASSET_DISCOVERY_TIMEOUT_MS: positiveInteger.default(60_000),
@@ -55,10 +67,13 @@ const configSchema = z.object({
   JSON_BODY_LIMIT_BYTES: positiveInteger.default(33_554_432),
   MAX_REQUEST_MEDIA_BYTES: positiveInteger.default(230_686_720),
   MAX_TEMP_BYTES: positiveInteger.default(1_073_741_824),
+  OUTPUT_RETENTION_MS: positiveInteger.default(604_800_000),
   MAX_QUEUED_REQUESTS: nonNegativeInteger.default(20),
   LOG_LEVEL: z.string().min(1).default("info"),
   DOCS_ENABLED: z.enum(["true", "false"]).default("false")
 }).superRefine((config, ctx) => {
+  if(config.DATABASE_DRIVER==="postgres"&&config.DATABASE_URL.trim()==="")ctx.addIssue({code:"custom",message:"DATABASE_URL is required for PostgreSQL"});
+  if(config.OBJECT_STORE==="s3"&&config.S3_BUCKET.trim()==="")ctx.addIssue({code:"custom",message:"S3_BUCKET is required for S3 object storage"});
   const constraints = [
     config.LINGJING_API_KEY !== "change-me",
     config.LINGJING_API_KEY.length >= 16,
@@ -94,6 +109,9 @@ export function parseConfig(env: NodeJS.ProcessEnv | Record<string, string | und
     sessionProfilePath: config.LINGJING_SESSION_PROFILE,
     dataDirectory: config.LINGJING_DATA_DIRECTORY ?? config.DATA_DIRECTORY,
     dbPath: config.DB_PATH,
+    databaseDriver:config.DATABASE_DRIVER,
+    databaseUrl:config.DATABASE_URL.trim()||null,
+    redisUrl:config.REDIS_URL.trim()||null,
     maxConcurrency: config.LINGJING_MAX_CONCURRENCY,
     modelCacheTtlMs: config.MODEL_CACHE_TTL_MS,
     assetDiscoveryTimeoutMs: config.ASSET_DISCOVERY_TIMEOUT_MS,
@@ -108,6 +126,12 @@ export function parseConfig(env: NodeJS.ProcessEnv | Record<string, string | und
     maxTempBytes: config.MAX_TEMP_BYTES,
     maxQueuedRequests: config.MAX_QUEUED_REQUESTS,
     logLevel: config.LOG_LEVEL,
-    docsEnabled: config.DOCS_ENABLED === "true"
+    docsEnabled: config.DOCS_ENABLED === "true",
+    outputRetentionMs:config.OUTPUT_RETENTION_MS,
+    objectStore: config.OBJECT_STORE === "local" ? {mode:"local"} : {
+      mode:"s3",bucket:config.S3_BUCKET,region:config.S3_REGION,
+      endpoint:config.S3_ENDPOINT.trim()||null,prefix:config.S3_PREFIX,
+      forcePathStyle:config.S3_FORCE_PATH_STYLE==="true"
+    }
   };
 }

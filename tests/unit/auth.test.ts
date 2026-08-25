@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAuthorized } from "../../src/api/auth.js";
+import { authenticateBearer, isAuthorized } from "../../src/api/auth.js";
 
 describe("Bearer authentication", () => {
   it("accepts only the exact configured bearer token", () => {
@@ -8,11 +8,27 @@ describe("Bearer authentication", () => {
     expect(isAuthorized(undefined, "local-secret")).toBe(false);
   });
 
-  it("accepts a verified managed bearer token while preserving legacy token access", () => {
-    const managedKeys = { verify: (token: string) => token === "ljk_managed" };
+  it("returns the managed request principal while preserving legacy access", () => {
+    const managedKeys = { authenticate: (token: string) => token === "ljk_managed" ? {
+      userId: "usr_fixture",
+      projectId: "prj_fixture",
+      apiKeyId: "key_fixture",
+      scopes: ["video:create" as const],
+      legacy: false
+    } : null };
 
-    expect(isAuthorized("Bearer local-secret", "local-secret", managedKeys)).toBe(true);
-    expect(isAuthorized("Bearer ljk_managed", "local-secret", managedKeys)).toBe(true);
+    expect(authenticateBearer("Bearer local-secret", "local-secret", managedKeys)).toMatchObject({
+      userId: "usr_legacy",
+      projectId: "prj_legacy",
+      legacy: true
+    });
+    expect(authenticateBearer("Bearer ljk_managed", "local-secret", managedKeys)).toEqual({
+      userId: "usr_fixture",
+      projectId: "prj_fixture",
+      apiKeyId: "key_fixture",
+      scopes: ["video:create"],
+      legacy: false
+    });
     expect(isAuthorized("Bearer ljk_invalid", "local-secret", managedKeys)).toBe(false);
   });
 

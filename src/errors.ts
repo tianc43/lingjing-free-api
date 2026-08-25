@@ -75,6 +75,7 @@ export const errors = {
   importValidationTimeout: () => new AppError(504, "upstream_error", "import_validation_timeout", "Imported session validation timed out"),
   cookieImportRollbackIncomplete: () => new AppError(500, "server_error", "cookie_import_rollback_incomplete", "Cookie import rollback was incomplete"),
   permissionDenied: () => new AppError(403, "permission_denied", "lingjing_permission_denied", "Lingjing permission denied"),
+  apiScopeDenied: () => new AppError(403, "permission_denied", "api_scope_denied", "API key scope does not permit this operation"),
   invalidRequest: (message: string, param: string | null = null) => new AppError(400, "invalid_request_error", "invalid_request", message, param),
   catalogChanged: () => new AppError(409, "invalid_request_error", "model_catalog_changed", "Lingjing model catalog changed"),
   insufficientQuota: () => new AppError(429, "insufficient_quota", "lingjing_insufficient_points", "Insufficient Lingjing points"),

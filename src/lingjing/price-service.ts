@@ -1,0 +1,2 @@
+import type{LingjingTransport}from"./types.js";export interface PriceQuery{enablePriceQuery:true;priceQueryService:string;params:Record<string,string|number|boolean>;}
+export class LingjingPriceService{constructor(private readonly transport:Pick<LingjingTransport,"read">){}async calculate(query:PriceQuery):Promise<unknown>{return this.transport.read<unknown>("/joycreator/AIModelApiConsole/calculatePrice",{method:"POST",body:query});}}

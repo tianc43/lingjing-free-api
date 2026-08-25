@@ -3,10 +3,11 @@ import type {
   FastifyReply,
   FastifyRequest
 } from "fastify";
-import { errors } from "../../errors.js";
+import { AppError, errors } from "../../errors.js";
+import { z } from "zod";
+import { presentTask, taskResponseSchema } from "../presenters.js";
 import type { MediaInput } from "../../media/types.js";
 import { parseGenerationMultipart } from "../multipart.js";
-import { taskResponseSchema } from "../presenters.js";
 import {
   generationHeadersSchema,
   videoApiRequestSchema,
@@ -18,6 +19,11 @@ import {
   errorResponseSchema,
   routeSchema
 } from "../schema.js";
+import {
+  generationPrincipal,
+  requestPrincipal,
+  requireScope
+} from "../principal.js";
 import type { AppDependencies } from "../types.js";
 import {
   assertNoControlCollisions,
@@ -60,7 +66,7 @@ export function registerVideoRoutes(
       503: errorResponseSchema
     }
   });
-  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
+  const handler = (defaultMode: "wait" | "async") => async (request: FastifyRequest, reply: FastifyReply) => {
     let media: MediaInput[] = [];
     let transferred = false;
     try {
@@ -69,14 +75,20 @@ export function registerVideoRoutes(
         ? await parseGenerationMultipart(request, dependencies)
         : null;
       media = multipart?.media ?? [];
+      const rawBody = multipart?.body ?? request.body;
       const input = videoApiRequestSchema.parse(
-        multipart?.body ?? request.body
+        typeof rawBody === "object" && rawBody !== null && !("response_mode" in rawBody)
+          ? { ...rawBody, response_mode: defaultMode }
+          : rawBody
       );
       assertNoControlCollisions(
         input.parameters,
         VIDEO_ALWAYS_RESERVED_FIELDS
       );
       media.push(...mediaFromStrings(input.input_images ?? []));
+      const principal=requestPrincipal(request);
+      const persistentAssets=[];
+      for(const id of input.input_asset_ids??[]){const asset=dependencies.assets?.findById(id);if(!asset||asset.projectId!==principal.projectId||asset.role!=="input"||asset.jobId!==null)throw errors.invalidRequest("Input asset is unavailable","input_asset_ids");const prepared=await dependencies.assets?.prepared(asset);if(prepared===undefined)throw errors.invalidRequest("Input asset is unavailable","input_asset_ids");persistentAssets.push(asset);media.push({kind:"image",source:{type:"prepared",media:prepared}});}
       if (input.mode === "image-to-video" && media.length === 0) {
         throw errors.invalidRequest(
           "image-to-video requires an input image",
@@ -137,12 +149,31 @@ export function registerVideoRoutes(
       validateDynamicValues(model, values);
 
       transferred = true;
+      requireScope(request, "video:create");
+      try {
+        const parameterDuration = input.parameters?.["duration"];
+        const parameterResolution = input.parameters?.["resolution"];
+        dependencies.plans.assertVideo(principal.projectId, {
+          mode: input.mode,
+          model: input.model,
+          ...(input.duration !== undefined
+            ? { duration: input.duration }
+            : typeof parameterDuration === "number" ? { duration: parameterDuration } : {}),
+          ...(input.resolution !== undefined
+            ? { resolution: input.resolution }
+            : typeof parameterResolution === "string" ? { resolution: parameterResolution } : {})
+        });
+      } catch (cause) {
+        throw errors.invalidRequest(cause instanceof Error ? cause.message : "Plan policy rejected request");
+      }
       const handle = await dependencies.coordinator.create({
+        principal: generationPrincipal(request),
         kind: "video",
         sourceType: input.mode,
         model: input.model,
         values,
         media,
+        ...(persistentAssets.length===0?{}:{persistentAssetIds:persistentAssets.map(asset=>asset.id)}),
         idempotencyKey: requestIdempotencyKey
       });
       const waited = await waitedJob(
@@ -172,6 +203,12 @@ export function registerVideoRoutes(
     }
   };
 
-  app.post("/v1/videos/generations", { schema }, handler);
-  app.post("/v1/videos", { schema }, handler);
+  const paramsSchema=z.object({id:z.string().min(1)});
+  const listSchema=z.object({limit:z.coerce.number().int().min(1).max(100).default(20),before:z.coerce.number().optional(),status:z.enum(["queued","submitting","discovering","processing","unknown","completed","failed"]).optional()});
+  app.get("/v1/videos/:id",{schema:routeSchema({security:bearerSecurity,params:paramsSchema,response:{200:taskResponseSchema,401:errorResponseSchema,404:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:read");const {id}=paramsSchema.parse(request.params);const job=dependencies.repository.findById(id);if(!job||job.projectId!==principal.projectId||job.kind!=="video")throw new AppError(404,"invalid_request_error","video_not_found","Video job not found");return noStore(reply).send(presentTask(job));});
+  app.get("/v1/videos",{schema:routeSchema({security:bearerSecurity,querystring:listSchema,response:{200:z.object({object:z.literal("list"),data:z.array(taskResponseSchema),next_cursor:z.number().nullable()}),401:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:read");const q=listSchema.parse(request.query);const jobs=dependencies.repository.list({projectId:principal.projectId,kind:"video",limit:q.limit,...(q.before===undefined?{}:{before:q.before}),...(q.status===undefined?{}:{status:q.status})});return noStore(reply).send({object:"list",data:jobs.map(presentTask),next_cursor:jobs.length===q.limit?jobs.at(-1)?.createdAt??null:null});});
+  app.post("/v1/videos/:id/cancel",{schema:routeSchema({security:bearerSecurity,params:paramsSchema,response:{200:taskResponseSchema,401:errorResponseSchema,404:errorResponseSchema,409:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:create");const {id}=paramsSchema.parse(request.params);try{const job=dependencies.repository.cancelQueued(id,principal.projectId);if(!job||job.kind!=="video")throw new AppError(404,"invalid_request_error","video_not_found","Video job not found");return noStore(reply).send(presentTask(job));}catch(cause){if(cause instanceof AppError)throw cause;throw new AppError(409,"invalid_request_error","video_not_cancellable","Video can only be cancelled before upstream submission");}});
+
+  app.post("/v1/videos/generations", { schema }, handler("wait"));
+  app.post("/v1/videos", { schema }, handler("async"));
 }

@@ -17,7 +17,13 @@ import {
 } from "../api/schema.js";
 import type { AdminDependencies } from "../api/types.js";
 import { errors } from "../errors.js";
+import { presentModel } from "../api/presenters.js";
+import {
+  setIfSupported,
+  validateDynamicValues
+} from "../api/routes/generation.js";
 import type { JobRecord, JobStatus } from "../jobs/types.js";
+import type { SourceType } from "../models/types.js";
 import { accountSessionPaths } from "../session/create-provider.js";
 import {
   accountListResponseSchema,
@@ -30,8 +36,20 @@ import {
   adminJobViewSchema,
   createApiKeyBodySchema,
   createApiKeyResponseSchema,
+  createProjectBodySchema,
+  createUserBodySchema,
+  createPlanBodySchema,
+  configureWebhookBodySchema,
+  webhookResponseSchema,
+  webhookListResponseSchema,
+  webhookStatusBodySchema,
+  webhookDeliveryListSchema,
+  assignPlanBodySchema,
+  planListResponseSchema,
+  planResponseSchema,
   createAccountBodySchema,
   createAccountResponseSchema,
+  identityParamsSchema,
   importAccountBodySchema,
   jobListQuerySchema,
   jobListResponseSchema,
@@ -40,10 +58,21 @@ import {
   loginBodySchema,
   loginResponseSchema,
   overviewResponseSchema,
+  playgroundModelsQuerySchema,
+  playgroundModelsResponseSchema,
+  playgroundRunBodySchema,
+  playgroundRunResponseSchema,
   resolveUnknownBodySchema,
   sessionResponseSchema,
+  setIdentityStatusBodySchema,
   settingsResponseSchema,
-  updateAccountBodySchema
+  projectListResponseSchema,
+  projectResponseSchema,
+  userListResponseSchema,
+  userResponseSchema,
+  updateAccountBodySchema,
+  usageQuerySchema,
+  usageResponseSchema
 } from "./schemas.js";
 import type { AdminSession } from "./session.js";
 import { AdminSessionStore } from "./session.js";
@@ -158,7 +187,8 @@ function jobView(
     failed_at: job.failedAt,
     created_at: job.createdAt,
     updated_at: job.updatedAt,
-    error_code: job.errorCode
+    error_code: job.errorCode,
+    outputs: (job.result?.outputs ?? []).map(output=>({url:output.url,poster_url:output.posterUrl,width:output.width,height:output.height,duration:output.duration,format:output.format}))
   };
 }
 
@@ -170,6 +200,16 @@ function accountNames(dependencies: AdminDependencies) {
 
 function allJobs(dependencies: AdminDependencies): JobRecord[] {
   return dependencies.repository.list({ limit: 10_000 });
+}
+
+function playgroundSourceTypes(query: {
+  type: "image" | "video";
+  mode?: "text-to-video" | "image-to-video" | undefined;
+}): SourceType[] {
+  if (query.type === "image") return ["image-generation"];
+  return query.mode === undefined
+    ? ["text-to-video", "image-to-video"]
+    : [query.mode];
 }
 
 function findAccount(
@@ -209,12 +249,25 @@ function accountMutation<T>(operation: () => T): T {
   }
 }
 
+function userView(user: import("../identity/types.js").UserRecord) {
+  return { id: user.id, name: user.name, status: user.status,
+    created_at: user.createdAt, updated_at: user.updatedAt };
+}
+function projectView(project: import("../identity/types.js").ProjectRecord) {
+  return { id: project.id, user_id: project.userId, name: project.name,
+    status: project.status, created_at: project.createdAt, updated_at: project.updatedAt };
+}
+
 function apiKeyView(key: ApiKeyRecord) {
   return {
     id: key.id,
+    user_id: key.userId,
+    project_id: key.projectId,
     name: key.name,
     key_prefix: key.keyPrefix,
+    scopes: key.scopes,
     enabled: key.enabled,
+    expires_at: key.expiresAt,
     created_at: key.createdAt,
     updated_at: key.updatedAt,
     last_used_at: key.lastUsedAt,
@@ -477,6 +530,53 @@ export async function registerAdminRoutes(
       });
     });
 
+    adminApp.get("/users", {
+      schema: routeSchema({ security: publicSecurity, querystring: emptyQuerySchema,
+        response: { 200: userListResponseSchema, 401: errorResponseSchema } })
+    }, (_request, reply) => noStore(reply).send({
+      users: dependencies.identities.listUsers().map(userView)
+    }));
+    adminApp.post("/users", {
+      schema: routeSchema({ security: publicSecurity, body: createUserBodySchema,
+        response: { 201: userResponseSchema, 400: errorResponseSchema, 401: errorResponseSchema } })
+    }, (request, reply) => {
+      const body = createUserBodySchema.parse(request.body);
+      return noStore(reply).code(201).send({ user: userView(dependencies.identities.createUser(body.name)) });
+    });
+    adminApp.post("/users/:id/status", {
+      schema: routeSchema({ security: publicSecurity, params: identityParamsSchema,
+        body: setIdentityStatusBodySchema,
+        response: { 200: userResponseSchema, 400: errorResponseSchema, 401: errorResponseSchema } })
+    }, (request, reply) => {
+      const { id } = identityParamsSchema.parse(request.params);
+      const { status } = setIdentityStatusBodySchema.parse(request.body);
+      return noStore(reply).send({ user: userView(dependencies.identities.setUserStatus(id, status)) });
+    });
+    adminApp.get("/projects", {
+      schema: routeSchema({ security: publicSecurity, querystring: emptyQuerySchema,
+        response: { 200: projectListResponseSchema, 401: errorResponseSchema } })
+    }, (_request, reply) => noStore(reply).send({
+      projects: dependencies.identities.listProjects().map(projectView)
+    }));
+    adminApp.post("/projects", {
+      schema: routeSchema({ security: publicSecurity, body: createProjectBodySchema,
+        response: { 201: projectResponseSchema, 400: errorResponseSchema, 401: errorResponseSchema } })
+    }, (request, reply) => {
+      const body = createProjectBodySchema.parse(request.body);
+      return noStore(reply).code(201).send({
+        project: projectView(dependencies.identities.createProject(body.user_id, body.name))
+      });
+    });
+    adminApp.post("/projects/:id/status", {
+      schema: routeSchema({ security: publicSecurity, params: identityParamsSchema,
+        body: setIdentityStatusBodySchema,
+        response: { 200: projectResponseSchema, 400: errorResponseSchema, 401: errorResponseSchema } })
+    }, (request, reply) => {
+      const { id } = identityParamsSchema.parse(request.params);
+      const { status } = setIdentityStatusBodySchema.parse(request.body);
+      return noStore(reply).send({ project: projectView(dependencies.identities.setProjectStatus(id, status)) });
+    });
+
     adminApp.get("/api-keys", {
       schema: routeSchema({
         security: publicSecurity,
@@ -504,7 +604,12 @@ export async function registerAdminRoutes(
       })
     }, (request, reply) => {
       const body = createApiKeyBodySchema.parse(request.body);
-      const created = apiKeyMutation(() => dependencies.apiKeys.create(body.name));
+      const created = apiKeyMutation(() => dependencies.apiKeys.create(body.name, {
+        ...(body.user_id === undefined ? {} : { userId: body.user_id }),
+        ...(body.project_id === undefined ? {} : { projectId: body.project_id }),
+        ...(body.scopes === undefined ? {} : { scopes: body.scopes }),
+        ...(body.expires_at === undefined ? {} : { expiresAt: body.expires_at })
+      }));
       return noStore(reply).code(201).send({
         key: apiKeyView(created.record),
         api_key: created.secret
@@ -727,6 +832,85 @@ export async function registerAdminRoutes(
       }
     });
 
+    adminApp.get("/playground/models", {
+      schema: routeSchema({
+        security: publicSecurity,
+        querystring: playgroundModelsQuerySchema,
+        response: {
+          200: playgroundModelsResponseSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          502: errorResponseSchema
+        }
+      })
+    }, async (request, reply) => {
+      const query = playgroundModelsQuerySchema.parse(request.query);
+      const groups = await Promise.all(
+        playgroundSourceTypes(query).map((sourceType) =>
+          dependencies.catalog.list(sourceType, query.refresh)
+        )
+      );
+      return noStore(reply).send({
+        models: groups.flat().map((model) => {
+          const presented = presentModel(model);
+          return {
+            id: presented.id,
+            display_name: presented.display_name,
+            type: presented.type,
+            ...(presented.mode === undefined ? {} : { mode: presented.mode }),
+            capabilities: presented.capabilities,
+            parameters: presented.parameters,
+            pricing: presented.pricing
+          };
+        })
+      });
+    });
+
+    adminApp.post("/playground/run", {
+      schema: routeSchema({
+        security: publicSecurity,
+        body: playgroundRunBodySchema,
+        response: {
+          202: playgroundRunResponseSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          409: errorResponseSchema,
+          429: errorResponseSchema,
+          502: errorResponseSchema,
+          503: errorResponseSchema
+        }
+      })
+    }, async (request, reply) => {
+      const body = playgroundRunBodySchema.parse(request.body);
+      const sourceType: SourceType = body.kind === "image"
+        ? "image-generation"
+        : body.mode ?? "text-to-video";
+      const model = await dependencies.catalog.resolve(
+        body.model,
+        sourceType,
+        true
+      );
+      const values = { ...body.parameters };
+      setIfSupported(values, model, ["prompt"], body.prompt);
+      validateDynamicValues(model, values);
+      const media=body.input_image===undefined?[]:[{kind:"image" as const,source:{type:"data-uri" as const,value:body.input_image}}];
+      const handle = await dependencies.coordinator.create({
+        kind: body.kind,
+        sourceType,
+        model: body.model,
+        values,
+        media,
+        idempotencyKey: null
+      });
+      return noStore(reply).code(202).send({
+        job: jobView(
+          handle.job,
+          accountNames(dependencies),
+          dependencies.admissions.budgetState(handle.job.id)
+        )
+      });
+    });
+
     adminApp.get("/jobs", {
       schema: routeSchema({
         security: publicSecurity,
@@ -860,6 +1044,45 @@ export async function registerAdminRoutes(
       });
     });
 
+    adminApp.get("/webhook-deliveries",{schema:routeSchema({security:publicSecurity,querystring:emptyQuerySchema,response:{200:webhookDeliveryListSchema,401:errorResponseSchema}})},(_request,reply)=>noStore(reply).send({deliveries:dependencies.webhooks.deliveries().map(d=>({id:d.id,project_id:d.projectId,job_id:d.jobId,event_type:d.eventType,status:d.status??"pending",attempts:d.attempts,next_attempt_at:d.nextAttemptAt,last_error:d.lastError??null,delivered_at:d.deliveredAt??null,created_at:d.createdAt??0}))}));
+    adminApp.post("/webhook-deliveries/:id/replay",{schema:routeSchema({security:publicSecurity,params:identityParamsSchema,response:{400:errorResponseSchema,401:errorResponseSchema}})},(request,reply)=>{const{id}=identityParamsSchema.parse(request.params);dependencies.webhooks.replay(id);return noStore(reply).code(204).send();});
+    adminApp.get("/webhooks",{schema:routeSchema({security:publicSecurity,querystring:emptyQuerySchema,response:{200:webhookListResponseSchema,401:errorResponseSchema}})},(_request,reply)=>noStore(reply).send({webhooks:dependencies.webhooks.list().map(w=>({id:w.id,project_id:w.projectId,url:w.url,secret:"",enabled:w.enabled}))}));
+    adminApp.post("/webhooks/:id/status",{schema:routeSchema({security:publicSecurity,params:identityParamsSchema,body:webhookStatusBodySchema,response:{200:webhookResponseSchema,400:errorResponseSchema,401:errorResponseSchema}})},(request,reply)=>{const {id}=identityParamsSchema.parse(request.params);const {enabled}=webhookStatusBodySchema.parse(request.body);const w=dependencies.webhooks.setEnabled(id,enabled);return noStore(reply).send({webhook:{id:w.id,project_id:w.projectId,url:w.url,secret:"",enabled:w.enabled}});});
+    adminApp.post("/webhooks",{schema:routeSchema({security:publicSecurity,body:configureWebhookBodySchema,response:{201:webhookResponseSchema,400:errorResponseSchema,401:errorResponseSchema}})},(request,reply)=>{const b=configureWebhookBodySchema.parse(request.body);const webhook=dependencies.webhooks.configure(b.project_id,b.url);return noStore(reply).code(201).send({webhook:{id:webhook.id,project_id:webhook.projectId,url:webhook.url,secret:webhook.secret,enabled:webhook.enabled}});});
+
+    adminApp.get("/plans", { schema: routeSchema({security:publicSecurity,querystring:emptyQuerySchema,response:{200:planListResponseSchema,401:errorResponseSchema}})},(_request,reply)=>noStore(reply).send({plans:dependencies.plans.list().map((p)=>({id:p.id,name:p.name,enabled:p.enabled,allowed_modes:p.allowedModes,allowed_models:p.allowedModels,max_duration_seconds:p.maxDurationSeconds,allowed_resolutions:p.allowedResolutions,daily_limit_points:p.dailyLimitPoints,monthly_limit_points:p.monthlyLimitPoints,max_concurrency:p.maxConcurrency,max_queued_requests:p.maxQueuedRequests,created_at:p.createdAt,updated_at:p.updatedAt}))}));
+    adminApp.post("/plans", { schema: routeSchema({security:publicSecurity,body:createPlanBodySchema,response:{201:planResponseSchema,400:errorResponseSchema,401:errorResponseSchema}})},(request,reply)=>{const b=createPlanBodySchema.parse(request.body);const p=dependencies.plans.create({name:b.name,enabled:b.enabled,allowedModes:b.allowed_modes,allowedModels:b.allowed_models,maxDurationSeconds:b.max_duration_seconds,allowedResolutions:b.allowed_resolutions,dailyLimitPoints:b.daily_limit_points,monthlyLimitPoints:b.monthly_limit_points,maxConcurrency:b.max_concurrency,maxQueuedRequests:b.max_queued_requests});return noStore(reply).code(201).send({plan:{id:p.id,name:p.name,enabled:p.enabled,allowed_modes:p.allowedModes,allowed_models:p.allowedModels,max_duration_seconds:p.maxDurationSeconds,allowed_resolutions:p.allowedResolutions,daily_limit_points:p.dailyLimitPoints,monthly_limit_points:p.monthlyLimitPoints,max_concurrency:p.maxConcurrency,max_queued_requests:p.maxQueuedRequests,created_at:p.createdAt,updated_at:p.updatedAt}});});
+    adminApp.post("/plans/assign", { schema: routeSchema({security:publicSecurity,body:assignPlanBodySchema,response:{400:errorResponseSchema,401:errorResponseSchema}})},(request,reply)=>{const b=assignPlanBodySchema.parse(request.body);dependencies.plans.assign(b.project_id,b.plan_id);return noStore(reply).code(204).send();});
+
+    adminApp.get("/usage", {
+      schema: routeSchema({ security: publicSecurity, querystring: usageQuerySchema,
+        response: { 200: usageResponseSchema, 400: errorResponseSchema, 401: errorResponseSchema } })
+    }, (request, reply) => {
+      const query = usageQuerySchema.parse(request.query);
+      const filter = {
+        ...(query.user_id === undefined ? {} : { userId: query.user_id }),
+        ...(query.project_id === undefined ? {} : { projectId: query.project_id }),
+        ...(query.api_key_id === undefined ? {} : { apiKeyId: query.api_key_id }),
+        ...(query.account_id === undefined ? {} : { accountId: query.account_id }),
+        ...(query.from === undefined ? {} : { from: query.from }),
+        ...(query.to === undefined ? {} : { to: query.to })
+      };
+      const summary = dependencies.usage.summary(filter);
+      return noStore(reply).send({
+        summary: {
+          held_points: summary.heldPoints, charged_points: summary.chargedPoints,
+          released_points: summary.releasedPoints, refunded_points: summary.refundedPoints,
+          adjusted_points: summary.adjustedPoints, net_points: summary.netPoints,
+          entry_count: summary.entryCount
+        },
+        entries: dependencies.usage.list({ ...filter, limit: query.limit }).map((entry) => ({
+          id:entry.id, job_id:entry.jobId, user_id:entry.userId, project_id:entry.projectId,
+          api_key_id:entry.apiKeyId, account_id:entry.accountId, type:entry.type,
+          points:entry.points, reason:entry.reason, created_at:entry.createdAt
+        }))
+      });
+    });
+
     adminApp.get("/settings", {
       schema: routeSchema({
         security: publicSecurity,
@@ -878,6 +1101,7 @@ export async function registerAdminRoutes(
       docs_enabled: dependencies.config.docsEnabled,
       shared_api_key_configured: dependencies.config.apiKey.trim().length > 0,
       legacy_api_key_configured: dependencies.config.apiKey.trim().length > 0,
+      output_retention_ms:dependencies.config.outputRetentionMs,
       api_base_url: new URL(
         "/v1",
         `${request.protocol}://${request.headers.host ?? request.hostname}`

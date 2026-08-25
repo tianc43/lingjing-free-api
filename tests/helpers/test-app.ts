@@ -13,7 +13,11 @@ import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repos
 import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
 import { SqliteApiKeyRepository } from "../../src/api-keys/sqlite-api-key-repository.js";
+import { SqliteIdentityRepository } from "../../src/identity/sqlite-identity-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
+import { SqliteUsageRepository } from "../../src/usage/sqlite-usage-repository.js";
+import { SqliteWebhookRepository } from "../../src/webhooks/sqlite-webhook-repository.js";
+import { SqlitePlanRepository } from "../../src/plans/sqlite-plan-repository.js";
 import { removeTestDirectory } from "./cleanup.js";
 import type { AccountSnapshot } from "../../src/lingjing/account.js";
 import type { NormalizedModel, SourceType } from "../../src/models/types.js";
@@ -94,6 +98,11 @@ const config: AppConfig = {
   sessionProfilePath: "fixture-profile.json",
   dataDirectory: "fixture-data",
   dbPath: ":memory:",
+  databaseDriver: "sqlite",
+  databaseUrl: null,
+  redisUrl: null,
+  objectStore: { mode: "local" },
+  outputRetentionMs: 604_800_000,
   maxConcurrency: 5,
   modelCacheTtlMs: 300_000,
   assetDiscoveryTimeoutMs: 60_000,
@@ -150,6 +159,10 @@ export async function createTestApp(
   const repository = new SqliteJobRepository(store);
   const accounts = new SqliteAccountRepository(store);
   const admissions = new SqliteAdmissionRepository(store);
+  const identities = new SqliteIdentityRepository(store);
+  const usage = new SqliteUsageRepository(store);
+  const plans = new SqlitePlanRepository(store);
+  const webhooks = new SqliteWebhookRepository(store);
   const apiKeys = new SqliteApiKeyRepository(store);
   accounts.ensureLegacyAccount("data/auth");
   let logOutput = "";
@@ -221,6 +234,10 @@ export async function createTestApp(
   });
   const dependencies: AppDependencies = {
     config: testConfig,
+    webhooks,
+    plans,
+    usage,
+    identities,
     apiKeys,
     cookieImporter,
     logger: createLogger("info", destination),

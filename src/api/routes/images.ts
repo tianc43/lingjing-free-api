@@ -15,6 +15,10 @@ import {
   routeSchema
 } from "../schema.js";
 import { taskResponseSchema } from "../presenters.js";
+import {
+  generationPrincipal,
+  requireScope
+} from "../principal.js";
 import type { AppDependencies } from "../types.js";
 import {
   assertNoControlCollisions,
@@ -104,7 +108,9 @@ export function registerImageRoutes(
       validateDynamicValues(model, values);
 
       transferred = true;
+      requireScope(request, "image:create");
       const handle = await dependencies.coordinator.create({
+        principal: generationPrincipal(request),
         kind: "image",
         sourceType: "image-generation",
         model: input.model,

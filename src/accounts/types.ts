@@ -63,6 +63,9 @@ export interface AccountBudgetUsage {
 
 export interface AdmissionInput extends NewJob {
   jobId?: string;
+  userId?: string;
+  projectId?: string;
+  apiKeyId?: string | null;
   accountId: string;
   quotedPoints: number | null;
   windows: BudgetWindow;
@@ -72,5 +75,7 @@ export type AdmissionResult =
   | { outcome: "created"; job: JobRecord }
   | { outcome: "existing"; job: JobRecord }
   | { outcome: "account_unavailable" }
-  | { outcome: "budget_exhausted" };
+  | { outcome: "budget_exhausted" }
+  | { outcome: "project_quota_exhausted" }
+  | { outcome: "project_capacity_exhausted" };
 import type { JobRecord, NewJob } from "../jobs/types.js";

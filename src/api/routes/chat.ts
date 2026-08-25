@@ -18,6 +18,11 @@ import {
   errorResponseSchema,
   routeSchema
 } from "../schema.js";
+import {
+  generationPrincipal,
+  requestPrincipal,
+  requireScope
+} from "../principal.js";
 import { SseWriter } from "../sse.js";
 import type { AppDependencies } from "../types.js";
 import {
@@ -360,7 +365,14 @@ export function registerChatRoutes(
     const kind = model.sourceType === "image-generation"
       ? "image"
       : "video";
+    requireScope(request, kind === "image" ? "image:create" : "video:create");
+    if(kind==="video"){
+      const principal=requestPrincipal(request);
+      try{dependencies.plans.assertVideo(principal.projectId,{mode:model.sourceType as "text-to-video"|"image-to-video",model:input.model,...(typeof values["duration"]==="number"?{duration:values["duration"]}:{}),...(typeof values["resolution"]==="string"?{resolution:values["resolution"]}:{})});}
+      catch(cause){throw errors.invalidRequest(cause instanceof Error?cause.message:"Plan policy rejected request");}
+    }
     const handle = await dependencies.coordinator.create({
+      principal: generationPrincipal(request),
       kind,
       sourceType: model.sourceType,
       model: model.apiId,

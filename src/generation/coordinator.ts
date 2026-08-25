@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   combineCapacityLeases,
   type AccountScheduler
@@ -22,11 +23,14 @@ import { fingerprintUpstreamPayload } from "../jobs/upstream-fingerprint.js";
 import type {
   CapacityAdmission,
   CapacityLease,
+  JobFence,
   JobRecord,
   JobStatus,
   JobTransition
 } from "../jobs/types.js";
 import { SubmitAmbiguousError, upstreamDiagnostics } from "../lingjing/error-map.js";
+import type { OutputArchiver } from "../media/output-archiver.js";
+import type { SqliteAssetRepository } from "../media/asset-repository.js";
 import type { MediaInput, PreparedMedia } from "../media/types.js";
 import type { NormalizedModel } from "../models/types.js";
 import { buildPayload } from "../models/payload-builder.js";
@@ -36,11 +40,18 @@ import {
   JobRunnerRegistry,
   type SubmitCriticalReservation
 } from "./runner-registry.js";
+import type { SqliteExecutionRepository } from "./execution-repository.js";
+import type { SqliteRequestSnapshotRepository } from "./request-snapshot-repository.js";
+import type {
+  SqliteWorkerLeaseRepository,
+  WorkerLease
+} from "../jobs/worker-lease-repository.js";
 import type {
   GenerationCoordinator,
   GenerationHandle,
   GenerationRepository,
   GenerationRequest,
+  QueuedRecoveryRunner,
   RecoveryResumeRunner
 } from "./types.js";
 import {
@@ -77,6 +88,39 @@ export interface LingjingGenerationCoordinatorOptions {
   admissions: Pick<
     SqliteAdmissionRepository,
     "charge" | "failAndRelease" | "resolveUnknown"
+  >;
+  outputArchiver?: Pick<OutputArchiver,"archiveAll">;
+  assets?: Pick<
+    SqliteAssetRepository,
+    "persistInputs" | "bindToJob" | "listForJob" | "prepared" | "delete"
+  >;
+  snapshots?: Pick<
+    SqliteRequestSnapshotRepository,
+    "save" | "find"
+  >;
+  maxPersistedInputBytes?: number;
+  workerLeases?: Pick<
+    SqliteWorkerLeaseRepository,
+    "acquire" | "heartbeat" | "owns" | "release"
+  >;
+  workerId?: string;
+  workerLeaseDurationMs?: number;
+  workerLeaseHeartbeatMs?: number;
+  processingTimeoutMs?: number;
+  reconciliationDelayMs?: number;
+  executions?: Pick<
+    SqliteExecutionRepository,
+    | "captureBaseline"
+    | "markSubmitting"
+    | "markSubmitted"
+    | "markRejected"
+    | "markAmbiguous"
+    | "markCorrelationAmbiguous"
+    | "markProviderTerminal"
+    | "markProviderStatusUnknown"
+    | "correlate"
+    | "appendLedger"
+    | "findSubmission"
   >;
   logger?: {
     warn(bindings: Record<string, unknown>, message: string): void;
@@ -155,12 +199,24 @@ implements GenerationCoordinator {
     warn(bindings: Record<string, unknown>, message: string): void;
   };
   private readonly pollerAbort = new AbortController();
+  private readonly fenceContext = new AsyncLocalStorage<WorkerLease>();
+  private readonly workerId: string;
+  private readonly workerLeaseDurationMs: number;
+  private readonly workerLeaseHeartbeatMs: number;
+  private readonly processingTimeoutMs: number;
+  private readonly reconciliationDelayMs: number;
 
   constructor(private readonly options: LingjingGenerationCoordinatorOptions) {
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.notifier = options.notifier ?? new JobUpdateNotifier();
     this.logger = options.logger ?? { warn: () => undefined };
+    this.workerId = options.workerId ?? `worker_${process.pid.toString(10)}`;
+    this.workerLeaseDurationMs = options.workerLeaseDurationMs ?? 60_000;
+    this.workerLeaseHeartbeatMs = options.workerLeaseHeartbeatMs
+      ?? Math.max(1_000, Math.floor(this.workerLeaseDurationMs / 3));
+    this.processingTimeoutMs = options.processingTimeoutMs ?? 30 * 60_000;
+    this.reconciliationDelayMs = options.reconciliationDelayMs ?? 5 * 60_000;
   }
 
   stopPollers(): void {
@@ -200,7 +256,9 @@ implements GenerationCoordinator {
       });
       const idempotencyKeyHash = request.idempotencyKey === null
         ? null
-        : hashIdempotencyKey(request.idempotencyKey);
+        : hashIdempotencyKey(
+          `${request.principal?.apiKeyId ?? "key_legacy_environment"}:${request.idempotencyKey}`
+        );
       const admission = await this.options.scheduler.admit({
         request,
         requestFingerprint,
@@ -216,20 +274,93 @@ implements GenerationCoordinator {
         return this.handle(admission.job);
       }
 
+      let workerPrepared = prepared;
+      if (
+        this.options.assets !== undefined
+        && request.kind === "video"
+        && request.sourceType === "image-to-video"
+        && prepared.length > 0
+        && (request.persistentAssetIds?.length??0)===0
+      ) {
+        const principal = request.principal ?? {
+          userId: "usr_legacy",
+          projectId: "prj_legacy",
+          apiKeyId: "key_legacy_environment"
+        };
+        let records: Awaited<ReturnType<SqliteAssetRepository["persistInputs"]>> = [];
+        try {
+          records = await this.options.assets.persistInputs({
+            userId: principal.userId,
+            projectId: principal.projectId,
+            media: prepared,
+            maxBytes: this.options.maxPersistedInputBytes ?? 20_971_520
+          });
+          this.options.assets.bindToJob(
+            records.map((record) => record.id),
+            admission.job.id,
+            principal.projectId
+          );
+          workerPrepared = [];
+          for (const record of records) {
+            workerPrepared.push(await this.options.assets.prepared(record));
+          }
+        } catch (cause) {
+          const assetRepository = this.options.assets;
+          await Promise.allSettled(records.map(async (record) => {
+            await assetRepository.delete(record.id);
+          }));
+          this.options.admissions.failAndRelease(
+            admission.job.id,
+            ["queued"],
+            "input_asset_persistence_failed"
+          );
+          admission.lease.release();
+          await disposeAll(ownedPrepared);
+          ownsPrepared = false;
+          throw cause;
+        }
+        await disposeAll(prepared);
+        for (const media of prepared) ownedPrepared.delete(media);
+        for (const media of workerPrepared) ownedPrepared.add(media);
+      }
+      if((request.persistentAssetIds?.length??0)>0){try{this.options.assets?.bindToJob(request.persistentAssetIds??[],admission.job.id,request.principal?.projectId??"prj_legacy");}catch(cause){this.options.admissions.failAndRelease(admission.job.id,["queued"],"input_asset_binding_failed");admission.lease.release();await disposeAll(ownedPrepared);ownsPrepared=false;throw cause;}}
+      try {
+        this.options.snapshots?.save(admission.job.id, request);
+      } catch (cause) {
+        this.options.admissions.failAndRelease(
+          admission.job.id,
+          ["queued"],
+          "request_snapshot_persistence_failed"
+        );
+        admission.lease.release();
+        await disposeAll(ownedPrepared);
+        ownsPrepared = false;
+        throw cause;
+      }
+
       const submitReservation =
         this.options.registry.reserveSubmitCriticalSection();
+      const workerLease = this.acquireWorkerLease(admission.job.id);
+      if (this.options.workerLeases !== undefined && workerLease === null) {
+        submitReservation.cancel();
+        await disposeAll(ownedPrepared);
+        ownsPrepared = false;
+        admission.lease.release();
+        return this.handle(admission.job);
+      }
       const scheduled = this.options.registry.startOnce(
         admission.job.id,
-        () => this.runInitial(
+        () => this.withWorkerLease(workerLease, (assertOwnership) => this.runInitial(
           admission.job,
           request,
           admission.runtime,
           admission.model,
           admission.job.spaceId,
-          prepared,
+          workerPrepared,
           admission.lease,
-          submitReservation
-        )
+          submitReservation,
+          assertOwnership
+        ))
       );
       if (!scheduled.started) {
         submitReservation.cancel();
@@ -268,17 +399,71 @@ implements GenerationCoordinator {
     if (lease === null) return Promise.resolve(this.handle(job));
     const scheduled = this.options.registry.startOnce(
       job.id,
-      () => this.resumeRecovered(job, lease)
+      () => this.recoveryResumeRunner(job, lease)
     );
     void scheduled.promise.catch(() => undefined);
     return Promise.resolve(this.handle(this.requireJob(job.id)));
   }
 
+  readonly queuedRecoveryRunner: QueuedRecoveryRunner = async (job, lease) => {
+    const snapshot = this.options.snapshots?.find(job.id);
+    if (snapshot === undefined || snapshot === null) {
+      this.failAndRelease(job.id, ["queued"], "missing_request_snapshot");
+      lease.release();
+      return;
+    }
+    const persistedAssets = this.options.assets?.listForJob(job.id, "input") ?? [];
+    const media: PreparedMedia[] = [];
+    try {
+      for (const asset of persistedAssets) {
+        const prepared = await this.options.assets?.prepared(asset);
+        if (prepared !== undefined) media.push(prepared);
+      }
+      const runtime = this.options.scheduler.restore(job);
+      const model = await runtime.catalog.resolve(
+        snapshot.request.model,
+        snapshot.request.sourceType,
+        true
+      );
+      const workerLease = this.acquireWorkerLease(job.id);
+      if (this.options.workerLeases !== undefined && workerLease === null) {
+        lease.release();
+        return;
+      }
+      const submitReservation = this.options.registry.reserveSubmitCriticalSection();
+      await this.withWorkerLease(workerLease, (assertOwnership) => this.runInitial(
+        job,
+        { ...snapshot.request, media: [], idempotencyKey: null },
+        runtime,
+        model,
+        job.spaceId,
+        media,
+        lease,
+        submitReservation,
+        assertOwnership
+      ));
+    } catch {
+      const current = this.options.repository.findById(job.id);
+      if (current?.status === "queued") {
+        this.failAndRelease(job.id, ["queued"], "queued_recovery_failed");
+      }
+      lease.release();
+    }
+  };
+
   readonly recoveryResumeRunner: RecoveryResumeRunner = async (
     job,
     lease
   ) => {
-    await this.resumeRecovered(job, lease);
+    const workerLease = this.acquireWorkerLease(job.id);
+    if (this.options.workerLeases !== undefined && workerLease === null) {
+      lease.release();
+      return;
+    }
+    await this.withWorkerLease(
+      workerLease,
+      () => this.resumeRecovered(job, lease)
+    );
   };
 
   async resumeRecovered(
@@ -313,7 +498,8 @@ implements GenerationCoordinator {
     spaceId: number,
     prepared: PreparedMedia[],
     lease: CapacityLease,
-    submitReservation: SubmitCriticalReservation
+    submitReservation: SubmitCriticalReservation,
+    assertWorkerOwnership: () => void = () => undefined
   ): Promise<void> {
     const remaining = new Set(prepared);
     let budgetState: "reserved" | "charged" | "released" = "reserved";
@@ -363,12 +549,31 @@ implements GenerationCoordinator {
       try {
         discovery = await runtime.discoveryLock.runExclusive(async () => {
           const baselineIds = await this.snapshotAssetIds(runtime, spaceId);
+          const capturedAt = this.now();
+          const submissionFence = this.currentFence();
+          this.options.executions?.captureBaseline({
+            jobId: job.id,
+            accountId: runtime.record.id,
+            requestFingerprint: job.requestFingerprint,
+            upstreamFingerprint,
+            catalogRevision: model.rawRevision,
+            baselineAssetIds: [...baselineIds],
+            capturedAt,
+            ...(submissionFence === undefined ? {} : { fence: submissionFence })
+          });
           const submitting = this.transition(job.id, ["queued"], {
             status: "submitting",
-            submittedAt: this.now(),
+            submittedAt: capturedAt,
             upstreamFingerprint
           });
+          this.options.executions?.markSubmitting(
+            job.id,
+            capturedAt,
+            this.currentFence()
+          );
           await submitReservation.run(async () => {
+            assertWorkerOwnership();
+            let ambiguous = false;
             try {
               await runtime.transport.submitOnce(
                 GENERATION_ENDPOINT,
@@ -377,6 +582,11 @@ implements GenerationCoordinator {
             } catch (cause) {
               if (!(cause instanceof SubmitAmbiguousError)) {
                 const diagnostics = upstreamDiagnostics(cause);
+                this.options.executions?.markRejected(
+                  job.id,
+                  this.now(),
+                  this.currentFence()
+                );
                 failAndRelease(
                   submitting.id,
                   ["submitting"],
@@ -405,7 +615,19 @@ implements GenerationCoordinator {
                 }, "generation submit rejected");
                 throw cause;
               }
+              ambiguous = true;
+              this.options.executions?.markAmbiguous(
+                job.id,
+                "submit_transport_ambiguous",
+                this.now(),
+                this.currentFence()
+              );
             }
+            if (!ambiguous) this.options.executions?.markSubmitted(
+              job.id,
+              this.now(),
+              this.currentFence()
+            );
             charge();
           });
           const discovering = this.transition(
@@ -486,10 +708,12 @@ implements GenerationCoordinator {
       if (current.status !== "discovering") return;
       let discovery: DiscoveryResult;
       try {
+        const persistedBaseline = this.options.executions
+          ?.findSubmission(current.id)?.baselineAssetIds ?? [];
         discovery = await runtime.discoveryLock.runExclusive(
           () => this.discovererFor(runtime).discover(
             current,
-            new Set(),
+            new Set(persistedBaseline),
             this.pollerAbort.signal
           )
         );
@@ -589,12 +813,19 @@ implements GenerationCoordinator {
       }
       const holdUntil = existingHoldUntil
         ?? this.now() + this.options.unknownCapacityHoldMs;
+      const unknownReason = result.kind === "ambiguous"
+        ? "generation_discovery_ambiguous"
+        : "generation_discovery_timeout";
+      this.options.executions?.markCorrelationAmbiguous(
+        jobId,
+        unknownReason,
+        this.now(),
+        this.currentFence()
+      );
       const unknown = this.persistUnknown(
         jobId,
         ["discovering", "processing"],
-        result.kind === "ambiguous"
-          ? "generation_discovery_ambiguous"
-          : "generation_discovery_timeout",
+        unknownReason,
         holdUntil,
         runtime
       );
@@ -611,6 +842,15 @@ implements GenerationCoordinator {
       this.expireBoundUnknown(runtime, this.now());
       return;
     }
+    const correlationFence = this.currentFence();
+    this.options.executions?.correlate({
+      jobId,
+      upstreamTaskId: asset.taskId,
+      upstreamAssetId: asset.id,
+      creationCode: asset.creationCode,
+      correlatedAt: this.now(),
+      ...(correlationFence === undefined ? {} : { fence: correlationFence })
+    });
     const processing = this.transition(
       jobId,
       ["discovering", "unknown"],
@@ -619,6 +859,9 @@ implements GenerationCoordinator {
         creationCode: asset.creationCode,
         upstreamTaskId: asset.taskId,
         discoveredAt: this.now(),
+        processingDeadlineAt: this.now() + this.processingTimeoutMs,
+        reconcileAfter: null,
+        uncertaintyReason: null,
         errorCode: null
       }
     );
@@ -669,6 +912,33 @@ implements GenerationCoordinator {
     let current = initial;
     const poller = this.pollerFor(runtime);
     for (;;) {
+      const deadline = current.processingDeadlineAt
+        ?? (current.discoveredAt === null
+          ? this.now() + this.processingTimeoutMs
+          : current.discoveredAt + this.processingTimeoutMs);
+      if (this.now() >= deadline) {
+        const reconcileAfter = this.now() + this.reconciliationDelayMs;
+        this.options.executions?.markProviderStatusUnknown(
+          current.id,
+          "processing_deadline_exceeded",
+          this.now(),
+          this.currentFence()
+        );
+        this.persistUnknown(
+          current.id,
+          ["processing"],
+          "generation_processing_deadline_exceeded",
+          reconcileAfter,
+          runtime,
+          {
+            processingDeadlineAt: deadline,
+            reconcileAfter,
+            uncertaintyReason: "provider_status_unknown"
+          }
+        );
+        lease.release();
+        return;
+      }
       try {
         const next = await poller.poll(
           current,
@@ -678,6 +948,36 @@ implements GenerationCoordinator {
           this.notifier.notify(next.id);
         }
         current = next;
+        if (current.status === "processing") {
+          current = this.transition(current.id, ["processing"], {
+            status: "processing",
+            processingDeadlineAt: deadline,
+            pollAttempts: (current.pollAttempts ?? 0) + 1,
+            lastPolledAt: this.now()
+          });
+        }
+        if (current.status === "completed") {
+          if(current.kind==="video"&&current.result!==null&&this.options.outputArchiver!==undefined){
+            try{
+              const archived=await this.options.outputArchiver.archiveAll({jobId:current.id,userId:current.userId??"usr_legacy",projectId:current.projectId??"prj_legacy",outputs:current.result.outputs});
+              this.options.repository.replaceArchivedResult?.(current.id,{outputs:archived});
+              current=this.requireJob(current.id);
+            }catch(cause){this.options.repository.markArchiveFailure?.(current.id,cause instanceof Error?cause.message:"archive failed");}
+          }
+          this.options.executions?.markProviderTerminal(
+            current.id,
+            "provider_succeeded",
+            this.now(),
+            this.currentFence()
+          );
+        } else if (current.status === "failed") {
+          this.options.executions?.markProviderTerminal(
+            current.id,
+            "provider_failed",
+            this.now(),
+            this.currentFence()
+          );
+        }
         this.refreshProcessingLease(current, runtime);
       } catch {
         this.pollerAbort.signal.throwIfAborted();
@@ -703,11 +1003,16 @@ implements GenerationCoordinator {
     expectedStatuses: readonly JobStatus[],
     errorCode: string,
     holdUntil: number,
-    runtime: AccountRuntime
+    runtime: AccountRuntime,
+    details: Pick<
+      JobTransition,
+      "processingDeadlineAt" | "reconcileAfter" | "uncertaintyReason"
+    > = {}
   ): JobRecord {
     const unknown = this.transition(jobId, expectedStatuses, {
       status: "unknown",
       unknownHoldUntil: holdUntil,
+      ...details,
       errorCode
     });
     this.refreshBoundCapacity(unknown, runtime);
@@ -818,7 +1123,13 @@ implements GenerationCoordinator {
 
   private pollerFor(runtime: AccountRuntime): LingjingTaskPoller {
     return new LingjingTaskPoller({
-      repository: this.options.repository,
+      repository: {
+        transition: (id, expectedStatuses, transition) => this.transition(
+          id,
+          expectedStatuses,
+          transition
+        )
+      },
       transport: runtime.transport,
       now: this.now
     });
@@ -883,15 +1194,75 @@ implements GenerationCoordinator {
     runtime.capacity.expireUnknown(now);
   }
 
+  private acquireWorkerLease(jobId: string): WorkerLease | null {
+    return this.options.workerLeases?.acquire(
+      jobId,
+      this.workerId,
+      this.workerLeaseDurationMs
+    ) ?? null;
+  }
+
+  private async withWorkerLease(
+    initialLease: WorkerLease | null,
+    operation: (assertOwnership: () => void) => Promise<void>
+  ): Promise<void> {
+    if (initialLease === null) {
+      await operation(() => undefined);
+      return;
+    }
+    const repository = this.options.workerLeases;
+    if (repository === undefined || !repository.owns(initialLease)) {
+      throw new Error("Worker lease ownership was lost before execution");
+    }
+    let currentLease = initialLease;
+    let lost = false;
+    const assertOwnership = (): void => {
+      if (lost || !repository.owns(currentLease)) {
+        lost = true;
+        throw new Error("Worker lease ownership was lost");
+      }
+    };
+    const timer = setInterval(() => {
+      if (lost) return;
+      const renewed = repository.heartbeat(
+        currentLease,
+        this.workerLeaseDurationMs
+      );
+      if (renewed === null) lost = true;
+      else currentLease = renewed;
+    }, this.workerLeaseHeartbeatMs);
+    timer.unref();
+    try {
+      await this.fenceContext.run(currentLease, () => operation(assertOwnership));
+    } finally {
+      clearInterval(timer);
+      repository.release(currentLease);
+    }
+  }
+
+  private currentFence(): JobFence | undefined {
+    const lease = this.fenceContext.getStore();
+    return lease === undefined
+      ? undefined
+      : {
+          workerId: lease.workerId,
+          leaseToken: lease.leaseToken,
+          fencingToken: lease.fencingToken,
+          now: this.now()
+        };
+  }
+
   private transition(
     id: string,
     expectedStatuses: readonly JobStatus[],
     transition: JobTransition
   ): JobRecord {
+    const fence = this.currentFence();
     const job = this.options.repository.transition(
       id,
       expectedStatuses,
-      transition
+      transition,
+      fence
     );
     this.notifier.notify(id);
     return job;

@@ -7,6 +7,7 @@ import {
   errorResponseSchema,
   routeSchema
 } from "../schema.js";
+import { requireScope } from "../principal.js";
 import type { AppDependencies } from "../types.js";
 
 export const modelQuerySchema = z.object({
@@ -54,6 +55,7 @@ export function registerModelRoutes(
       }
     })
   }, async (request) => {
+    requireScope(request, "models:read");
     const query = modelQuerySchema.parse(request.query);
     const sources = sourceTypes(query);
     const groups = await Promise.all(

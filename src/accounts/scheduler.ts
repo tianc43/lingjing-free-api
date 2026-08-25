@@ -225,6 +225,11 @@ export class AccountScheduler {
         try {
           result = this.options.admissions.reserveOrGet({
             jobId,
+            userId: input.request.principal?.userId ?? "usr_legacy",
+            projectId: input.request.principal?.projectId ?? "prj_legacy",
+            apiKeyId: input.request.principal?.apiKeyId === "key_legacy_environment"
+              ? null
+              : input.request.principal?.apiKeyId ?? null,
             kind: input.request.kind,
             sourceType: input.request.sourceType,
             model: input.request.model,
@@ -257,6 +262,8 @@ export class AccountScheduler {
 
         accountLease.release();
         globalLease.release();
+        if (result.outcome === "project_quota_exhausted") throw errors.insufficientQuota();
+        if (result.outcome === "project_capacity_exhausted") throw errors.capacityExhausted();
         if (result.outcome === "existing") {
           transferred = true;
           return {

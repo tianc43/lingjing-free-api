@@ -294,6 +294,116 @@ describe("administrator API", () => {
     ]);
   });
 
+  it("lists models and submits a text-only playground request", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const coordinator = fixture.dependencies.coordinator as unknown as {
+      create: ReturnType<typeof import("vitest").vi.fn>;
+    };
+    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>).mockResolvedValue(
+      (await import("../helpers/test-app.js")).imageModel
+    );
+    coordinator.create.mockResolvedValue({
+      job: {
+        id: "playground-job",
+        idempotencyKey: null,
+        requestHash: fixtureHash(),
+        kind: "image",
+        model: "fixture-image",
+        status: "queued",
+        upstreamTaskId: null,
+        result: null,
+        errorCode: null,
+        quotedPoints: null,
+        accountId: "legacy",
+        submittedAt: null,
+        discoveredAt: null,
+        completedAt: null,
+        failedAt: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      }
+    });
+
+    const models = await fixture.app.inject({
+      url: "/admin/api/playground/models?type=image",
+      headers: { cookie }
+    });
+    expect(models.statusCode).toBe(200);
+    expect(models.json()).toMatchObject({
+      models: [{ id: "fixture-image", type: "image", display_name: "Fixture Image" }]
+    });
+    expect(models.body).not.toContain("private-ref-id");
+
+    const run = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/playground/run",
+      payload: {
+        kind: "image",
+        model: "fixture-image",
+        prompt: "Fixture prompt",
+        parameters: {}
+      }
+    });
+    expect(run.statusCode).toBe(202);
+    expect(run.json()).toMatchObject({ job: { id: "playground-job", status: "queued" } });
+    expect(coordinator.create).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "image",
+      sourceType: "image-generation",
+      model: "fixture-image",
+      values: { prompt: "Fixture prompt" },
+      media: []
+    }));
+  });
+
+  it("creates users, projects and project-scoped API keys", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const userResponse = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/users",
+      payload: { name: "Studio A" }
+    });
+    expect(userResponse.statusCode).toBe(201);
+    const user = userResponse.json<{ user: { id: string } }>().user;
+    const projectResponse = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/projects",
+      payload: { user_id: user.id, name: "Campaign" }
+    });
+    expect(projectResponse.statusCode).toBe(201);
+    const project = projectResponse.json<{ project: { id: string } }>().project;
+    const keyResponse = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/api-keys",
+      payload: {
+        name: "Video worker",
+        user_id: user.id,
+        project_id: project.id,
+        scopes: ["models:read", "video:create", "video:read"]
+      }
+    });
+    expect(keyResponse.statusCode).toBe(201);
+    expect(keyResponse.json()).toMatchObject({
+      key: {
+        user_id: user.id,
+        project_id: project.id,
+        scopes: ["models:read", "video:create", "video:read"]
+      }
+    });
+    const secret = keyResponse.json<{ api_key: string }>().api_key;
+    const apiKeys = fixture.dependencies.apiKeys as unknown as {
+      authenticate(token: string): { projectId: string } | null;
+    };
+    expect(apiKeys.authenticate(secret)?.projectId).toBe(project.id);
+    await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: `/admin/api/projects/${project.id}/status`,
+      payload: { status: "disabled" }
+    });
+    expect(apiKeys.authenticate(secret)).toBeNull();
+  });
+
   it("creates, lists, disables, enables and revokes a managed API key", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);

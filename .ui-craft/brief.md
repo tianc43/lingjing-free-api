@@ -20,7 +20,7 @@ Within 60 seconds, the operator can identify the account that needs action and c
 
 ## 5. Out of scope
 
-- Does not manage downstream users or downstream API keys.
+- Does not manage downstream users, tenants, or RBAC. It does manage operator-created downstream API keys for service access.
 - Does not implement roles, RBAC, OAuth, or multi-administrator collaboration.
 - Does not add historical charts or analytics beyond current operational summaries and task lists.
 - Does not provide theme switching.

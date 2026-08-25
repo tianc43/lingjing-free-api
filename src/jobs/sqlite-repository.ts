@@ -7,24 +7,29 @@ import type {
   JobListFilter,
   JobOutput,
   JobRecord,
+  JobFence,
   JobResult,
   JobStatus,
   JobTransition,
-  NewJob
+  NewJob,
+  ReconciliationFilter
 } from "./types.js";
 
 export const allowedTransitions: Record<JobStatus, JobStatus[]> = {
   queued: ["submitting", "failed"],
   submitting: ["discovering", "unknown", "failed"],
   discovering: ["processing", "completed", "unknown", "failed"],
-  processing: ["completed", "failed", "unknown"],
-  unknown: ["discovering", "processing", "completed", "failed"],
-  completed: [],
+  processing: ["processing", "completed", "failed", "unknown"],
+  unknown: ["unknown", "discovering", "processing", "completed", "failed"],
+  completed: ["completed"],
   failed: []
 };
 
 interface JobRow {
   id: string;
+  user_id: string;
+  project_id: string;
+  api_key_id: string | null;
   kind: "image" | "video";
   source_type: string;
   model: string;
@@ -46,6 +51,11 @@ interface JobRow {
   completed_at: number | null;
   failed_at: number | null;
   unknown_hold_until: number | null;
+  processing_deadline_at: number | null;
+  reconcile_after: number | null;
+  uncertainty_reason: string | null;
+  poll_attempts: number;
+  last_polled_at: number | null;
   error_code: string | null;
   result_json: string | null;
   created_at: number;
@@ -54,6 +64,9 @@ interface JobRow {
 
 const SELECT_COLUMNS = `
   id,
+  user_id,
+  project_id,
+  api_key_id,
   kind,
   source_type,
   model,
@@ -75,6 +88,11 @@ const SELECT_COLUMNS = `
   completed_at,
   failed_at,
   unknown_hold_until,
+  processing_deadline_at,
+  reconcile_after,
+  uncertainty_reason,
+  poll_attempts,
+  last_polled_at,
   error_code,
   result_json,
   created_at,
@@ -139,6 +157,9 @@ function parseResult(value: string | null): JobResult | null {
 function rowToJob(row: JobRow): JobRecord {
   return {
     id: row.id,
+    userId: row.user_id,
+    projectId: row.project_id,
+    apiKeyId: row.api_key_id,
     kind: row.kind,
     sourceType: row.source_type,
     model: row.model,
@@ -159,6 +180,11 @@ function rowToJob(row: JobRow): JobRecord {
     completedAt: row.completed_at,
     failedAt: row.failed_at,
     unknownHoldUntil: row.unknown_hold_until,
+    processingDeadlineAt: row.processing_deadline_at,
+    reconcileAfter: row.reconcile_after,
+    uncertaintyReason: row.uncertainty_reason,
+    pollAttempts: row.poll_attempts,
+    lastPolledAt: row.last_polled_at,
     errorCode: row.error_code,
     result: parseResult(row.result_json),
     createdAt: row.created_at,
@@ -206,6 +232,9 @@ export class SqliteJobRepository {
       database.prepare(`
         INSERT INTO jobs (
           id,
+          user_id,
+          project_id,
+          api_key_id,
           kind,
           source_type,
           model,
@@ -223,6 +252,9 @@ export class SqliteJobRepository {
           updated_at
         ) VALUES (
           @id,
+          @userId,
+          @projectId,
+          @apiKeyId,
           @kind,
           @sourceType,
           @model,
@@ -239,7 +271,14 @@ export class SqliteJobRepository {
           @now,
           @now
         )
-      `).run({ id, ...input, now });
+      `).run({
+        id,
+        userId: input.userId ?? "usr_legacy",
+        projectId: input.projectId ?? "prj_legacy",
+        apiKeyId: input.apiKeyId ?? null,
+        ...input,
+        now
+      });
       database.prepare(`
         INSERT INTO job_status_history(job_id, status, created_at)
         VALUES (?, 'queued', ?)
@@ -277,28 +316,87 @@ export class SqliteJobRepository {
       throw new RangeError("Job list limit must be a positive safe integer");
     }
     return this.read((database) => {
-      const rows = filter.status === undefined
-        ? database.prepare(`
-          SELECT ${SELECT_COLUMNS}
-          FROM jobs
-          ORDER BY created_at ASC, rowid ASC
-          LIMIT ?
-          `).all(filter.limit) as JobRow[]
-        : database.prepare(`
-          SELECT ${SELECT_COLUMNS}
-          FROM jobs
-          WHERE status = ?
-          ORDER BY created_at ASC, rowid ASC
-          LIMIT ?
-          `).all(filter.status, filter.limit) as JobRow[];
+      if (filter.kind !== undefined || filter.before !== undefined) {
+        const clauses = [
+          ...(filter.projectId === undefined ? [] : ["project_id = @projectId"]),
+          ...(filter.status === undefined ? [] : ["status = @status"]),
+          ...(filter.kind === undefined ? [] : ["kind = @kind"]),
+          ...(filter.before === undefined ? [] : ["created_at < @before"])
+        ];
+        const rows = database.prepare(`SELECT ${SELECT_COLUMNS} FROM jobs ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY created_at DESC,rowid DESC LIMIT @limit`).all({
+          projectId: filter.projectId ?? null, status: filter.status ?? null,
+          kind: filter.kind ?? null, before: filter.before ?? null, limit: filter.limit
+        }) as JobRow[];
+        return rows.map(rowToJob);
+      }
+      const rows = filter.projectId === undefined
+        ? filter.status === undefined
+          ? database.prepare(`
+            SELECT ${SELECT_COLUMNS} FROM jobs
+            ORDER BY created_at ASC, rowid ASC LIMIT ?
+            `).all(filter.limit) as JobRow[]
+          : database.prepare(`
+            SELECT ${SELECT_COLUMNS} FROM jobs WHERE status = ?
+            ORDER BY created_at ASC, rowid ASC LIMIT ?
+            `).all(filter.status, filter.limit) as JobRow[]
+        : filter.status === undefined
+          ? database.prepare(`
+            SELECT ${SELECT_COLUMNS} FROM jobs WHERE project_id = ?
+            ORDER BY created_at ASC, rowid ASC LIMIT ?
+            `).all(filter.projectId, filter.limit) as JobRow[]
+          : database.prepare(`
+            SELECT ${SELECT_COLUMNS} FROM jobs WHERE project_id = ? AND status = ?
+            ORDER BY created_at ASC, rowid ASC LIMIT ?
+            `).all(filter.projectId, filter.status, filter.limit) as JobRow[];
       return rows.map((row) => rowToJob(row));
+    });
+  }
+
+  reconciliationDue(filter: ReconciliationFilter): JobRecord[] {
+    if (
+      !Number.isFinite(filter.dueAt)
+      || !Number.isSafeInteger(filter.limit)
+      || filter.limit < 1
+      || filter.limit > 1000
+    ) {
+      throw new RangeError("Invalid reconciliation filter");
+    }
+    return this.read((database) => (database.prepare(`
+      SELECT ${SELECT_COLUMNS}
+      FROM jobs
+      WHERE status = 'unknown'
+        AND uncertainty_reason = 'provider_status_unknown'
+        AND reconcile_after IS NOT NULL
+        AND reconcile_after <= ?
+        AND upstream_task_id IS NOT NULL
+      ORDER BY reconcile_after ASC, created_at ASC
+      LIMIT ?
+    `).all(filter.dueAt, filter.limit) as JobRow[]).map(rowToJob));
+  }
+
+  archiveDue(now:number,limit:number):JobRecord[]{return this.read(db=>(db.prepare(`SELECT ${SELECT_COLUMNS} FROM jobs WHERE status='completed' AND archive_status='failed' AND archive_retry_at<=? ORDER BY archive_retry_at LIMIT ?`).all(now,limit) as JobRow[]).map(rowToJob));}
+  replaceArchivedResult(id:string,result:JobResult,fence?:JobFence):void{this.immediate(db=>{if(fence!==undefined){const owned=db.prepare("SELECT 1 FROM job_worker_leases WHERE job_id=? AND worker_id=? AND lease_token=? AND fencing_token=? AND lease_expires_at>?").get(id,fence.workerId,fence.leaseToken,fence.fencingToken,fence.now);if(owned===undefined)throw new Error("Worker lease fencing conflict");}const now=Date.now(),safe=sanitizeResult(result);db.prepare("UPDATE jobs SET result_json=?,archive_status='complete',archive_error=NULL,archive_retry_at=NULL,updated_at=? WHERE id=? AND status='completed'").run(JSON.stringify(safe),now,id);const job=this.findRow(db,id);if(job?.kind==="video"&&safe?.outputs.every(output=>output.url.startsWith("/v1/assets/"))){const endpoint=db.prepare("SELECT 1 FROM webhook_endpoints WHERE project_id=? AND enabled=1").get(job.project_id);if(endpoint!==undefined)db.prepare(`INSERT INTO webhook_outbox(id,project_id,job_id,event_type,payload_json,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,'video.completed',?,'pending',?,?,?) ON CONFLICT(job_id,event_type) DO NOTHING`).run(`evt_${randomBytes(16).toString("hex")}`,job.project_id,id,JSON.stringify({id,status:"completed",outputs:safe.outputs}),now,now,now);}});}
+  markArchiveFailure(id:string,error:string,fence?:JobFence):void{this.immediate(db=>{if(fence!==undefined){const owned=db.prepare("SELECT 1 FROM job_worker_leases WHERE job_id=? AND worker_id=? AND lease_token=? AND fencing_token=? AND lease_expires_at>?").get(id,fence.workerId,fence.leaseToken,fence.fencingToken,fence.now);if(owned===undefined)throw new Error("Worker lease fencing conflict");}const row=db.prepare("SELECT archive_attempts FROM jobs WHERE id=?").get(id) as{archive_attempts:number}|undefined;if(!row)return;const attempts=row.archive_attempts+1;db.prepare("UPDATE jobs SET archive_status='failed',archive_attempts=?,archive_retry_at=?,archive_error=?,updated_at=? WHERE id=?").run(attempts,Date.now()+Math.min(3600000,1000*2**Math.min(attempts,10)),error.slice(0,500),Date.now(),id);});}
+
+  cancelQueued(id: string, projectId: string): JobRecord | null {
+    return this.immediate((database) => {
+      const row = this.findRow(database,id);
+      if (!row || row.project_id!==projectId || row.kind!=="video") return null;
+      if (row.status!=="queued") throw new Error("Only queued jobs can be cancelled");
+      const now=Date.now();
+      database.prepare("UPDATE jobs SET status='failed',failed_at=?,error_code='cancelled_before_submit',updated_at=? WHERE id=?").run(now,now,id);
+      database.prepare("INSERT INTO job_status_history(job_id,status,created_at) VALUES(?,'failed',?)").run(id,now);
+      const released=database.prepare("UPDATE budget_entries SET state='released',updated_at=? WHERE job_id=? AND state='reserved'").run(now,id).changes;
+      if(released===1){database.prepare(`INSERT INTO usage_ledger(id,job_id,user_id,project_id,api_key_id,account_id,entry_type,points,reason,created_at) VALUES(?,?,?,?,?,?,'release',?,'cancelled_before_submit',?) ON CONFLICT(job_id,entry_type,reason) DO NOTHING`).run(`led_${randomBytes(16).toString("hex")}`,id,row.user_id,row.project_id,row.api_key_id,row.account_id,row.quote_known===1?row.quoted_points:0,now);}
+      const cancelled=this.findRow(database,id);return cancelled?rowToJob(cancelled):null;
     });
   }
 
   transition(
     id: string,
     expectedStatuses: readonly JobStatus[],
-    transition: JobTransition
+    transition: JobTransition,
+    fence?: JobFence
   ): JobRecord {
     if (transition.upstreamFingerprint !== undefined && transition.upstreamFingerprint !== null) {
       assertSha256(transition.upstreamFingerprint, "upstreamFingerprint");
@@ -314,6 +412,20 @@ export class SqliteJobRepository {
       throw new TypeError("Unknown jobs require a finite hold deadline");
     }
     return this.immediate((database) => {
+      if (fence !== undefined) {
+        const owned = database.prepare(`
+          SELECT 1 AS owned FROM job_worker_leases
+          WHERE job_id = ? AND worker_id = ? AND lease_token = ?
+            AND fencing_token = ? AND lease_expires_at > ?
+        `).get(
+          id,
+          fence.workerId,
+          fence.leaseToken,
+          fence.fencingToken,
+          fence.now
+        ) as { owned: 1 } | undefined;
+        if (owned === undefined) throw new Error("Worker lease fencing conflict");
+      }
       const currentRow = this.findRow(database, id);
       if (currentRow === undefined) {
         throw new Error(`Job ${id} does not exist`);
@@ -330,9 +442,9 @@ export class SqliteJobRepository {
       }
 
       const current = rowToJob(currentRow);
-      const result = transition.result === undefined
-        ? current.result
-        : sanitizeResult(transition.result);
+      const result = transition.archivedResult !== undefined
+        ? sanitizeResult(transition.archivedResult)
+        : transition.result === undefined ? current.result : sanitizeResult(transition.result);
       const now = Date.now();
       database.prepare(`
         UPDATE jobs
@@ -346,6 +458,11 @@ export class SqliteJobRepository {
           completed_at = @completedAt,
           failed_at = @failedAt,
           unknown_hold_until = @unknownHoldUntil,
+          processing_deadline_at = @processingDeadlineAt,
+          reconcile_after = @reconcileAfter,
+          uncertainty_reason = @uncertaintyReason,
+          poll_attempts = @pollAttempts,
+          last_polled_at = @lastPolledAt,
           error_code = @errorCode,
           result_json = @resultJson,
           updated_at = @updatedAt
@@ -369,6 +486,19 @@ export class SqliteJobRepository {
         unknownHoldUntil: transition.status === "unknown"
           ? transition.unknownHoldUntil ?? current.unknownHoldUntil
           : null,
+        processingDeadlineAt: transition.processingDeadlineAt === undefined
+          ? current.processingDeadlineAt
+          : transition.processingDeadlineAt,
+        reconcileAfter: transition.reconcileAfter === undefined
+          ? current.reconcileAfter
+          : transition.reconcileAfter,
+        uncertaintyReason: transition.uncertaintyReason === undefined
+          ? current.uncertaintyReason
+          : transition.uncertaintyReason,
+        pollAttempts: transition.pollAttempts ?? current.pollAttempts,
+        lastPolledAt: transition.lastPolledAt === undefined
+          ? current.lastPolledAt
+          : transition.lastPolledAt,
         errorCode: transition.errorCode === undefined
           ? current.errorCode
           : transition.errorCode,
@@ -379,6 +509,21 @@ export class SqliteJobRepository {
         INSERT INTO job_status_history(job_id, status, created_at)
         VALUES (?, ?, ?)
       `).run(id, transition.status, now);
+      const terminal = transition.status === "completed" || transition.status === "failed";
+      const outputUrlsControlled = result?.outputs.every(output=>output.url.startsWith("/v1/assets/")) ?? false;
+      if (terminal && current.kind === "video" && (transition.status === "failed" || outputUrlsControlled)) {
+        const endpoint = database.prepare("SELECT 1 FROM webhook_endpoints WHERE project_id=? AND enabled=1").get(current.projectId);
+        if (endpoint !== undefined) {
+          const eventType = transition.status === "completed" ? "video.completed" : "video.failed";
+          const payload = transition.status === "completed"
+            ? { id, status: "completed", outputs: result?.outputs ?? [] }
+            : { id, status: "failed", error: { code: transition.errorCode ?? current.errorCode } };
+          database.prepare(`
+            INSERT INTO webhook_outbox(id,project_id,job_id,event_type,payload_json,status,next_attempt_at,created_at,updated_at)
+            VALUES(?,?,?,?,?,'pending',?,?,?) ON CONFLICT(job_id,event_type) DO NOTHING
+          `).run(`evt_${randomBytes(16).toString("hex")}`,current.projectId,id,eventType,JSON.stringify(payload),now,now,now);
+        }
+      }
       const updated = this.findRow(database, id);
       if (updated === undefined) {
         throw new Error("Transitioned job could not be read");

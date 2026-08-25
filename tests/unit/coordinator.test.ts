@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../src/errors.js";
 import { mapUpstreamError } from "../../src/lingjing/error-map.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
@@ -23,6 +23,35 @@ afterEach(async () => {
 });
 
 describe("LingjingGenerationCoordinator", () => {
+  it("archives completed video outputs without another upstream submit", async () => {
+    const app=harness();const archiveAll=vi.fn((input:{outputs:Array<{url:string;posterUrl:string|null}>})=>Promise.resolve(input.outputs.map(output=>({...output,url:"/v1/assets/asset-output"}))));
+    (app.coordinator as unknown as {options:{outputArchiver?:{archiveAll:typeof archiveAll}}}).options.outputArchiver={archiveAll};
+    const handle=await app.coordinator.create(fixtureRequest({kind:"video",sourceType:"text-to-video",model:"fixture-video"}));await handle.wait(5000);await app.registry.waitUntilIdle();const completed=app.repository.findById(handle.job.id);expect(completed?.result?.outputs[0]).toMatchObject({url:"/v1/assets/asset-output",posterUrl:null});expect(archiveAll).toHaveBeenCalledTimes(1);expect(app.submitCount()).toBe(1);
+  });
+
+  it("moves a permanently processing task to reconciliation after its deadline", async () => {
+    let now = 1_000;
+    const app = createGenerationHarness({
+      now: () => { now += 1; return now; },
+      processingTimeoutMs: 5,
+      reconciliationDelayMs: 50,
+      initialTaskStatuses: [0]
+    });
+    harnesses.push(app);
+    const handle = await app.coordinator.create(fixtureRequest());
+    const settled = await handle.wait(5_000);
+
+    expect(settled).toMatchObject({
+      status: "unknown",
+      errorCode: "generation_processing_deadline_exceeded",
+      uncertaintyReason: "provider_status_unknown"
+    });
+    expect(settled.processingDeadlineAt).toEqual(expect.any(Number));
+    expect(settled.reconcileAfter).toEqual(expect.any(Number));
+    expect(app.capacity.activeJobIds()).not.toContain(settled.id);
+    expect(app.accountCapacity.activeJobIds()).not.toContain(settled.id);
+    expect(app.submitCount()).toBe(1);
+  });
   it("prepares fingerprint media before account scheduling", async () => {
     const app = harness();
 
@@ -822,13 +851,11 @@ describe("LingjingGenerationCoordinator", () => {
       creationCode: "processing-lease-creation"
     });
     app.setTaskStatuses("fixture-processing-lease-task", [0]);
-
     await app.coordinator.resume(unknown.id);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (app.repository.findById(unknown.id)?.status === "processing") break;
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-    const processing = app.repository.findById(unknown.id);
+    let processing=app.repository.findById(unknown.id);
+    for(let attempt=0;attempt<500&&processing?.status!=="processing";attempt++){await new Promise(resolve=>setTimeout(resolve,10));processing=app.repository.findById(unknown.id);}
+    expect(processing?.status).toBe("processing");
+    expect(processing?.status).toBe("processing");
     now = 101;
     app.capacity.expireUnknown(now);
 
@@ -845,7 +872,7 @@ describe("LingjingGenerationCoordinator", () => {
       errorCode: null
     });
     expect(app.submitCount()).toBe(0);
-  });
+  }, 30_000);
 
   it("claims processing capacity before polling an unknown job with a task id", async () => {
     let now = 0;

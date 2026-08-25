@@ -15,7 +15,7 @@ import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repos
 import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import { parseConfig } from "../../src/config.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
-import { startServer, type RunningServer } from "../../src/index.js";
+import { startServer, type SqliteRunningServer } from "../../src/index.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type {
   LingjingTransport,
@@ -78,7 +78,7 @@ function withAccountRuntime(
 }
 
 describe("server lifecycle", () => {
-  let runtime: RunningServer | undefined;
+  let runtime: SqliteRunningServer | undefined;
   let directory: string | undefined;
 
   afterEach(async () => {
@@ -558,7 +558,7 @@ describe("server lifecycle", () => {
     reservation.cancel();
 
     await runtime.stop();
-    expect(() => runtime?.repository.findById("missing")).toThrow(
+    expect(() => {if(runtime===undefined)throw new Error("runtime missing");return runtime.repository.findById("missing");}).toThrow(
       "Job repository is closed"
     );
   });

@@ -544,7 +544,7 @@ describe("multi-account administrator lifecycle", () => {
         mode: "text-to-video"
       }
     });
-    expect(video.statusCode).toBe(200);
+    expect(video.statusCode, video.body).toBe(200);
     const videoBody = video.json<{
       created: number;
       job_id: string;

@@ -1,6 +1,8 @@
 import type {
   CapacityLease,
+  JobFence,
   JobRecord,
+  JobResult,
   JobStatus,
   JobTransition,
   NewJob
@@ -9,11 +11,17 @@ import type { MediaInput, PreparedMedia } from "../media/types.js";
 import type { NormalizedModel, SourceType } from "../models/types.js";
 
 export interface GenerationRequest {
+  principal?: {
+    userId: string;
+    projectId: string;
+    apiKeyId: string;
+  };
   kind: "image" | "video";
   sourceType: SourceType;
   model: string;
   values: Record<string, unknown>;
   media: MediaInput[];
+  persistentAssetIds?: string[];
   idempotencyKey: string | null;
 }
 
@@ -53,10 +61,13 @@ export interface JobRunnerRegistry {
 export interface GenerationRepository {
   createOrGet(input: NewJob): { created: boolean; job: JobRecord };
   findById(id: string): JobRecord | null;
+  markArchiveFailure?(id:string,error:string,fence?:JobFence):void;
+  replaceArchivedResult?(id:string,result:JobResult,fence?:JobFence):void;
   transition(
     id: string,
     expectedStatuses: readonly JobStatus[],
-    transition: JobTransition
+    transition: JobTransition,
+    fence?: JobFence
   ): JobRecord;
 }
 
@@ -69,6 +80,11 @@ export interface PreparedGeneration {
 }
 
 export type RecoveryResumeRunner = (
+  job: JobRecord,
+  lease: CapacityLease
+) => Promise<void>;
+
+export type QueuedRecoveryRunner = (
   job: JobRecord,
   lease: CapacityLease
 ) => Promise<void>;
