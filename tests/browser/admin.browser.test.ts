@@ -50,6 +50,7 @@ let nextId = 1;
 let expireNext = false;
 let failSettings = false;
 let failHealth = false;
+let failModels = false;
 const output = resolve(process.cwd(), "dist", "admin");
 
 function overview() {
@@ -108,6 +109,7 @@ test.beforeAll(async () => {
     const hasSession =
       request.headers.cookie?.includes("admin=fixture-session") === true;
     if (url.pathname === "/v1/models" && request.method === "GET") {
+      if(failModels){json(response,{error:{message:"Lingjing login required",code:"lingjing_session_expired"}},503);return;}
       const type = url.searchParams.get("type");
       json(response, {
         object: "list",
@@ -428,6 +430,7 @@ test.beforeEach(() => {
   expireNext = false;
   failSettings = false;
   failHealth = false;
+  failModels = false;
   nextId = 1;
   apiKeys = [];
   accounts = [
@@ -579,7 +582,7 @@ for (const viewport of [
     await expect(page.getByRole("button", { name: "Add account" })).toBeFocused();
     await page.getByRole("button", { name: "Add account" }).click();
     await expect(page.getByRole("link", { name: "Open Lingjing login" })).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
-    await expect(page.getByText("Opening Lingjing does not import cookies automatically.")).toBeVisible();
+    await expect(page.getByText(/Paste it only here—never in chat, logs, or Git/u)).toBeVisible();
     await page.getByLabel("Priority").fill("-1");
     await page.getByLabel("Daily point limit").fill("1.5");
     await page.getByLabel("Monthly point limit").fill("-2");
@@ -693,6 +696,8 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
   await page.getByRole("link", { name: "Subscriptions" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
 });
+
+test("shows login recovery guidance when Playground models need a session",async({page})=>{failModels=true;await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("Administrator password").fill("fixture-admin-password");await page.getByRole("button",{name:"Sign in"}).click();await page.getByRole("link",{name:"Playground"}).click();await expect(page.getByText("Connect a Lingjing account first")).toBeVisible();await expect(page.getByText("npm run login",{exact:false})).toBeVisible();await expect(page.getByRole("link",{name:"Open subscriptions"})).toHaveAttribute("href","/admin/accounts");});
 
 test("shows executable login commands for legacy and generated accounts", async ({
   page,
