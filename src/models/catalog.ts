@@ -206,8 +206,7 @@ export class CatalogService {
     }
 
     if (
-      (usesMaterialsUpload(raw) && !hasRequiredMaterialsMetadata(raw))
-      || next.rawRevision !== model.rawRevision
+      (usesMaterialsUpload(raw)&&!hasRequiredMaterialsMetadata(raw))||(sourceType==="image-generation"&&next.rawRevision!==model.rawRevision)
     ) {
       throw errors.catalogChanged();
     }

@@ -87,8 +87,7 @@ function mediaParameter(model: NormalizedModel): (
   const parameters = model.parameters.filter(
     (parameter) => parameter.kind === "image-list"
   );
-  if (parameters.length > 1) throw errors.catalogChanged();
-  return parameters[0];
+  return parameters.find(parameter=>parameter.required)??parameters[0];
 }
 
 export function validateGenerationMedia(
@@ -114,9 +113,7 @@ export function validateGenerationMedia(
   ) {
     throw errors.invalidRequest("Too many media inputs", "media");
   }
-  if (request.media.length > 0 && model.modelCode === null) {
-    throw errors.catalogChanged();
-  }
+
 }
 
 function capacityFull(cause: unknown): boolean {

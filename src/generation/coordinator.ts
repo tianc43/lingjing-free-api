@@ -657,14 +657,9 @@ implements GenerationCoordinator {
         return;
       }
 
-      await this.persistDiscoveryAndPoll(
-        job.id,
-        discovery,
-        runtime,
-        lease
-      );
-    } catch {
-      const current = this.options.repository.findById(job.id);
+      await this.persistDiscoveryAndPoll(job.id,discovery,runtime,lease);
+    } catch(cause){
+      const current=this.options.repository.findById(job.id);if(current?.status==="queued")this.logger.warn({job_id:job.id,error_code:cause instanceof Error?cause.message:"before_submit_failed"},"generation failed before submit");
       if (this.pollerAbort.signal.aborted) {
         lease.release();
         return;
