@@ -129,8 +129,8 @@ describe("buildPayload", () => {
       params: [
         {
           idx: "1",
-          name: "首帧图",
-          values: ["fixture/path.png"],
+          name: "1",
+          values: "fixture/path.png",
           filePath: ["fixture/path.png"]
         },
         { idx: "2", name: "提示词", values: "fixture prompt" },

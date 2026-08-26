@@ -129,9 +129,9 @@ export function buildPayload(input: {
     params.push(parameter.kind === "image-list"
       ? {
         idx: parameter.idx,
-        name: parameter.displayName,
-        values: checked,
-        filePath: checked as string[]
+        name:input.model.sourceType==="image-to-video"?parameter.idx:parameter.displayName,
+        values:input.model.sourceType==="image-to-video"?(checked as string[])[0]??"":checked,
+        filePath:checked as string[]
       }
       : {
         idx: parameter.idx,

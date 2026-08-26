@@ -537,7 +537,7 @@ implements GenerationCoordinator {
         ? request.values
         : {
             ...request.values,
-            [parameter.key]:uploaded.map(material=>material.frameUrl??material.value)
+            [parameter.key]:uploaded.map(material=>material.filePath)
           };
       const payload=buildPayload({model,spaceId,values});const priceService=typeof model.priceQuerySchema?.priceQueryService==="string"?model.priceQuerySchema.priceQueryService:null;if(priceService!==null){const params:Record<string,string|number|boolean>={};for(const parameter of model.parameters){const value=values[parameter.key]??parameter.defaultValue;if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params[parameter.key]=value;}if(priceService==="wan3"){params["shortVender"]="ali";params["shortSenceCode"]=model.sourceType==="image-to-video"?"i2v":"t2v";params["model_name"]="wan3";params["resolution"]=String(params["resolution"]??params["mode"]??"1080P");}const quoted=await runtime.transport.read<unknown>("/joycreator/AIModelApiConsole/calculatePrice",{method:"POST",body:{enablePriceQuery:true,priceQueryService:priceService,params}});const result=typeof quoted==="object"&&quoted!==null&&"result"in quoted?quoted.result:quoted;if(typeof result!=="object"||result===null||Array.isArray(result))throw errors.upstream();payload.priceQueryResult=Object.fromEntries(Object.entries(result));}
       const upstreamFingerprint = fingerprintUpstreamPayload(payload);

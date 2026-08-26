@@ -193,23 +193,21 @@ export class RemoteMediaFetcher {
 
       const contentTypeHeader = firstHeader(response.headers["content-type"]);
       const mediaType = contentTypeHeader?.split(";", 1)[0]?.trim().toLowerCase();
-      if (
-        mediaType === undefined
-        || !/^(?:image|video)\/[a-z0-9][a-z0-9.+-]*$/u.test(mediaType)
-        || !mediaType.startsWith(`${options.kind}/`)
-      ) {
+      const videoByExtension=options.kind==="video"&&/\.(?:mp4|webm|mov|m4v)$/iu.test(currentUrl.pathname),validMediaType=mediaType!==undefined&&(/^(?:image|video)\/[a-z0-9][a-z0-9.+-]*$/u.test(mediaType)&&mediaType.startsWith(`${options.kind}/`)||(videoByExtension&&(mediaType==="application/octet-stream"||mediaType==="text/plain")))||mediaType===undefined&&videoByExtension;
+      if(!validMediaType){
         abortBody(response.body);
         await dispatcher.close().catch(() => undefined);
         throw errors.invalidRequest("Unsupported remote media content type");
       }
 
+      const resolvedMediaType=mediaType??"video/mp4";
       try {
         const declaredSize = contentLength(
           response.headers["content-length"]
         );
         return await createPreparedTempFileFromStream(response.body, {
-          filename: filenameFor(currentUrl, mediaType),
-          contentType: mediaType,
+          filename:filenameFor(currentUrl,resolvedMediaType),
+          contentType:resolvedMediaType,
           tempDirectory: this.options.tempDirectory,
           tempBudget: this.options.tempBudget,
           requestBudget: this.options.requestBudget,
