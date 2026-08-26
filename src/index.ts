@@ -262,7 +262,7 @@ export async function startServer(
       }),
       fetchOutput: (
         url: URL,
-        options: { kind: "image"; maxBytes: number }
+        options:{kind:"image"|"video";maxBytes:number}
       ) => new RemoteMediaFetcher({
         tempDirectory,
         tempBudget: globalTempBudget,
