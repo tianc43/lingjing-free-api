@@ -320,7 +320,6 @@ export class AccountScheduler {
     const windows = budgetWindows(this.now());
     const candidates: Candidate[] = [];
     let validationError: AppError | null = null;
-    let validatedModel = false;
     for (const runtime of this.options.registry.listEnabled()) {
       const record = this.options.accounts.findById(runtime.record.id);
       if (
@@ -340,9 +339,7 @@ export class AccountScheduler {
           runtime.catalog.resolve(request.model, request.sourceType, true),
           runtime.account.describe()
         ]);
-      } catch {
-        continue;
-      }
+      }catch(cause){if(cause instanceof AppError)validationError??=cause;continue;}
       const [model, account] = resolved;
       try {
         validateGenerationMedia(request, model);
@@ -350,7 +347,6 @@ export class AccountScheduler {
         if (cause instanceof AppError) validationError ??= cause;
         continue;
       }
-      validatedModel = true;
       const quote = quotedPoints(model, request.values);
       if (quote === null) {
         if (
@@ -385,7 +381,7 @@ export class AccountScheduler {
     }
     return {
       candidates: candidates.sort(compareCandidates),
-      validationError: validatedModel ? null : validationError
+      validationError:validationError
     };
   }
 }

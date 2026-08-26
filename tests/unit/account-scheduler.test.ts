@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import{errors}from"../../src/errors.js";
 import { AccountScheduler } from "../../src/accounts/scheduler.js";
 import type { AccountRuntime } from "../../src/accounts/runtime.js";
 import type {
@@ -596,6 +597,8 @@ describe("AccountScheduler", () => {
     }));
     admitted.lease?.release();
   });
+
+  it("preserves a precise catalog error instead of reporting no eligible account",async()=>{const candidate=runtime(record("acct_precise"),{resolve:()=>Promise.reject(errors.catalogChanged())}),{scheduler}=schedulerFor([candidate]),global=scheduler.start();await expect(scheduler.admit({...admissionInput,globalAdmission:global})).rejects.toMatchObject({code:"model_catalog_changed",statusCode:409});global.release();});
 
   it("keeps account queue order as a subsequence of staggered global order", async () => {
     const slowModel = deferred<NormalizedModel>();
