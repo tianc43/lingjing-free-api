@@ -1,12 +1,1 @@
-import type { HealthStatus } from "../types";
-
-const labels: Record<HealthStatus, string> = {
-  ready: "Ready",
-  needs_login: "Needs login",
-  unhealthy: "Unhealthy",
-  unknown: "Unknown"
-};
-
-export function StatusPill({ status }: { status: HealthStatus }) {
-  return <span className={`status-pill status-${status}`}><span aria-hidden="true">●</span>{labels[status]}</span>;
-}
+import type{HealthStatus}from"../types";const labels:Record<HealthStatus,string>={ready:"就绪",needs_login:"需要登录",unhealthy:"异常",unknown:"未知"};export function StatusPill({status}:{status:HealthStatus}){return <span className={`status-pill status-${status}`}><span aria-hidden="true">●</span>{labels[status]}</span>;}

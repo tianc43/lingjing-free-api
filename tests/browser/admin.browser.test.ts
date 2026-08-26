@@ -48,7 +48,7 @@ let accounts: Account[] = [];
 let apiKeys: ApiKey[] = [];
 let nextId = 1;
 let expireNext = false;
-let failSettings = false;
+let fail运行环境 = false;
 let failHealth = false;
 let failModels = false;
 const output = resolve(process.cwd(), "dist", "admin");
@@ -203,13 +203,13 @@ test.beforeAll(async () => {
       });
       return;
     }
-    if (url.pathname === "/admin/api/settings" && failSettings) {
+    if (url.pathname === "/admin/api/settings" && fail运行环境) {
       json(
         response,
         {
           error: {
             code: "settings_unavailable",
-            message: "Settings unavailable",
+            message: "运行环境 unavailable",
           },
         },
         503,
@@ -428,7 +428,7 @@ test.afterAll(
 );
 test.beforeEach(() => {
   expireNext = false;
-  failSettings = false;
+  fail运行环境 = false;
   failHealth = false;
   failModels = false;
   nextId = 1;
@@ -460,23 +460,23 @@ test.beforeEach(() => {
 
 test("operator manages API access keys and copies service examples", async ({ page }) => {
   await page.goto("http://127.0.0.1:4174/admin/");
-  await page.getByLabel("Administrator password").fill("fixture-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("link", { name: "API keys" }).click();
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "API 密钥" }).click();
   await expect(page.getByText("http://127.0.0.1:4174/v1", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Create API key" }).click();
-  await page.getByLabel("Key name").fill("Dify");
-  await page.getByRole("button", { name: "Create key" }).click();
-  await expect(page.getByRole("dialog").getByText(/^ljk_/u)).toBeVisible();
-  await expect(page.getByText("This key is shown only once")).toBeVisible();
-  await page.getByRole("button", { name: "Done" }).click();
+  await page.getByRole("button", { name: "创建 API 密钥" }).click();
+  await page.getByLabel("密钥名称").fill("Dify");
+  await page.getByRole("button", { name: /创建密钥|创建 API 密钥/u }).last().click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText("此密钥仅显示一次")).toBeVisible();
+  await page.getByRole("button", { name: "完成" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
   await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", { exact: true })).toBeVisible();
   const imageExample = await page.locator(".command").filter({
-    has: page.getByText("Generate image", { exact: true })
+    has: page.getByText("生成图片", { exact: true })
   }).locator("code").innerText();
   const videoExample = await page.locator(".command").filter({
-    has: page.getByText("Generate video", { exact: true })
+    has: page.getByText("生成视频", { exact: true })
   }).locator("code").innerText();
   const executeExample = async (
     script: string,
@@ -503,13 +503,13 @@ test("operator manages API access keys and copies service examples", async ({ pa
   expect(videoExample).not.toContain("fixture-video");
   expect(videoExample).toContain("/v1/videos");
   expect(videoExample).not.toContain("/videos/generations");
-  await page.getByRole("button", { name: "Disable" }).click();
-  await expect(page.getByRole("button", { name: "Enable" })).toBeVisible();
-  await page.getByRole("button", { name: "Enable" }).click();
+  await page.getByRole("button", { name: "禁用" }).click();
+  await expect(page.getByRole("button", { name: "启用" })).toBeVisible();
+  await page.getByRole("button", { name: "启用" }).click();
   page.once("dialog", (dialog) => void dialog.accept());
-  await page.getByRole("button", { name: "Revoke" }).click();
-  await expect(page.getByText("Revoked")).toBeVisible();
-  await page.getByRole("link", { name: "Subscriptions" }).click();
+  await page.getByRole("button", { name: "撤销" }).click();
+  await expect(page.getByText("已撤销")).toBeVisible();
+  await page.getByRole("link", { name: "订阅账号" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
 });
 
@@ -524,52 +524,52 @@ for (const viewport of [
       if (viewport.name === "desktop")
         await page
           .getByRole("link", {
-            name: next === "overview" ? "Overview" : "Tasks",
+            name:next==="overview"?"总览":"任务",
           })
           .click();
-      else await page.getByLabel("Navigate").selectOption(next);
+      else await page.getByLabel("页面导航").selectOption(next);
     };
     await page.setViewportSize(viewport);
     await page.goto("http://127.0.0.1:4174/admin/");
     await expect(
-      page.getByRole("heading", { name: "Admin sign in" }),
+      page.getByRole("heading", { name: "管理员登录" }),
     ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("login.png"),
       fullPage: true,
     });
-    await page.getByLabel("Administrator password").fill("incorrect");
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByLabel("管理员密码").fill("incorrect");
+    await page.getByRole("button", { name: "登录" }).click();
     await expect(page.getByText("Incorrect password")).toBeVisible();
-    await expect(page.getByLabel("Administrator password")).toHaveAttribute("aria-describedby", "login-password-error");
+    await expect(page.getByLabel("管理员密码")).toHaveAttribute("aria-describedby", "login-password-error");
     await page
-      .getByLabel("Administrator password")
+      .getByLabel("管理员密码")
       .fill("fixture-admin-password");
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/\/admin\/accounts$/);
-    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
     const seedCheck = page.getByRole("button", {
-      name: "Refresh balance Seed account",
+      name: "刷新余额 Seed account",
     });
     await seedCheck.click();
     await expect(
-      page.getByText("Balance refreshed for Seed account"),
+      page.getByText("已刷新 Seed account 的余额"),
     ).toBeVisible();
     page.once("dialog", (dialog) => void dialog.dismiss());
-    await page.getByRole("button", { name: "Disable Seed account" }).click();
+    await page.getByRole("button", { name: "禁用 Seed account" }).click();
     await expect(
-      page.getByRole("button", { name: "Disable Seed account" }),
+      page.getByRole("button", { name: "禁用 Seed account" }),
     ).toBeVisible();
     page.once("dialog", (dialog) => void dialog.accept());
-    await page.getByRole("button", { name: "Disable Seed account" }).click();
+    await page.getByRole("button", { name: "禁用 Seed account" }).click();
     await expect(
-      page.getByRole("button", { name: "Enable Seed account" }),
+      page.getByRole("button", { name: "启用 Seed account" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Add account" }).click();
+    await page.getByRole("button", { name: "添加账号" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
-    await page.getByLabel("Account name").focus();
+    await page.getByLabel("账号名称").focus();
     await page.keyboard.press("Shift+Tab");
-    await expect(page.getByRole("dialog")).toContainText("Add account");
+    await expect(page.getByRole("dialog")).toContainText("添加账号");
     await expect(
       page.evaluate(() => document.activeElement?.closest("dialog") !== null),
     ).resolves.toBe(true);
@@ -579,52 +579,52 @@ for (const viewport of [
     ).resolves.toBe(true);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Add account" })).toBeFocused();
-    await page.getByRole("button", { name: "Add account" }).click();
-    await expect(page.getByRole("link", { name: "Open Lingjing login" })).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
-    await expect(page.getByText(/Paste it only here—never in chat, logs, or Git/u)).toBeVisible();
-    await page.getByLabel("Priority").fill("-1");
-    await page.getByLabel("Daily point limit").fill("1.5");
-    await page.getByLabel("Monthly point limit").fill("-2");
-    await page.getByRole("button", { name: "Validate and add" }).click();
-    for (const field of ["Account name", "Priority", "Daily point limit", "Monthly point limit"]) await expect(page.getByLabel(field)).toHaveAttribute("aria-invalid", "true");
-    await expect(page.getByLabel("Account name")).toBeFocused();
-    await page.getByLabel("Account name").fill(`Browser ${viewport.name}`);
-    await page.getByLabel("Priority").fill("7");
-    await page.getByLabel("Daily point limit").fill("10");
-    await page.getByLabel("Monthly point limit").fill("100");
-    await page.getByLabel("Cookie format").selectOption("header");
-    await page.getByLabel("Lingjing cookies").fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
-    await page.getByRole("button", { name: "Validate and add" }).click();
+    await expect(page.getByRole("button", { name: "添加账号" })).toBeFocused();
+    await page.getByRole("button", { name: "添加账号" }).click();
+    await expect(page.getByRole("link", { name: "打开灵境登录页" })).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
+    await expect(page.getByText(/切勿发送到聊天、日志或 Git/u)).toBeVisible();
+    await page.getByLabel("优先级").fill("-1");
+    await page.getByLabel("每日点数限额").fill("1.5");
+    await page.getByLabel("每月点数限额").fill("-2");
+    await page.getByRole("button", { name: "验证并添加" }).click();
+    for (const field of ["账号名称", "优先级", "每日点数限额", "每月点数限额"]) await expect(page.getByLabel(field)).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByLabel("账号名称")).toBeFocused();
+    await page.getByLabel("账号名称").fill(`Browser ${viewport.name}`);
+    await page.getByLabel("优先级").fill("7");
+    await page.getByLabel("每日点数限额").fill("10");
+    await page.getByLabel("每月点数限额").fill("100");
+    await page.getByLabel("Cookie 格式").selectOption("header");
+    await page.getByLabel("灵境 Cookie").fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
+    await page.getByRole("button", { name: "验证并添加" }).click();
     const importedAccount = page.locator(".account-row").filter({
       has: page.getByText(`Browser ${viewport.name}`, { exact: true })
     });
     await expect(importedAccount).toContainText("Premium");
-    await expect(importedAccount).toContainText("Total balance 150");
+    await expect(importedAccount).toContainText("总余额 150");
     await expect(page.getByText("npm run login -- --account-id")).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: `Disable Browser ${viewport.name}` }),
+      page.getByRole("button", { name: `禁用 Browser ${viewport.name}` }),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: `Refresh balance Browser ${viewport.name}` })
+      .getByRole("button", { name: `刷新余额 Browser ${viewport.name}` })
       .click();
     await expect(
-      page.getByText(`Balance refreshed for Browser ${viewport.name}`),
+      page.getByText(`已刷新 Browser ${viewport.name}`),
     ).toBeVisible();
     await page
-      .getByRole("button", { name: `Edit Browser ${viewport.name}` })
+      .getByRole("button", { name: `编辑 Browser ${viewport.name}` })
       .click();
-    await page.getByLabel("Priority").fill("3");
-    await page.getByLabel("Daily point limit").fill("25");
-    await page.getByLabel("Monthly point limit").fill("250");
-    await page.getByRole("button", { name: "Save account" }).click();
-    await expect(page.getByText("Charged 0 · Reserved 0").last()).toBeVisible();
+    await page.getByLabel("优先级").fill("3");
+    await page.getByLabel("每日点数限额").fill("25");
+    await page.getByLabel("每月点数限额").fill("250");
+    await page.getByRole("button", { name: "保存账号" }).click();
+    await expect(page.getByText("已扣除 0 · 已预留 0").last()).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("accounts.png"),
       fullPage: true,
     });
     await navigate("overview");
-    await expect(page.getByText("Budget exhausted")).toBeVisible();
+    await expect(page.getByText("预算耗尽")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("overview.png"),
       fullPage: true,
@@ -632,10 +632,10 @@ for (const viewport of [
     await navigate("tasks");
     await expect(page.getByText("Reserved")).toBeVisible();
     if (viewport.name === "mobile") {
-      const kind = page.locator("td[data-label='Kind']");
+      const kind = page.locator("td[data-label='类型']");
       await expect(kind).toBeVisible();
       await expect(kind).toHaveText("image");
-      await expect(page.getByRole("columnheader", { name: "Kind" })).toHaveCount(1);
+      await expect(page.getByRole("columnheader", { name: "类型" })).toHaveCount(1);
     }
     await expect(
       page.evaluate(
@@ -647,11 +647,11 @@ for (const viewport of [
       fullPage: true,
     });
     await page
-      .getByLabel("Account filter")
+      .getByLabel("账号筛选")
       .selectOption({ label: `Browser ${viewport.name}` });
-    await page.getByLabel("Kind filter").selectOption("image");
-    await page.getByLabel("Status filter").selectOption("queued");
-    await expect(page.getByText("No tasks match these filters")).toBeVisible();
+    await page.getByLabel("类型筛选").selectOption("image");
+    await page.getByLabel("状态筛选").selectOption("queued");
+    await expect(page.getByText("没有符合当前筛选条件的任务")).toBeVisible();
     await expect(
       page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -659,24 +659,24 @@ for (const viewport of [
     ).resolves.toBe(true);
   });
 
-test("moves focus to the page heading on history navigation", async ({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("Administrator password").fill("fixture-admin-password");await page.getByRole("button",{name:"Sign in"}).click();await page.getByRole("link",{name:"Runtime"}).click();await expect(page.getByRole("heading",{name:"Settings"})).toBeFocused();await page.goBack();await expect(page.getByRole("heading",{name:"Accounts"})).toBeFocused();});
+test("moves focus to the page heading on history navigation", async ({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"运行环境"}).click();await expect(page.getByRole("heading",{name:"设置"})).toBeFocused();await page.goBack();await expect(page.getByRole("heading",{name:"账号"})).toBeFocused();});
 
 test("keeps initial session 401 signed out but expires an established session", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:4174/admin/");
   await expect(
-    page.getByRole("heading", { name: "Admin sign in" }),
+    page.getByRole("heading", { name: "管理员登录" }),
   ).toBeVisible();
   await page
-    .getByLabel("Administrator password")
+    .getByLabel("管理员密码")
     .fill("fixture-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
   expireNext = true;
-  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
+  await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
   await expect(
-    page.getByRole("heading", { name: "Admin sign in" }),
+    page.getByRole("heading", { name: "管理员登录" }),
   ).toBeVisible();
   await expect(
     page.getByText("Session expired"),
@@ -684,20 +684,22 @@ test("keeps initial session 401 signed out but expires an established session", 
 });
 
 test("keeps accounts usable when settings load fails", async ({ page }) => {
-  failSettings = true;
+  fail运行环境 = true;
   await page.goto("http://127.0.0.1:4174/admin/");
   await page
-    .getByLabel("Administrator password")
+    .getByLabel("管理员密码")
     .fill("fixture-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
-  await page.getByRole("link", { name: "Runtime" }).click();
-  await expect(page.getByText("Settings unavailable")).toBeVisible();
-  await page.getByRole("link", { name: "Subscriptions" }).click();
+  await page.getByRole("link", { name: "运行环境" }).click();
+  await expect(page.getByText("运行环境 unavailable")).toBeVisible();
+  await page.getByRole("link", { name: "订阅账号" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
 });
 
-test("shows login recovery guidance when Playground models need a session",async({page})=>{failModels=true;await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("Administrator password").fill("fixture-admin-password");await page.getByRole("button",{name:"Sign in"}).click();await page.getByRole("link",{name:"Playground"}).click();await expect(page.getByText("Connect a Lingjing account first")).toBeVisible();await expect(page.getByText("npm run login",{exact:false})).toBeVisible();await expect(page.getByRole("link",{name:"Open subscriptions"})).toHaveAttribute("href","/admin/accounts");});
+test("copies Agent-ready developer Markdown",async({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"开发者文档"}).click();await expect(page.getByRole("heading",{name:"开发者文档"})).toBeVisible();const markdown=page.getByLabel("Agent Markdown 开发文档");await expect(markdown).toHaveValue(/Idempotency-Key/u);await expect(markdown).toHaveValue(/unknown 绝不重提/u);await page.getByRole("button",{name:"复制 Markdown"}).click();await expect(page.getByRole("status")).toContainText(/Markdown 已复制|复制失败/u);});
+
+test("shows login recovery guidance when 调用测试 models need a session",async({page})=>{failModels=true;await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"调用测试"}).click();await expect(page.getByText("请先连接灵境账号")).toBeVisible();await expect(page.getByText("npm run login",{exact:false})).toBeVisible();await expect(page.getByRole("link",{name:"打开订阅账号"})).toHaveAttribute("href","/admin/accounts");});
 
 test("shows executable login commands for legacy and generated accounts", async ({
   page,
@@ -718,15 +720,15 @@ test("shows executable login commands for legacy and generated accounts", async 
     },
   ];
   await page.goto("http://127.0.0.1:4174/admin/");
-  await page.getByLabel("Administrator password").fill("fixture-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  const daily = page.getByRole("progressbar", { name: "Daily budget" }).first();
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  const daily = page.getByRole("progressbar", { name: "每日预算" }).first();
   await expect(daily).toHaveAttribute("aria-valuenow", "10");
   await expect(daily).toHaveAttribute(
     "aria-valuetext",
-    "Charged 12, reserved 3, limit 10",
+    "已扣除 12，已预留 3，上限 10",
   );
-  await page.getByRole("link", { name: "Runtime" }).click();
+  await page.getByRole("link", { name: "运行环境" }).click();
   await expect(page.getByText("npm run login", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
@@ -739,18 +741,18 @@ test("shows executable login commands for legacy and generated accounts", async 
 
 test("logout clears an app action failure before returning to sign in", async ({ page }) => {
   await page.goto("http://127.0.0.1:4174/admin/");
-  await page.getByLabel("Administrator password").fill("fixture-admin-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
   failHealth = true;
-  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
+  await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.evaluate(() => { history.pushState({}, "", "/admin/settings"); dispatchEvent(new PopStateEvent("popstate")); });
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
-  await page.getByRole("link", { name: "Subscriptions" }).click();
-  await page.getByRole("button", { name: "Refresh balance Seed account" }).click();
+  await page.getByRole("link", { name: "订阅账号" }).click();
+  await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "Admin sign in" })).toBeVisible();
+  await page.getByRole("button", { name: "退出登录" }).click();
+  await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
-  await expect(page.getByLabel("Administrator password")).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByLabel("管理员密码")).toHaveAttribute("aria-invalid", "false");
 });

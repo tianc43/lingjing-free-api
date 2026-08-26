@@ -695,6 +695,7 @@ nav a {
   padding: var(--space-3);
   resize: vertical;
 }
+.developer-markdown{width:100%;min-height:38rem;resize:vertical;background:var(--surface-sunken);border:1px solid var(--border-subtle);border-radius:var(--radius-card);color:var(--text-primary);font-size:var(--text-xs);line-height:1.65;padding:var(--space-4);tab-size:2;}
 .segmented {
   background: var(--surface-sunken);
   border: 1px solid var(--border-subtle);

@@ -6,6 +6,7 @@ import { ApiKeyDialog } from "./components/api-key-dialog";
 import { AppShell, type PageName } from "./components/app-shell";
 import { AccountsPage } from "./pages/accounts-page";
 import type { CreateKeyInput } from "./pages/api-access-page";
+import{DeveloperDocsPage}from"./pages/developer-docs-page";
 import { LoginPage } from "./pages/login-page";
 import { OverviewPage } from "./pages/overview-page";
 import { SettingsPage } from "./pages/settings-page";
@@ -24,16 +25,16 @@ type ResourceLoading = Record<ResourceName, boolean>;
 
 function pageFromPath(): PageName {
   const value = location.pathname.replace(/^\/admin\/?/, "");
-  return value === "accounts" || value === "identities" || value === "playground" || value === "tasks" || value === "plans" || value === "usage" || value === "webhooks" || value === "api-access" || value === "settings" ? value : "overview";
+  return value === "accounts" || value === "identities" || value === "playground" || value === "tasks" || value === "plans" || value === "usage" || value === "webhooks" || value === "api-access" || value === "developer-docs" || value === "settings" ? value : "overview";
 }
 
 function Skeleton() {
-  return <div className="skeleton" aria-live="polite">Loading operational data…</div>;
+  return <div className="skeleton" aria-live="polite">正在加载运行数据…</div>;
 }
 
 function ResourceFailure({ error, onRetry }: { error: string | undefined; onRetry: () => void }) {
   if (error === undefined) return null;
-  return <section className="retry-state" role="alert"><p>{error}</p><button onClick={onRetry}>Retry</button></section>;
+  return <section className="retry-state" role="alert"><p>{error}</p><button onClick={onRetry}>重试</button></section>;
 }
 
 export function App() {
@@ -62,7 +63,7 @@ export function App() {
   const api = useMemo(() => new AdminApi(() => {
     setAuthenticated(false);
     setApiKeySecret(null);
-    setError("Your administrator session expired. Sign in again.");
+    setError("管理员会话已过期，请重新登录。");
   }), []);
 
   const runResource = useCallback(async <T,>(name: ResourceName, request: () => Promise<T>, save: (value: T) => void) => {
@@ -71,7 +72,7 @@ export function App() {
     try {
       save(await request());
     } catch (cause) {
-      setResourceErrors((current) => ({ ...current, [name]: cause instanceof Error ? cause.message : `Could not load ${name}` }));
+      setResourceErrors((current) => ({ ...current, [name]: cause instanceof Error ? cause.message : `无法加载 ${name}` }));
     } finally {
       setResourceLoading((current) => ({ ...current, [name]: false }));
     }
@@ -98,7 +99,7 @@ export function App() {
       if (ready) await load();
       setInitializing(false);
     }).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Could not check session");
+      setError(cause instanceof Error ? cause.message : "无法检查会话");
       setInitializing(false);
     });
   }, [api, load]);
@@ -110,12 +111,12 @@ export function App() {
     setError(null);
     setApiKeySecret(null);
     history.pushState({}, "", `/admin/${next === "overview" ? "" : next}`);
-    document.title = `${next === "api-access" ? "API keys" : next[0]?.toUpperCase()}${next === "api-access" ? "" : next.slice(1)} · Lingjing Operator`;
+    const titles:Record<PageName,string>={overview:"总览",accounts:"订阅账号",identities:"用户与项目",playground:"调用测试",tasks:"任务",plans:"套餐",usage:"用量",webhooks:"Webhook", "api-access":"API 密钥","developer-docs":"开发者文档",settings:"运行环境"};document.title=`${titles[next]} · 灵境运营控制台`;
     setPage(next);
     focusPageHeading();
   };
   useEffect(() => {
-    const listener = () => { setError(null); setApiKeySecret(null); const next=pageFromPath();setPage(next);document.title=`${next} · Lingjing Operator`;focusPageHeading(); };
+    const listener = () => { setError(null); setApiKeySecret(null); const next=pageFromPath();setPage(next);document.title=`灵境运营控制台`;focusPageHeading(); };
     addEventListener("popstate", listener);
     return () => removeEventListener("popstate", listener);
   }, []);
@@ -130,7 +131,7 @@ export function App() {
       setAuthenticated(true);
       await load();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Sign in failed");
+      setError(cause instanceof Error ? cause.message : "登录失败");
     }
   };
   const save = async (input: AccountInput) => {
@@ -148,13 +149,13 @@ export function App() {
     await load();
   };
   const toggle = async (account: Account) => {
-    if (account.enabled && account.active_jobs > 0 && !window.confirm(`Disable ${account.name}? ${account.active_jobs} active jobs will continue but no new jobs can start.`)) return;
+    if (account.enabled && account.active_jobs > 0 && !window.confirm(`要停用 ${account.name} 吗？${account.active_jobs} 个进行中的任务将继续，但不会再启动新任务。`)) return;
     try {
       await api.setEnabled(account, !account.enabled);
       setError(null);
       await loadAccounts();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update account");
+      setError(cause instanceof Error ? cause.message : "无法更新账号");
     }
   };
   const check = async (account: Account) => {
@@ -162,15 +163,15 @@ export function App() {
     try {
       await api.checkAccount(account.id);
       setError(null);
-      setNotice(`Balance refreshed for ${account.name}`);
+      setNotice(`已刷新 ${account.name} 的余额`);
       await loadAccounts();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Balance refresh failed");
+      setError(cause instanceof Error ? cause.message : "余额刷新失败");
     } finally {
       setChecking(null);
     }
   };
-  const browserLogin=async(account:Account)=>{setLoggingIn(account.id);setError(null);try{const started=await api.startBrowserLogin(account.id);setNotice("Browser opened. Complete Lingjing login in that window.");for(let attempt=0;attempt<600;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));const status=await api.browserLogin(started.id);if(status.status==="completed"){setNotice(`Credentials refreshed for ${account.name}`);await loadAccounts();return;}if(status.status==="failed")throw new Error(status.error??"Browser login failed");}throw new Error("Browser login timed out");}catch(cause){setError(cause instanceof Error?cause.message:"Browser login failed");}finally{setLoggingIn(null);}};
+  const browserLogin=async(account:Account)=>{setLoggingIn(account.id);setError(null);try{const started=await api.startBrowserLogin(account.id);setNotice("浏览器已打开，请在该窗口完成灵境登录。");for(let attempt=0;attempt<600;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));const status=await api.browserLogin(started.id);if(status.status==="completed"){setNotice(`已刷新 ${account.name} 的凭据`);await loadAccounts();return;}if(status.status==="failed")throw new Error(status.error??"浏览器登录失败");}throw new Error("浏览器登录超时");}catch(cause){setError(cause instanceof Error?cause.message:"浏览器登录失败");}finally{setLoggingIn(null);}};
   const createApiKey = async (input: CreateKeyInput) => {
     const created = await api.createApiKey(input);
     setApiKeys((current) => [...current, created.key]);
@@ -181,7 +182,7 @@ export function App() {
       const updated = await api.setApiKeyEnabled(key, !key.enabled);
       setApiKeys((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update API key");
+      setError(cause instanceof Error ? cause.message : "无法更新 API 密钥");
     }
   };
   const revokeApiKey = async (key: ApiKey) => {
@@ -190,14 +191,14 @@ export function App() {
       const updated = await api.revokeApiKey(key);
       setApiKeys((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not revoke API key");
+      setError(cause instanceof Error ? cause.message : "无法撤销 API 密钥");
     }
   };
   const configureWebhook=async(projectId:string,url:string)=>{const endpoint=await api.configureWebhook(projectId,url);await loadWebhooks();return endpoint;};
   const replayWebhook=async(id:string)=>{await api.replayWebhook(id);await loadWebhooks();};
   const toggleWebhook=async(endpoint:WebhookEndpoint)=>{await api.setWebhookEnabled(endpoint.id,!endpoint.enabled);await loadWebhooks();};
   const createPlan = async (input: Omit<Plan,"id"|"created_at"|"updated_at">) => { await api.createPlan(input); await loadPlans(); };
-  const assignPlan = async (projectId:string,planId:string) => { await api.assignPlan(projectId,planId); setNotice("Plan assigned to project"); };
+  const assignPlan = async (projectId:string,planId:string) => { await api.assignPlan(projectId,planId); setNotice("套餐已分配给项目"); };
   const createUser = async (name: string) => { await api.createUser(name); await loadIdentities(); };
   const createProject = async (userId: string, name: string) => { await api.createProject(userId, name); await loadIdentities(); };
   const toggleUser = async (user: User) => { await api.setUserStatus(user.id, user.status === "active" ? "disabled" : "active"); await loadIdentities(); };
@@ -219,6 +220,7 @@ export function App() {
       ? <><ResourceFailure error={resourceErrors.identities} onRetry={() => void loadIdentities()} />{resourceLoading.identities && users.length === 0 ? <Skeleton /> : <IdentitiesPage users={users} projects={projects} onCreateUser={createUser} onCreateProject={createProject} onToggleUser={toggleUser} onToggleProject={toggleProject} />}</>
     : page === "playground"
       ? <PlaygroundPage loadModels={(kind, refresh) => api.playgroundModels(kind, refresh)} run={(input) => api.runPlayground(input)} getJob={(id) => api.job(id)} />
+    :page==="developer-docs"?<DeveloperDocsPage/>
     : page === "webhooks"
       ? <><ResourceFailure error={resourceErrors.webhooks} onRetry={()=>void loadWebhooks()}/>{resourceLoading.webhooks&&webhooks.length===0?<Skeleton/>:<WebhooksPage projects={projects} webhooks={webhooks} deliveries={webhookDeliveries} onConfigure={configureWebhook} onToggle={toggleWebhook} onReplay={replayWebhook}/>}</>
     : page === "plans"
