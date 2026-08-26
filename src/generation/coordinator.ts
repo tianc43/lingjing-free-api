@@ -668,7 +668,7 @@ implements GenerationCoordinator {
         failAndRelease(
           current.id,
           ["queued"],
-          "generation_before_submit_failed"
+          cause instanceof AppError?cause.code:"generation_before_submit_failed"
         );
       }
       this.releaseIfTerminalOrRefreshUnknown(job.id, runtime, lease);
