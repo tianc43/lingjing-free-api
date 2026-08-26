@@ -58,7 +58,7 @@ export function App() {
   const [dialog, setDialog] = useState<Account | undefined>(undefined);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  const [checking, setChecking] = useState<string | null>(null);
+  const [checking,setChecking]=useState<string|null>(null);const[loggingIn,setLoggingIn]=useState<string|null>(null);
   const api = useMemo(() => new AdminApi(() => {
     setAuthenticated(false);
     setApiKeySecret(null);
@@ -170,6 +170,7 @@ export function App() {
       setChecking(null);
     }
   };
+  const browserLogin=async(account:Account)=>{setLoggingIn(account.id);setError(null);try{const started=await api.startBrowserLogin(account.id);setNotice("Browser opened. Complete Lingjing login in that window.");for(let attempt=0;attempt<600;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));const status=await api.browserLogin(started.id);if(status.status==="completed"){setNotice(`Credentials refreshed for ${account.name}`);await loadAccounts();return;}if(status.status==="failed")throw new Error(status.error??"Browser login failed");}throw new Error("Browser login timed out");}catch(cause){setError(cause instanceof Error?cause.message:"Browser login failed");}finally{setLoggingIn(null);}};
   const createApiKey = async (input: CreateKeyInput) => {
     const created = await api.createApiKey(input);
     setApiKeys((current) => [...current, created.key]);
@@ -213,7 +214,7 @@ export function App() {
   const pageContent = page === "overview"
     ? <><ResourceFailure error={resourceErrors.overview} onRetry={() => void loadOverview()} />{overview === null && resourceLoading.overview ? <Skeleton /> : overview !== null && <OverviewPage overview={overview} />}</>
     : page === "accounts"
-      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account) => void check(account)} checking={checking} />}</>
+      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account)=>void check(account)} onLogin={(account)=>void browserLogin(account)} checking={checking} loggingIn={loggingIn} />}</>
     : page === "identities"
       ? <><ResourceFailure error={resourceErrors.identities} onRetry={() => void loadIdentities()} />{resourceLoading.identities && users.length === 0 ? <Skeleton /> : <IdentitiesPage users={users} projects={projects} onCreateUser={createUser} onCreateProject={createProject} onToggleUser={toggleUser} onToggleProject={toggleProject} />}</>
     : page === "playground"

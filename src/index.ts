@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
 import { AccountScheduler } from "./accounts/scheduler.js";
+import{BrowserLoginManager}from"./accounts/browser-login-manager.js";
 import { CookieImportService } from "./accounts/cookie-import-service.js";
 import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
 import type { AccountRuntime } from "./accounts/runtime.js";
@@ -227,11 +228,7 @@ export async function startServer(
       ? {}
       : { transportFactory: () => options.transport as LingjingTransport })
   });
-  const cookieImporter = new CookieImportService({
-    accounts,
-    config,
-    runtimes
-  });
+  const cookieImporter = new CookieImportService({accounts,config,runtimes}),browserLogins=new BrowserLoginManager(config,async accountId=>{const runtime=await runtimes.refresh(accountId);if(!runtime)throw new Error("Account runtime is unavailable after login");});
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
   let maintenance: MaintenanceScheduler | undefined;
@@ -400,6 +397,7 @@ export async function startServer(
       identities,
       apiKeys,
       cookieImporter,
+      browserLogins,
       logger,
       session: lazyService(() => compatibilityRuntime().session),
       transport: lazyService(() => compatibilityRuntime().transport),

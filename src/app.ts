@@ -142,7 +142,7 @@ export async function buildApp(
     });
   }
 
-  await registerAdminRoutes(app, dependencies);
+  const{browserLogins,...adminBase}=dependencies;await registerAdminRoutes(app,browserLogins===undefined?adminBase:{...adminBase,browserLogins});
   await registerAdminStatic(
     app,
     dependencies.config.adminPassword !== null,

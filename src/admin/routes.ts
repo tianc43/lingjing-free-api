@@ -1,3 +1,4 @@
+import{z}from"zod";
 import type {
   FastifyInstance,
   FastifyReply,
@@ -731,6 +732,8 @@ export async function registerAdminRoutes(
       });
     };
 
+    adminApp.post("/accounts/:id/browser-login",{schema:routeSchema({security:publicSecurity,params:accountParamsSchema,response:{200:z.object({login:z.object({id:z.string(),account_id:z.string(),status:z.enum(["running","completed","failed"]),error:z.string().nullable()})})}})},async(request,reply)=>{const account=dependencies.accounts.findById((request.params as{id:string}).id);if(account===null)throw errors.invalidRequest("Account not found");if(dependencies.browserLogins===undefined)throw errors.invalidRequest("Browser login is unavailable");const login=dependencies.browserLogins.start(account.id);return noStore(reply).send({login:{id:login.id,account_id:login.accountId,status:login.status,error:login.error}});});
+    adminApp.get("/accounts/browser-logins/:loginId",{schema:routeSchema({security:publicSecurity,params:z.object({loginId:z.string()}),response:{200:z.object({login:z.object({id:z.string(),account_id:z.string(),status:z.enum(["running","completed","failed"]),error:z.string().nullable()})})}})},async(request,reply)=>{if(dependencies.browserLogins===undefined)throw errors.invalidRequest("Browser login is unavailable");const login=dependencies.browserLogins.find((request.params as{loginId:string}).loginId);if(!login)throw errors.invalidRequest("Browser login not found");return noStore(reply).send({login:{id:login.id,account_id:login.accountId,status:login.status,error:login.error}});});
     adminApp.post("/accounts/:id/check", {
       schema: routeSchema({
         security: publicSecurity,

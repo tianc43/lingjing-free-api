@@ -22,6 +22,8 @@ export interface Account {
   updated_at: number;
 }
 
+export interface BrowserLogin {id:string;account_id:string;status:"running"|"completed"|"failed";error:string|null;}
+
 export interface Job {
   id: string;
   account_name: string;

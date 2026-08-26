@@ -1,4 +1,4 @@
-import type { Account, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -83,6 +83,8 @@ export class AdminApi {
     const action = enabled ? "enable" : "disable";
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(account.id)}/${action}`, { method: "POST" })).account;
   }
+  async startBrowserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/${encodeURIComponent(id)}/browser-login`,{method:"POST"})).login;}
+  async browserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/browser-logins/${encodeURIComponent(id)}`)).login;}
   async checkAccount(id: string): Promise<Account> {
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}/check`, { method: "POST" })).account;
   }

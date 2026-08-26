@@ -69,6 +69,7 @@ export interface AdminDependencies {
     "create" | "list" | "setEnabled" | "revoke" | "verify"
   >;
   cookieImporter: Pick<CookieImportService, "import">;
+  browserLogins?: Pick<import("../accounts/browser-login-manager.js").BrowserLoginManager,"start"|"find">;
   accounts: Pick<
     SqliteAccountRepository,
     "create" | "update" | "findById" | "list"
@@ -91,6 +92,7 @@ export interface AppDependencies {
   identities: AdminDependencies["identities"];
   apiKeys: AdminDependencies["apiKeys"];
   cookieImporter: AdminDependencies["cookieImporter"];
+  browserLogins?: AdminDependencies["browserLogins"];
   adminStaticRoot?: string;
   logger: Logger;
   session: SessionProvider;
