@@ -206,7 +206,7 @@ export class CatalogService {
     }
 
     if (
-      (usesMaterialsUpload(raw)&&!hasRequiredMaterialsMetadata(raw))||(sourceType==="image-generation"&&next.rawRevision!==model.rawRevision)
+      (sourceType!=="image-to-video"&&usesMaterialsUpload(raw)&&!hasRequiredMaterialsMetadata(raw))||(sourceType==="image-generation"&&next.rawRevision!==model.rawRevision)
     ) {
       throw errors.catalogChanged();
     }

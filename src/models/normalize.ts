@@ -201,12 +201,8 @@ export function normalizeModels(
     const modelParameter = parameters.find(
       (parameter) => parameter.key === "model"
     );
-    const modelCode = nonEmptyString(raw.modelCode)
-      ?? nonEmptyString(modelParameter?.defaultValue);
-    const sceneCode = nonEmptyString(raw.sceneCode)
-      ?? nonEmptyString(raw.scene)
-      ?? nonEmptyString(raw.shortSenceCode)
-      ?? sourceType;
+    const modelCode=nonEmptyString(raw.modelCode)??(sourceType==="image-to-video"?apiId:undefined)??nonEmptyString(raw.venderCode)??nonEmptyString(modelParameter?.defaultValue);
+    const sceneCode=nonEmptyString(raw.sceneCode)??nonEmptyString(raw.scene)??(sourceType==="image-to-video"?sourceType:undefined)??nonEmptyString(raw.shortSenceCode)??sourceType;
     const expectedAssetScene = nonEmptyString(raw.assetScene)
       ?? nonEmptyString(raw.scene)
       ?? nonEmptyString(raw.shortSenceCode)
@@ -223,10 +219,7 @@ export function normalizeModels(
       refId: asString(raw.refId) ?? apiId,
       sceneCode,
       expectedAssetScene,
-      uploadStrategy: raw.uploadStrategy === "materials"
-        || raw.materialUpload === true
-        ? "materials"
-        : "general",
+      uploadStrategy:raw.uploadStrategy==="materials"||raw.materialUpload===true||sourceType==="image-to-video"?"materials":"general",
       priceQuerySchema,
       parameters,
       pricing: fixedPricing(raw)??observedPrice,

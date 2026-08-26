@@ -156,16 +156,12 @@ function ensureSuccessfulPut(response: SignedUploadResponse): void {
   }
 }
 
-function normalizeMaterial(value: unknown): UploadedMaterial {
-  if (!isPlainObject(value)) throw errors.upstream();
-  const filePath = nonEmptyString(value.filePath)
-    ?? nonEmptyString(value.url);
-  const frameUrl = nullableString(value.frameUrl);
+function normalizeMaterial(value:unknown):UploadedMaterial{if(!isPlainObject(value))throw errors.upstream();const nested=isPlainObject(value.result)?value.result:value,result=isPlainObject(nested.result)?nested.result:nested;const filePath=nonEmptyString(result.filePath)??nonEmptyString(result.url)??nonEmptyString(result.result);const frameUrl=nullableString(result.frameUrl);
   if (filePath === undefined || frameUrl === undefined) {
     throw errors.upstream();
   }
-  const vendor = nonEmptyString(value.vendor)
-    ?? nonEmptyString(value.vender)
+  const vendor = nonEmptyString(result.vendor)
+    ?? nonEmptyString(result.vender)
     ?? null;
   return {
     value: filePath,

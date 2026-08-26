@@ -112,9 +112,7 @@ export function buildPayload(input: {
 
   for (const parameter of input.model.parameters) {
     const provided = Object.hasOwn(input.values, parameter.key);
-    const value = provided
-      ? input.values[parameter.key]
-      : parameter.defaultValue;
+    const value=provided?input.values[parameter.key]:parameter.defaultValue;if(parameter.kind==="image-list"&&!parameter.required&&(value===""||value===null)){continue;}
 
     if (value === undefined) {
       if (parameter.required || provided) {
