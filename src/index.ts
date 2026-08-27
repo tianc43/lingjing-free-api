@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { config as loadEnv } from "dotenv";
 import type { FastifyInstance } from "fastify";
 import { AccountScheduler } from "./accounts/scheduler.js";
+import { DailySignInScheduler } from "./accounts/daily-sign-in-scheduler.js";
 import{BrowserLoginManager}from"./accounts/browser-login-manager.js";
 import { CookieImportService } from "./accounts/cookie-import-service.js";
 import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
@@ -34,6 +35,7 @@ import { ReconciliationWorker } from "./jobs/reconciliation-worker.js";
 import { SqliteJobRepository } from "./jobs/sqlite-repository.js";
 import { SqliteWorkerLeaseRepository } from "./jobs/worker-lease-repository.js";
 import type { LingjingTransport } from "./lingjing/types.js";
+import { LingjingSignInService } from "./lingjing/sign-in-service.js";
 import { createLogger } from "./logging.js";
 import { prepareDataUri } from "./media/data-uri.js";
 import { RemoteMediaFetcher } from "./media/remote-fetcher.js";
@@ -144,6 +146,7 @@ export interface ShutdownServerOptions {
   runtimes?: Pick<AccountRuntimeRegistry, "close">;
   store?: Pick<SqliteStore, "close">;
   maintenance?: Pick<MaintenanceScheduler, "close">;
+  dailySignIn?: Pick<DailySignInScheduler, "close">;
   submitDrainTimeoutMs?: number;
   runnerIdleTimeoutMs?: number;
 }
@@ -162,6 +165,7 @@ export async function shutdownServer(
   );
   options.recovery.close();
   await options.maintenance?.close();
+  await options.dailySignIn?.close();
   options.coordinator.stopPollers();
   options.app.server.closeAllConnections();
 
@@ -232,6 +236,7 @@ export async function startServer(
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
   let maintenance: MaintenanceScheduler | undefined;
+  let dailySignIn: DailySignInScheduler | undefined;
 
   try {
     await runtimes.ready();
@@ -348,6 +353,7 @@ export async function startServer(
       );
       recovery.close();
       await maintenance?.close();
+      await dailySignIn?.close();
       coordinator.stopPollers();
       await withTimeout(
         registry.waitUntilIdle(),
@@ -383,6 +389,13 @@ export async function startServer(
       unboundAssetRetentionMs: 60 * 60_000
     });
     await maintenance.start();
+    dailySignIn = new DailySignInScheduler({
+      runtimes,
+      signIn: (runtime) => new LingjingSignInService(runtime.transport)
+        .signIn(),
+      logger
+    });
+    dailySignIn.start();
 
     const compatibilityRuntime = (): AccountRuntime => {
       const runtime = runtimes.listEnabled()[0];
@@ -425,6 +438,7 @@ export async function startServer(
       runtimes,
       store,
       ...(maintenance === undefined ? {} : { maintenance }),
+      ...(dailySignIn === undefined ? {} : { dailySignIn }),
       ...options.shutdown
     });
     await app.listen({ host: config.host, port: config.port });
@@ -440,6 +454,7 @@ export async function startServer(
         runtimes,
         store,
         ...(maintenance === undefined ? {} : { maintenance }),
+        ...(dailySignIn === undefined ? {} : { dailySignIn }),
         ...options.shutdown
       }).catch((cause: unknown) => {
         stopPromise = undefined;

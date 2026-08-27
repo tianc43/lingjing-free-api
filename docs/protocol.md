@@ -19,6 +19,14 @@
 | 图生素材上传 | `POST /joycreator/AIModelApiConsole/uploadMaterials` | 已加载脚本 | `multipart/form-data`：`sceneCode`、`modelCode`、`spaceId`、`file`。 |
 | 任务读取 | `POST /openApi/modelmarket/describeUserTask` | 已加载脚本 | 请求体为 `{ "params": { "taskId": "..." } }`。 |
 
+### 每日签到
+
+2026-08-27 当前奖励中心脚本与已登录状态读取确认：
+
+- `GET /local/activity/signInProgress` 返回当前活动的 `activityNo`、`currentFrequency`、`updateTime` 和周期字段；`updateTime` 的日期等于当天即表示已经签到。
+- `POST /joycreator/activity/task_complete` 请求体为 `{ "activityNo": "从当前进度动态读取" }`；活动编号不得长期写死。
+- 自动任务使用 `Asia/Shanghai` 日历日，每日 00:10 遍历所有已启用且会话健康账号。提交前后都读取状态；状态不确定时不在同一轮自动重提。
+
 视频页当前可见三种模式：文生视频、图生视频、参考生视频。图生视频要求首帧图；当前表单暴露模型、时长、分辨率、画幅和“生成音频”开关，说明这些都必须从动态模型目录而不是写死的枚举中取值。
 
 报价有两个互斥分支：`enablePriceQuery=true` 的模型调用动态报价接口，并在提交体携带 `priceQueryResult.priceQueryRequest`；`enablePriceQuery=false` 的模型调用公式报价接口，不携带该提交字段。两种响应都以 `discountedTotalPrice ?? totalPrice` 乘 100 并四舍五入为页面点数。任一分支缺少必需计费字段都必须失败关闭。
