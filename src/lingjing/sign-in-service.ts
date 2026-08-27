@@ -106,7 +106,11 @@ function progress(value: unknown): ProgressState {
 
 export class LingjingSignInService {
   constructor(
-    private readonly transport: Pick<LingjingTransport, "read" | "submitOnce">
+    private readonly transport: Pick<LingjingTransport, "read" | "submitOnce">,
+    private readonly claimAttempt?: (
+      activityNo: string,
+      shanghaiDate: string
+    ) => Promise<boolean>
   ) {}
 
   async signIn(now = Date.now()): Promise<SignInResult> {
@@ -122,6 +126,15 @@ export class LingjingSignInService {
     if (before.updateDate === today) {
       return {
         status: "already_signed",
+        currentFrequency: before.currentFrequency
+      };
+    }
+    if (
+      this.claimAttempt !== undefined
+      && !await this.claimAttempt(before.activityNo, today)
+    ) {
+      return {
+        status: "unknown",
         currentFrequency: before.currentFrequency
       };
     }

@@ -11,6 +11,7 @@ import { AccountRuntimeRegistry } from "./accounts/runtime-registry.js";
 import type { AccountRuntime } from "./accounts/runtime.js";
 import { SqliteAccountRepository } from "./accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "./accounts/sqlite-admission-repository.js";
+import { SqliteSignInAttemptRepository } from "./accounts/sign-in-repositories.js";
 import { buildApp } from "./app.js";
 import { SqliteApiKeyRepository } from "./api-keys/sqlite-api-key-repository.js";
 import type { AppDependencies } from "./api/types.js";
@@ -204,6 +205,7 @@ export async function startServer(
   }
   const store = new SqliteStore(config.dbPath);
   const accounts = new SqliteAccountRepository(store);
+  const signInAttempts = new SqliteSignInAttemptRepository(store);
   const identities = new SqliteIdentityRepository(store);
   const usage = new SqliteUsageRepository(store);
   const plans = new SqlitePlanRepository(store);
@@ -391,8 +393,14 @@ export async function startServer(
     await maintenance.start();
     dailySignIn = new DailySignInScheduler({
       runtimes,
-      signIn: (runtime) => new LingjingSignInService(runtime.transport)
-        .signIn(),
+      signIn: (runtime) => new LingjingSignInService(
+        runtime.transport,
+        (activityNo, shanghaiDate) => signInAttempts.claim(
+          runtime.record.id,
+          activityNo,
+          shanghaiDate
+        )
+      ).signIn(),
       logger
     });
     dailySignIn.start();
@@ -411,6 +419,7 @@ export async function startServer(
       apiKeys,
       cookieImporter,
       browserLogins,
+      dailySignIn,
       logger,
       session: lazyService(() => compatibilityRuntime().session),
       transport: lazyService(() => compatibilityRuntime().transport),

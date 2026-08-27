@@ -72,6 +72,24 @@ export interface PlaygroundInput {
   parameters: Record<string, unknown>;
 }
 
+export type AccountSignInStatus = "checking" | "signed" | "already_signed"
+  | "no_active_activity" | "unknown" | "failed";
+
+export interface SignInStatus {
+  enabled: boolean;
+  interval_ms: number;
+  running: boolean;
+  next_check_at: number | null;
+  last_run_started_at: number | null;
+  last_run_finished_at: number | null;
+  accounts: Array<{
+    account_id: string;
+    status: AccountSignInStatus;
+    current_frequency: number | null;
+    checked_at: number;
+  }>;
+}
+
 export interface PlaygroundQuoteInput {
   kind: "video";
   model: string;

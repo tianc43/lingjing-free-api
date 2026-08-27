@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const CURRENT_SCHEMA_VERSION = 16;
+const CURRENT_SCHEMA_VERSION = 17;
 
 const VERSION_ONE_SQL = `
   CREATE TABLE jobs (
@@ -418,6 +418,16 @@ const VERSION_SIXTEEN_SQL = `
   CREATE INDEX pending_uploads_expiry_idx ON pending_uploads(status,expires_at);
 `;
 
+const VERSION_SEVENTEEN_SQL = `
+  CREATE TABLE sign_in_attempts (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    activity_no TEXT NOT NULL,
+    shanghai_date TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY(account_id, activity_no, shanghai_date)
+  );
+`;
+
 export function configureJobDatabase(database: Database.Database): void {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 10000");
@@ -573,6 +583,6 @@ export function migrateJobDatabase(database: Database.Database): void {
       database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(14,Date.now());
       version=14;
     }
-    if(version<15){database.exec(VERSION_FIFTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(15,Date.now());version=15;}if(version<16){database.exec(VERSION_SIXTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(16,Date.now());}
+    if(version<15){database.exec(VERSION_FIFTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(15,Date.now());version=15;}if(version<16){database.exec(VERSION_SIXTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(16,Date.now());version=16;}if(version<17){database.exec(VERSION_SEVENTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(17,Date.now());}
   }).immediate();
 }

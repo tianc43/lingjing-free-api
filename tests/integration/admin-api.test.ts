@@ -356,6 +356,53 @@ describe("administrator API", () => {
     }));
   });
 
+  it("returns the hourly automatic sign-in status without exposing credentials", async () => {
+    const fixture = await createTestApp({
+      config: { adminPassword: ADMIN_PASSWORD },
+      dailySignIn: {
+        status: () => ({
+          enabled: true,
+          intervalMs: 60 * 60_000,
+          running: false,
+          nextCheckAt: 1_800_000_000_000,
+          lastRunStartedAt: 1_799_999_900_000,
+          lastRunFinishedAt: 1_799_999_901_000,
+          accounts: [{
+            accountId: "legacy",
+            status: "already_signed",
+            currentFrequency: 2,
+            checkedAt: 1_799_999_901_000
+          }]
+        })
+      }
+    });
+    fixtures.push(fixture);
+    const { cookie } = await login(fixture);
+
+    const response = await fixture.app.inject({
+      url: "/admin/api/sign-in-status",
+      headers: { cookie }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      enabled: true,
+      interval_ms: 60 * 60_000,
+      running: false,
+      next_check_at: 1_800_000_000_000,
+      last_run_started_at: 1_799_999_900_000,
+      last_run_finished_at: 1_799_999_901_000,
+      accounts: [{
+        account_id: "legacy",
+        status: "already_signed",
+        current_frequency: 2,
+        checked_at: 1_799_999_901_000
+      }]
+    });
+    expect(response.body).not.toContain("cookie");
+    expect(response.body).not.toContain("csrf");
+  });
+
   it("quotes the selected video mode and parameters without creating a job", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);

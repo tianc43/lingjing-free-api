@@ -181,6 +181,23 @@ test.beforeAll(async () => {
       json(response, { accounts });
       return;
     }
+    if (url.pathname === "/admin/api/sign-in-status" && request.method === "GET") {
+      json(response, {
+        enabled: true,
+        interval_ms: 60 * 60_000,
+        running: false,
+        next_check_at: Date.now() + 60 * 60_000,
+        last_run_started_at: Date.now() - 1_000,
+        last_run_finished_at: Date.now(),
+        accounts: [{
+          account_id: "seed",
+          status: "already_signed",
+          current_frequency: 2,
+          checked_at: Date.now()
+        }]
+      });
+      return;
+    }
     if (url.pathname === "/admin/api/overview") {
       json(response, overview());
       return;
@@ -591,6 +608,9 @@ for (const viewport of [
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/\/admin\/accounts$/);
     await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
+    await expect(page.getByText("已启用 · 每小时检查")).toBeVisible();
+    await expect(page.getByText("签到：今日已签到")).toBeVisible();
+    await expect(page.getByText("当前连续 2 天")).toBeVisible();
     const seedCheck = page.getByRole("button", {
       name: "刷新余额 Seed account",
     });

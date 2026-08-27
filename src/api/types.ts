@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type { CookieImportService } from "../accounts/cookie-import-service.js";
+import type { SignInStatusReader } from "../accounts/sign-in-repositories.js";
 import type { SqliteAccountRepository } from "../accounts/sqlite-account-repository.js";
 import type {
   SqliteAdmissionRepository
@@ -73,6 +74,7 @@ export interface AdminDependencies {
   >;
   cookieImporter: Pick<CookieImportService, "import">;
   browserLogins?: Pick<import("../accounts/browser-login-manager.js").BrowserLoginManager,"start"|"find">;
+  dailySignIn?: SignInStatusReader;
   accounts: Pick<
     SqliteAccountRepository,
     "create" | "update" | "findById" | "list" | "usage"
@@ -97,6 +99,7 @@ export interface AppDependencies {
   apiKeys: AdminDependencies["apiKeys"];
   cookieImporter: AdminDependencies["cookieImporter"];
   browserLogins?: AdminDependencies["browserLogins"];
+  dailySignIn?: AdminDependencies["dailySignIn"];
   adminStaticRoot?: string;
   logger: Logger;
   session: SessionProvider;

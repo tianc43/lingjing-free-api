@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { SignInStatusReader } from "../accounts/sign-in-repositories.js";
 import type { OptionalRedisCoordinator } from "../coordination/redis-coordinator.js";
 import { PostgresArchiveWorker } from "../jobs/postgres-archive-worker.js";
 import { PostgresReconciliationWorker } from "../jobs/postgres-reconciliation-worker.js";
@@ -31,6 +32,7 @@ export async function createPostgresServerRuntime(input: {
     refresh(accountId: string): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
   };
   quote?: { quote(input: VideoQuoteInput): Promise<VideoQuoteResult> };
+  dailySignInStatus?: SignInStatusReader;
   redis?: OptionalRedisCoordinator;
 }): Promise<{
   app: FastifyInstance;
@@ -47,7 +49,8 @@ export async function createPostgresServerRuntime(input: {
     input.redis,
     input.runtimeRefresher,
     input.dataDirectory,
-    input.quote
+    input.quote,
+    input.dailySignInStatus
   );
   const reconcile = new PostgresReconciliationWorker(
     input.graph,

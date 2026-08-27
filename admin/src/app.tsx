@@ -17,7 +17,7 @@ const PlansPage=lazy(()=>import("./pages/plans-page").then(module=>({default:mod
 const PlaygroundPage=lazy(()=>import("./pages/playground-page").then(module=>({default:module.PlaygroundPage})));
 const UsagePage=lazy(()=>import("./pages/usage-page").then(module=>({default:module.UsagePage})));
 const WebhooksPage=lazy(()=>import("./pages/webhooks-page").then(module=>({default:module.WebhooksPage})));
-import type { Account, AccountImportInput, AccountInput, ApiKey, Job, Overview, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, AccountImportInput, AccountInput, ApiKey, Job, Overview, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 type ResourceName = "accounts" | "overview" | "jobs" | "settings" | "apiKeys" | "identities" | "plans" | "usage" | "webhooks";
 type ResourceErrors = Partial<Record<ResourceName, string>>;
@@ -41,6 +41,7 @@ export function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [page, setPage] = useState<PageName>(pageFromPath());
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [signInStatus, setSignInStatus] = useState<SignInStatus | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -77,7 +78,16 @@ export function App() {
       setResourceLoading((current) => ({ ...current, [name]: false }));
     }
   }, []);
-  const loadAccounts = useCallback(() => runResource("accounts", () => api.accounts(), setAccounts), [api, runResource]);
+  const loadAccounts = useCallback(() => runResource("accounts", async () => {
+    const [nextAccounts, nextSignInStatus] = await Promise.all([
+      api.accounts(),
+      api.signInStatus()
+    ]);
+    return { accounts: nextAccounts, signInStatus: nextSignInStatus };
+  }, (value) => {
+    setAccounts(value.accounts);
+    setSignInStatus(value.signInStatus);
+  }), [api, runResource]);
   const loadOverview = useCallback(() => runResource("overview", () => api.overview(), setOverview), [api, runResource]);
   const loadJobs = useCallback(() => runResource("jobs", () => api.jobs(), setJobs), [api, runResource]);
   const loadSettings = useCallback(() => runResource("settings", () => api.settings(), setSettings), [api, runResource]);
@@ -103,6 +113,11 @@ export function App() {
       setInitializing(false);
     });
   }, [api, load]);
+  useEffect(() => {
+    if (!authenticated || page !== "accounts") return;
+    const timer = window.setInterval(() => void loadAccounts(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, loadAccounts, page]);
   const focusPageHeading = () => requestAnimationFrame(() => {
     const heading=document.querySelector<HTMLElement>("main h1");
     if(heading!==null){heading.tabIndex=-1;heading.focus();}
@@ -215,7 +230,7 @@ export function App() {
   const pageContent = page === "overview"
     ? <><ResourceFailure error={resourceErrors.overview} onRetry={() => void loadOverview()} />{overview === null && resourceLoading.overview ? <Skeleton /> : overview !== null && <OverviewPage overview={overview} />}</>
     : page === "accounts"
-      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account)=>void check(account)} onLogin={(account)=>void browserLogin(account)} checking={checking} loggingIn={loggingIn} />}</>
+      ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} signInStatus={signInStatus} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account)=>void check(account)} onLogin={(account)=>void browserLogin(account)} checking={checking} loggingIn={loggingIn} />}</>
     : page === "identities"
       ? <><ResourceFailure error={resourceErrors.identities} onRetry={() => void loadIdentities()} />{resourceLoading.identities && users.length === 0 ? <Skeleton /> : <IdentitiesPage users={users} projects={projects} onCreateUser={createUser} onCreateProject={createProject} onToggleUser={toggleUser} onToggleProject={toggleProject} />}</>
     : page === "playground"

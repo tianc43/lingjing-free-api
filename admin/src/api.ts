@@ -1,4 +1,4 @@
-import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, PlaygroundQuote, PlaygroundQuoteInput, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, PlaygroundQuote, PlaygroundQuoteInput, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -42,6 +42,7 @@ export class AdminApi {
 
   async overview(): Promise<Overview> { return await this.request("/overview"); }
   async accounts(): Promise<Account[]> { return (await this.request<{ accounts: Account[] }>("/accounts")).accounts; }
+  async signInStatus(): Promise<SignInStatus> { return await this.request("/sign-in-status"); }
   async jobs(): Promise<Job[]> { return (await this.request<{ jobs: Job[] }>("/jobs")).jobs; }
   async settings(): Promise<Settings> { return await this.request("/settings"); }
   async usage(filters: { user_id?:string; project_id?:string } = {}): Promise<UsageData> { const query=new URLSearchParams(filters); return await this.request(`/usage?${query}`); }

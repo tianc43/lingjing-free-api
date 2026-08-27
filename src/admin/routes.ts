@@ -32,6 +32,7 @@ import {
   accountParamsSchema,
   accountResponseSchema,
   accountViewSchema,
+  signInStatusResponseSchema,
   apiKeyListResponseSchema,
   apiKeyParamsSchema,
   apiKeyResponseSchema,
@@ -955,6 +956,41 @@ export async function registerAdminRoutes(
             pricing: presented.pricing
           };
         })
+      });
+    });
+
+    adminApp.get("/sign-in-status", {
+      schema: routeSchema({
+        security: publicSecurity,
+        querystring: emptyQuerySchema,
+        response: {
+          200: signInStatusResponseSchema,
+          401: errorResponseSchema
+        }
+      })
+    }, async (_request, reply) => {
+      const status = await dependencies.dailySignIn?.status();
+      return noStore(reply).send(status === undefined ? {
+        enabled: false,
+        interval_ms: 60 * 60_000,
+        running: false,
+        next_check_at: null,
+        last_run_started_at: null,
+        last_run_finished_at: null,
+        accounts: []
+      } : {
+        enabled: status.enabled,
+        interval_ms: status.intervalMs,
+        running: status.running,
+        next_check_at: status.nextCheckAt,
+        last_run_started_at: status.lastRunStartedAt,
+        last_run_finished_at: status.lastRunFinishedAt,
+        accounts: status.accounts.map((account) => ({
+          account_id: account.accountId,
+          status: account.status,
+          current_frequency: account.currentFrequency,
+          checked_at: account.checkedAt
+        }))
       });
     });
 

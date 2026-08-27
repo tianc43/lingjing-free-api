@@ -85,6 +85,47 @@ describe("Lingjing sign-in service", () => {
     });
   });
 
+  it("does not submit when today's durable attempt was already claimed", async () => {
+    const submitOnce = vi.fn();
+    const claimAttempt = vi.fn(() => Promise.resolve(false));
+    const service = new LingjingSignInService({
+      read: <T>() => Promise.resolve(progress("2026-08-26") as T),
+      submitOnce
+    }, claimAttempt);
+
+    await expect(service.signIn(TODAY)).resolves.toMatchObject({
+      status: "unknown",
+      currentFrequency: 2
+    });
+    expect(claimAttempt).toHaveBeenCalledWith(
+      "ACT2026062314020044",
+      "2026-08-27"
+    );
+    expect(submitOnce).not.toHaveBeenCalled();
+  });
+
+  it("submits at most once when hourly verification remains stale", async () => {
+    const claimed = new Set<string>();
+    const submitOnce = vi.fn(<T>() => Promise.resolve({} as T));
+    const service = new LingjingSignInService({
+      read: <T>() => Promise.resolve(progress("2026-08-26") as T),
+      submitOnce
+    } as never, (activityNo, shanghaiDate) => {
+      const key = `${activityNo}:${shanghaiDate}`;
+      if (claimed.has(key)) return Promise.resolve(false);
+      claimed.add(key);
+      return Promise.resolve(true);
+    });
+
+    await expect(service.signIn(TODAY)).resolves.toMatchObject({
+      status: "unknown"
+    });
+    await expect(service.signIn(TODAY)).resolves.toMatchObject({
+      status: "unknown"
+    });
+    expect(submitOnce).toHaveBeenCalledTimes(1);
+  });
+
   it.each([null, false, "", " "])(
     "rejects malformed status %j",
     async (status) => {

@@ -34,4 +34,24 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS recovery_claim_expires_at bigint;
 CREATE TABLE IF NOT EXISTS job_request_snapshots(job_id text PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,payload_json jsonb NOT NULL,created_at bigint NOT NULL,updated_at bigint NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_worker_active_idx ON jobs(status,updated_at);
 CREATE INDEX IF NOT EXISTS recovery_claim_idx ON jobs(recovery_claim_expires_at,updated_at);
+`},{version:4,name:"sign-in-state",sql:`
+CREATE TABLE sign_in_attempts(
+  account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  activity_no text NOT NULL,
+  shanghai_date text NOT NULL,
+  claimed_at bigint NOT NULL,
+  PRIMARY KEY(account_id,activity_no,shanghai_date)
+);
+CREATE TABLE sign_in_check_state(
+  account_id text PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  status text NOT NULL CHECK(status IN('checking','signed','already_signed','no_active_activity','unknown','failed')),
+  current_frequency integer,
+  checked_at bigint NOT NULL
+);
+CREATE TABLE sign_in_run_state(
+  singleton_id integer PRIMARY KEY CHECK(singleton_id=1),
+  running boolean NOT NULL,
+  last_started_at bigint,
+  last_finished_at bigint
+);
 `}];

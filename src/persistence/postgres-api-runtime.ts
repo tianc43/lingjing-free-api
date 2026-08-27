@@ -8,6 +8,7 @@ import { registerPostgresAssetRoutes } from "../api/routes/postgres-assets.js";
 import { registerPostgresUploadRoutes } from "../api/routes/postgres-uploads.js";
 import { registerPostgresVideoRoutes } from "../api/routes/postgres-videos.js";
 import type { OptionalRedisCoordinator } from "../coordination/redis-coordinator.js";
+import type { SignInStatusReader } from "../accounts/sign-in-repositories.js";
 import type { VideoQuoteInput, VideoQuoteResult } from "../lingjing/postgres-quote-resolver.js";
 import type { ObjectStore } from "../media/object-store.js";
 import {
@@ -36,7 +37,8 @@ export async function createPostgresApiRuntime(
     refresh(accountId: string): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
   },
   dataDirectory?: string,
-  quote?: QuotePort
+  quote?: QuotePort,
+  dailySignInStatus?: SignInStatusReader
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   registerErrorHandler(app);
@@ -49,7 +51,8 @@ export async function createPostgresApiRuntime(
       objects,
       runtimeRefresher,
       dataDirectory,
-      quote
+      quote,
+      dailySignInStatus
     );
   }
   await registerAdminStatic(app, adminPassword !== undefined);

@@ -216,6 +216,28 @@ export const accountListResponseSchema = z.object({
   accounts: z.array(accountViewSchema)
 }).strict();
 
+export const signInStatusResponseSchema = z.object({
+  enabled: z.boolean(),
+  interval_ms: nonNegativeInteger,
+  running: z.boolean(),
+  next_check_at: z.number().nullable(),
+  last_run_started_at: z.number().nullable(),
+  last_run_finished_at: z.number().nullable(),
+  accounts: z.array(z.object({
+    account_id: z.string(),
+    status: z.enum([
+      "checking",
+      "signed",
+      "already_signed",
+      "no_active_activity",
+      "unknown",
+      "failed"
+    ]),
+    current_frequency: nonNegativeInteger.nullable(),
+    checked_at: z.number()
+  }).strict())
+}).strict();
+
 export const userViewSchema = z.object({
   id: z.string(), name: z.string(), status: z.enum(["active", "disabled"]),
   created_at: z.number(), updated_at: z.number()
