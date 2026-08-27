@@ -241,10 +241,7 @@ export function normalizeModels(
     );
     const modelCode=nonEmptyString(raw.modelCode)??(sourceType==="image-to-video"?apiId:undefined)??nonEmptyString(raw.venderCode)??nonEmptyString(modelParameter?.defaultValue);
     const sceneCode=nonEmptyString(raw.sceneCode)??nonEmptyString(raw.scene)??(sourceType==="image-to-video"?sourceType:undefined)??nonEmptyString(raw.shortSenceCode)??sourceType;
-    const expectedAssetScene = nonEmptyString(raw.assetScene)
-      ?? nonEmptyString(raw.scene)
-      ?? nonEmptyString(raw.shortSenceCode)
-      ?? sourceType;
+    const expectedAssetScene=nonEmptyString(raw.assetScene)??nonEmptyString(raw.scene)??(sourceType==="image-to-video"?"image-to-video":nonEmptyString(raw.shortSenceCode)??sourceType);
     const rawPrice = isPlainObject(raw.priceQuerySchema)
       ? raw.priceQuerySchema
       : null;

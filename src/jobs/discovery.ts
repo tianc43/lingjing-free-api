@@ -113,29 +113,8 @@ export function matchAsset(
   const candidates = assets.filter((asset) => {
     if (baselineIds.has(asset.id) || asset.createTime < earliest) return false;
     if (!matchesAssetScene(job, asset.scene)) return false;
-    if (asset.createTime < submittedAt) {
-      if (
-        asset.modelCode === null
-        || (
-          asset.modelCode !== job.modelCode
-          && asset.modelCode !== job.apiId
-        )
-        || job.upstreamFingerprint === null
-        || asset.reqParam === null
-      ) {
-        return false;
-      }
-      try {
-        if (
-          fingerprintAssetReqParam(asset.reqParam)
-          !== job.upstreamFingerprint
-        ) {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
+    const clockSkewCandidate=asset.createTime<submittedAt;
+    if(clockSkewCandidate){if(asset.modelCode===null||(asset.modelCode!==job.modelCode&&asset.modelCode!==job.apiId)||asset.reqParam===null)return false;if(job.sourceType!=="image-to-video"){try{if(job.upstreamFingerprint===null||fingerprintAssetReqParam(asset.reqParam)!==job.upstreamFingerprint)return false;}catch{return false;}}}
     if (
       job.modelCode !== null
       && asset.modelCode !== null
@@ -144,7 +123,7 @@ export function matchAsset(
     ) {
       return false;
     }
-    if (job.upstreamFingerprint !== null && asset.reqParam !== null) {
+    if(!clockSkewCandidate&&job.upstreamFingerprint!==null&&asset.reqParam!==null){
       try {
         if (
           fingerprintAssetReqParam(asset.reqParam)

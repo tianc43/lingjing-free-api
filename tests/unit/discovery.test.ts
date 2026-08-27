@@ -105,6 +105,8 @@ describe("matchAsset", () => {
     ])).toEqual({ kind: "not-found", candidates: 0 });
   });
 
+  it("accepts an I2V skew candidate by exact scene and model when reqParam differs",()=>{const videoJob={...jobFixture,sourceType:"image-to-video",expectedAssetScene:"image-to-video",apiId:"751",modelCode:"751"};const candidate=asset({scene:"image-to-video",modelCode:"751",createTime:submittedAt-1_201,reqParam:{unexpected:"current-web-shape"}});expect(matchAsset(videoJob,[candidate])).toEqual({kind:"unique",asset:candidate,candidates:1});});
+
   it("rejects a pre-submit skew candidate without a model identifier", () => {
     expect(matchAsset(jobFixture, [
       asset({
