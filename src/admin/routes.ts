@@ -19,8 +19,7 @@ import {
 import type { AdminDependencies, AdminRuntimeView } from "../api/types.js";
 import { errors } from "../errors.js";
 import { presentModel } from "../api/presenters.js";
-import { buildPriceQuery } from "../lingjing/price-query.js";
-import { LingjingPriceService } from "../lingjing/price-service.js";
+import { quoteModelPrice } from "../lingjing/model-price.js";
 import {
   setIfSupported,
   validateDynamicValues
@@ -262,10 +261,11 @@ async function livePlaygroundPoints(
         runtime.catalog.resolve(input.model, input.mode, true),
         runtime.account.describe()
       ]);
-      const query = buildPriceQuery(model, input.parameters);
-      if (query === null) continue;
-      const quote = await new LingjingPriceService(runtime.transport)
-        .calculate(query);
+      const quote = await quoteModelPrice(
+        model,
+        input.parameters,
+        runtime.transport
+      );
       const usage = dependencies.accounts.usage(
         record.id,
         budgetWindows()
@@ -295,10 +295,11 @@ async function livePlaygroundPoints(
     input.mode,
     true
   );
-  const query = buildPriceQuery(model, input.parameters);
-  if (query === null) throw errors.upstream();
-  return (await new LingjingPriceService(dependencies.transport)
-    .calculate(query)).points;
+  return (await quoteModelPrice(
+    model,
+    input.parameters,
+    dependencies.transport
+  )).points;
 }
 
 function findAccount(

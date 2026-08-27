@@ -509,6 +509,61 @@ describe("administrator API", () => {
         aspect_ratio: "16:9"
       }
     });
+
+    const formulaModel = {
+      ...dynamicModel,
+      id: "751",
+      apiId: "751",
+      alias: "seedance-1-5-pro",
+      sourceType: "image-to-video" as const,
+      priceQuerySchema: {
+        strategy: "formula" as const,
+        priceQueryService: "123service",
+        shortVender: "byte",
+        shortSenceCode: "t2v",
+        fields: [
+          { index: "2", key: "model_name", billingItemType: "1", selectors: [{ matches: ["Doubao-Seedance-1.5-pro"], shortName: "sda15p" }] },
+          { index: "3", key: "duration", billingItemType: "1", selectors: [{ matches: ["5"], shortName: "5s" }] },
+          { index: "4", key: "mode", billingItemType: "1", selectors: [{ matches: ["480p"], shortName: "480p" }] },
+          { index: "6", key: "generate_audio", billingItemType: "1", selectors: [{ matches: ["false"], shortName: "F" }] }
+        ]
+      },
+      parameters: [
+        { idx: "2", key: "model_name", displayName: "模型", required: true, kind: "enum" as const, defaultValue: "Doubao-Seedance-1.5-pro", options: ["Doubao-Seedance-1.5-pro"] },
+        { idx: "3", key: "duration", displayName: "时长", required: true, kind: "enum" as const, defaultValue: "5", options: ["5"] },
+        { idx: "4", key: "mode", displayName: "清晰度", required: true, kind: "enum" as const, defaultValue: "480p", options: ["480p"] },
+        { idx: "6", key: "generate_audio", displayName: "音频", required: true, kind: "boolean" as const, defaultValue: false }
+      ]
+    };
+    fixture.runtimes.listEnabled.mockReturnValue([]);
+    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>)
+      .mockResolvedValue(formulaModel);
+    const compatibilityTransport = fixture.dependencies.transport as unknown as {
+      read: ReturnType<typeof import("vitest").vi.fn>;
+    };
+    let formulaPath: string | undefined;
+    compatibilityTransport.read.mockImplementation(<T>(nextPath: string) => {
+      formulaPath = nextPath;
+      return Promise.resolve({
+        result: { totalPrice: 0.32, discountedTotalPrice: 0.32 }
+      } as T);
+    });
+    const formulaQuote = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/playground/quote",
+      payload: {
+        kind: "video",
+        model: "seedance-1-5-pro",
+        mode: "image-to-video",
+        parameters: {}
+      }
+    });
+    expect(formulaQuote.json<{ points: number }>()).toMatchObject({
+      points: 32
+    });
+    expect(formulaPath).toBe(
+      "/openApi/billingprice/calculateTotalPriceV2"
+    );
   });
 
   it("creates users, projects and project-scoped API keys", async () => {

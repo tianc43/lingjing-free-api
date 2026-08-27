@@ -156,6 +156,34 @@ describe("buildPayload", () => {
     expect(payload).not.toHaveProperty("priceQueryResult");
   });
 
+  it("does not attach a dynamic price request to formula-priced submissions", () => {
+    const payload = buildPayload({
+      model: {
+        ...imageVideoModel,
+        priceQuerySchema: {
+          strategy: "formula",
+          priceQueryService: "123service",
+          shortVender: "byte",
+          shortSenceCode: "t2v",
+          fields: []
+        }
+      },
+      spaceId: 0,
+      values: {
+        image: ["fixture/path.png"],
+        prompt: "fixture prompt",
+        model: "fixture-image-motion",
+        duration: 3,
+        resolution: "720p",
+        ratio: "16:9",
+        watermark: false,
+        seed: 1
+      }
+    });
+
+    expect(payload).not.toHaveProperty("priceQueryResult");
+  });
+
   it("rejects unknown parameters and stale enum values", () => {
     expectAppError(() => buildPayload({
       model: imageModel,

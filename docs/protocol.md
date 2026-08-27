@@ -13,12 +13,15 @@
 | 空间与资产 | `GET /joycreator/team/space/menu/list`、`GET /joycreator/space/asset/list` | 页面实际请求 | 后者当前可见查询包含 `spaceId`、`assetType`、`currentPage`、`pageSize`。 |
 | 模型目录 | `POST /joycreator/AIModelApiConsole/getBySourceType` | 页面实际请求 + 已加载脚本 | 请求体为 `{ "sourceType": "..." }`；视频页由此加载动态模型与参数。 |
 | 单模型详情 | `POST /joycreator/AIModelApiConsole/getByApiId` | 已加载脚本 | 请求体为 `{ "apiId": "..." }`。 |
-| 报价 | `POST /joycreator/AIModelApiConsole/calculatePrice` | 页面实际请求 + 已加载脚本 | 随当前模型/参数刷新报价；必须在提交前重新查询。 |
+| 动态报价 | `POST /joycreator/AIModelApiConsole/calculatePrice` | 页面实际请求 + 已加载脚本 | `enablePriceQuery=true` 时使用；随当前模型/参数刷新报价。 |
+| 公式报价 | `POST /openApi/billingprice/calculateTotalPriceV2` | 2026-08-27 已加载脚本 + 实时请求 | `enablePriceQuery=false` 时使用；由 `shortVender.shortSenceCode` 和按参数 index 排序的计费 `shortName` 拼成公式键。 |
 | 提交 | `POST /joycreator/AIModelApiConsole/executeByApiId` | 已加载脚本 + 文生视频实测受理 | 通用模型执行入口；原始请求体仍需由动态目录和表单构造，禁止硬编码。 |
 | 图生素材上传 | `POST /joycreator/AIModelApiConsole/uploadMaterials` | 已加载脚本 | `multipart/form-data`：`sceneCode`、`modelCode`、`spaceId`、`file`。 |
 | 任务读取 | `POST /openApi/modelmarket/describeUserTask` | 已加载脚本 | 请求体为 `{ "params": { "taskId": "..." } }`。 |
 
 视频页当前可见三种模式：文生视频、图生视频、参考生视频。图生视频要求首帧图；当前表单暴露模型、时长、分辨率、画幅和“生成音频”开关，说明这些都必须从动态模型目录而不是写死的枚举中取值。
+
+报价有两个互斥分支：`enablePriceQuery=true` 的模型调用动态报价接口，并在提交体携带 `priceQueryResult.priceQueryRequest`；`enablePriceQuery=false` 的模型调用公式报价接口，不携带该提交字段。两种响应都以 `discountedTotalPrice ?? totalPrice` 乘 100 并四舍五入为页面点数。任一分支缺少必需计费字段都必须失败关闭。
 
 任务读取的当前前端处理字段包括 `status`、`url`、`watermarkUrl`、`imageUrl`、`width`、`height`、`taskType`、`taskResults`、`reqParam`、`name` 和 `errMsg`。这证明轮询响应不能只依赖单一输出 URL。
 

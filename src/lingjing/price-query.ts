@@ -56,6 +56,7 @@ export function buildPriceQuery(
   values: Record<string, unknown>
 ): PriceQuery | null {
   const schema = model.priceQuerySchema;
+  if (schema?.strategy === "formula") return null;
   const priceQueryService = service(schema);
   if (schema === null || priceQueryService === null) return null;
 
@@ -87,4 +88,44 @@ export function buildPriceQuery(
     priceQueryService,
     params
   };
+}
+
+function fieldOrder(left: NormalizedPriceField, right: NormalizedPriceField): number {
+  const leftIndex = left.index ?? left.key;
+  const rightIndex = right.index ?? right.key;
+  const leftNumber = Number(leftIndex);
+  const rightNumber = Number(rightIndex);
+  const leftNumeric = leftIndex.trim().length > 0 && Number.isFinite(leftNumber);
+  const rightNumeric = rightIndex.trim().length > 0 && Number.isFinite(rightNumber);
+  if (leftNumeric && rightNumeric) return leftNumber - rightNumber;
+  if (leftNumeric) return -1;
+  if (rightNumeric) return 1;
+  return leftIndex.localeCompare(rightIndex);
+}
+
+export function buildFormulaKey(
+  model: NormalizedModel,
+  values: Record<string, unknown>
+): string | null {
+  const schema = model.priceQuerySchema;
+  if (
+    schema?.strategy !== "formula"
+    || schema.shortVender === undefined
+    || schema.shortSenceCode === undefined
+  ) {
+    return null;
+  }
+  const fields = schema.fields?.slice().sort(fieldOrder);
+  if (fields === undefined || fields.length === 0) return null;
+  const parts = [schema.shortVender, schema.shortSenceCode];
+  for (const field of fields) {
+    if (field.billingItemType !== "1") return null;
+    const parameter = model.parameters.find((item) => item.key === field.key);
+    const value = scalar(values[field.key] ?? parameter?.defaultValue);
+    if (value === null) return null;
+    const shortName = selectorValue(field.selectors, value);
+    if (shortName === null) return null;
+    parts.push(shortName);
+  }
+  return parts.join(".");
 }

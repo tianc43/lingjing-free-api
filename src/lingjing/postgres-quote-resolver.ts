@@ -1,5 +1,4 @@
-import { buildPriceQuery } from "./price-query.js";
-import { LingjingPriceService } from "./price-service.js";
+import { quoteModelPrice } from "./model-price.js";
 import type { PriceQuery } from "./price-service.js";
 import type { RuntimeLookup } from "./postgres-account-transport-resolver.js";
 
@@ -12,7 +11,7 @@ export interface VideoQuoteInput {
 
 export interface VideoQuoteResult {
   points: number;
-  priceQueryResult: {
+  priceQueryResult?: {
     priceQueryRequest: PriceQuery;
   };
 }
@@ -32,13 +31,6 @@ export class PostgresVideoQuoteResolver {
       input.mode,
       true
     );
-    const query = buildPriceQuery(model, input.parameters);
-    if (query === null) throw new Error("Video model has no live price query");
-    const result = await new LingjingPriceService(runtime.transport)
-      .calculate(query);
-    return {
-      points: result.points,
-      priceQueryResult: { priceQueryRequest: query }
-    };
+    return await quoteModelPrice(model, input.parameters, runtime.transport);
   }
 }

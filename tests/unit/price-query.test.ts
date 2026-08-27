@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPriceQuery } from "../../src/lingjing/price-query.js";
+import { buildFormulaKey, buildPriceQuery } from "../../src/lingjing/price-query.js";
 import type { NormalizedModel } from "../../src/models/types.js";
 
 const model = {
@@ -92,5 +92,29 @@ describe("Lingjing live price query", () => {
       mode: "480p",
       aspect_ratio: "16:9"
     })).toBeNull();
+  });
+
+  it("builds the current fixed-formula key for non-query video models", () => {
+    expect(buildFormulaKey({
+      ...model,
+      priceQuerySchema: {
+        strategy: "formula",
+        priceQueryService: "123service",
+        shortVender: "byte",
+        shortSenceCode: "t2v",
+        fields: [
+          { index: "2", key: "model_name", billingItemType: "1", selectors: [{ matches: ["Doubao-Seedance-1.5-pro"], shortName: "sda15p" }] },
+          { index: "3", key: "duration", billingItemType: "1", selectors: [{ matches: ["5"], shortName: "5s" }] },
+          { index: "4", key: "mode", billingItemType: "1", selectors: [{ matches: ["480p"], shortName: "480p" }] },
+          { index: "6", key: "generate_audio", billingItemType: "1", selectors: [{ matches: ["false"], shortName: "F" }] }
+        ]
+      },
+      parameters: [
+        { idx: "2", key: "model_name", displayName: "模型", required: true, kind: "enum", defaultValue: "Doubao-Seedance-1.5-pro", options: ["Doubao-Seedance-1.5-pro"] },
+        { idx: "3", key: "duration", displayName: "时长", required: true, kind: "enum", defaultValue: "5", options: ["5"] },
+        { idx: "4", key: "mode", displayName: "清晰度", required: true, kind: "enum", defaultValue: "480p", options: ["480p"] },
+        { idx: "6", key: "generate_audio", displayName: "音频", required: true, kind: "boolean", defaultValue: false }
+      ]
+    }, {})).toBe("byte.t2v.sda15p.5s.480p.F");
   });
 });

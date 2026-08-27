@@ -19,12 +19,14 @@ export interface NormalizedPriceSelector {
 }
 
 export interface NormalizedPriceField {
+  index?: string;
   key: string;
   billingItemType: string;
   selectors?: NormalizedPriceSelector[];
 }
 
 export interface NormalizedPriceQuery {
+  strategy?: "calculate" | "formula";
   priceQueryService?: string;
   shortVender?: string;
   shortSenceCode?: string;

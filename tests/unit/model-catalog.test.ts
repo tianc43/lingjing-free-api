@@ -359,6 +359,7 @@ describe("dynamic model normalization", () => {
 
     expect(model?.pricing).toBeNull();
     expect(model?.priceQuerySchema).toMatchObject({
+      strategy: "calculate",
       priceQueryService: "sd2",
       shortVender: "byte",
       shortSenceCode: "t2v",
@@ -372,6 +373,63 @@ describe("dynamic model normalization", () => {
           }]
         },
         { key: "duration", billingItemType: "5" }
+      ]
+    });
+  });
+
+  it("routes enablePriceQuery=false video models through formula pricing", () => {
+    const model = normalizeModels("image-to-video", [{
+      apiId: "751",
+      aiModelName: "Seedance-1.5-pro",
+      price: "13.00",
+      enablePriceQuery: false,
+      priceQueryService: "123service",
+      shortVender: "byte",
+      shortSenceCode: "t2v",
+      parametersMeta: [{
+        index: "2",
+        fieldName: "model_name",
+        required: true,
+        componentType: "selector",
+        defaultValue: "Doubao-Seedance-1.5-pro",
+        billingItemType: "1",
+        selectorValues: [{
+          key: "Doubao-Seedance-1.5-pro",
+          value: "Seedance-1.5-pro",
+          shortName: "sda15p"
+        }]
+      }, {
+        index: "6",
+        fieldName: "generate_audio",
+        required: true,
+        componentType: "booleanSelector",
+        defaultValue: false,
+        billingItemType: "1",
+        selectorValues: [{
+          key: false,
+          value: "关",
+          shortName: "F"
+        }]
+      }]
+    }])[0];
+
+    expect(model?.pricing).toBeNull();
+    expect(model?.priceQuerySchema).toMatchObject({
+      strategy: "formula",
+      shortVender: "byte",
+      shortSenceCode: "t2v",
+      fields: [
+        {
+          index: "2",
+          key: "model_name",
+          billingItemType: "1"
+        },
+        {
+          index: "6",
+          key: "generate_audio",
+          billingItemType: "1",
+          selectors: [{ matches: ["false", "关"], shortName: "F" }]
+        }
       ]
     });
   });

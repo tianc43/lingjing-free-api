@@ -30,6 +30,7 @@ import type {
 } from "../jobs/types.js";
 import { SubmitAmbiguousError, upstreamDiagnostics } from "../lingjing/error-map.js";
 import { buildPriceQuery } from "../lingjing/price-query.js";
+import { buildFormulaKey } from "../lingjing/price-query.js";
 import type { OutputArchiver } from "../media/output-archiver.js";
 import type { SqliteAssetRepository } from "../media/asset-repository.js";
 import type { MediaInput, PreparedMedia } from "../media/types.js";
@@ -544,7 +545,14 @@ implements GenerationCoordinator {
       const livePriceQuery = buildPriceQuery(model, values);
       if (
         typeof model.priceQuerySchema?.priceQueryService === "string"
+        && model.priceQuerySchema.strategy !== "formula"
         && livePriceQuery === null
+      ) {
+        throw errors.upstream();
+      }
+      if (
+        model.priceQuerySchema?.strategy === "formula"
+        && buildFormulaKey(model, values) === null
       ) {
         throw errors.upstream();
       }

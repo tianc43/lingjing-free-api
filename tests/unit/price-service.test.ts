@@ -65,4 +65,39 @@ describe("Lingjing price parsing", () => {
 
     await expect(service.calculate(query)).rejects.toThrow(/no point quote/u);
   });
+
+  it("uses the current billing formula endpoint for non-query models", async () => {
+    let path: string | undefined;
+    let body: unknown;
+    const service = new LingjingPriceService({
+      read: <T>(nextPath: string, init?: { body?: unknown }) => {
+        path = nextPath;
+        body = init?.body;
+        return Promise.resolve({
+          result: { totalPrice: 0.32, discountedTotalPrice: 0.32 }
+        } as T);
+      }
+    });
+
+    expect((await service.calculateFormula(
+      "byte.t2v.sda15p.5s.480p.F"
+    )).points).toBe(32);
+    expect(path).toBe("/openApi/billingprice/calculateTotalPriceV2");
+    expect(body).toEqual({
+      params: {
+        cmd: 1,
+        packageCount: 1,
+        orderList: [{
+          appCode: "jcloud",
+          serviceCode: "lingjing",
+          site: 0,
+          region: "cn-common",
+          billingType: 2,
+          timeUnit: 0,
+          networkOperator: 0,
+          formula: [{ key: "byte.t2v.sda15p.5s.480p.F", value: 1 }]
+        }]
+      }
+    });
+  });
 });

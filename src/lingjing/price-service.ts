@@ -56,10 +56,39 @@ export class LingjingPriceService {
   ) {}
 
   async calculate(query: PriceQuery): Promise<PriceQuote> {
-    const raw = await this.transport.read<unknown>(
+    return await this.request(
       "/joycreator/AIModelApiConsole/calculatePrice",
-      { method: "POST", body: query }
+      query
     );
+  }
+
+  async calculateFormula(formulaKey: string): Promise<PriceQuote> {
+    return await this.request(
+      "/openApi/billingprice/calculateTotalPriceV2",
+      {
+        params: {
+          cmd: 1,
+          packageCount: 1,
+          orderList: [{
+            appCode: "jcloud",
+            serviceCode: "lingjing",
+            site: 0,
+            region: "cn-common",
+            billingType: 2,
+            timeUnit: 0,
+            networkOperator: 0,
+            formula: [{ key: formulaKey, value: 1 }]
+          }]
+        }
+      }
+    );
+  }
+
+  private async request(path: string, body: unknown): Promise<PriceQuote> {
+    const raw = await this.transport.read<unknown>(path, {
+      method: "POST",
+      body
+    });
     const points = displayedPoints(raw);
     if (points === null) {
       throw new Error("Lingjing price response has no point quote");

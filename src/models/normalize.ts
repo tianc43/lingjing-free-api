@@ -42,10 +42,15 @@ function selectorKeys(raw: ObjectRecord): unknown[] {
     .map((item) => item.key);
 }
 
+function priceSelectorString(value: unknown): string | undefined {
+  return typeof value === "boolean" ? String(value) : asString(value);
+}
+
 function normalizePriceField(raw: ObjectRecord): NormalizedPriceField | null {
   const key = asString(raw.fieldName) ?? asString(raw.index);
   const billingItemType = asString(raw.billingItemType);
   if (key === undefined || billingItemType === undefined) return null;
+  const index = asString(raw.index) ?? key;
   if (!["1", "2", "3", "4", "5", "6", "7"].includes(billingItemType)) {
     return null;
   }
@@ -56,7 +61,9 @@ function normalizePriceField(raw: ObjectRecord): NormalizedPriceField | null {
         selector.exKey,
         selector.value,
         selector.backendValue
-      ].map(asString).filter((value): value is string => value !== undefined);
+      ].map(priceSelectorString).filter(
+        (value): value is string => value !== undefined
+      );
       const shortName = nonEmptyString(selector.shortName);
       return {
         matches: [...new Set(matches)],
@@ -65,6 +72,7 @@ function normalizePriceField(raw: ObjectRecord): NormalizedPriceField | null {
     }).filter((selector) => selector.matches.length > 0)
     : [];
   return {
+    index,
     key,
     billingItemType,
     ...(selectors.length === 0 ? {} : { selectors })
@@ -262,7 +270,16 @@ export function normalizeModels(
           ...(rawPrice ?? {}),
           ...(priceService === undefined
             ? {}
-            : { priceQueryService: priceService }),
+            : {
+                priceQueryService: priceService,
+                strategy: raw.enablePriceQuery === false
+                  || (
+                    typeof raw.enablePriceQuery === "string"
+                    && raw.enablePriceQuery.trim().toLowerCase() === "false"
+                  )
+                  ? "formula" as const
+                  : "calculate" as const
+              }),
           ...(shortVender === undefined ? {} : { shortVender }),
           ...(shortSenceCode === undefined ? {} : { shortSenceCode }),
           ...(priceFields.length === 0 ? {} : { fields: priceFields }),
