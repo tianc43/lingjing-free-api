@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   NormalizedModel,
   NormalizedParameter,
+  NormalizedPriceField,
   SourceType
 } from "./types.js";
 
@@ -39,6 +40,35 @@ function selectorKeys(raw: ObjectRecord): unknown[] {
   return raw.selectorValues
     .filter(isPlainObject)
     .map((item) => item.key);
+}
+
+function normalizePriceField(raw: ObjectRecord): NormalizedPriceField | null {
+  const key = asString(raw.fieldName) ?? asString(raw.index);
+  const billingItemType = asString(raw.billingItemType);
+  if (key === undefined || billingItemType === undefined) return null;
+  if (!["1", "2", "3", "4", "5", "6", "7"].includes(billingItemType)) {
+    return null;
+  }
+  const selectors = Array.isArray(raw.selectorValues)
+    ? raw.selectorValues.filter(isPlainObject).map((selector) => {
+      const matches = [
+        selector.key,
+        selector.exKey,
+        selector.value,
+        selector.backendValue
+      ].map(asString).filter((value): value is string => value !== undefined);
+      const shortName = nonEmptyString(selector.shortName);
+      return {
+        matches: [...new Set(matches)],
+        ...(shortName === undefined ? {} : { shortName })
+      };
+    }).filter((selector) => selector.matches.length > 0)
+    : [];
+  return {
+    key,
+    billingItemType,
+    ...(selectors.length === 0 ? {} : { selectors })
+  };
 }
 
 function required(value: unknown): boolean {
@@ -207,7 +237,48 @@ export function normalizeModels(
       ?? nonEmptyString(raw.scene)
       ?? nonEmptyString(raw.shortSenceCode)
       ?? sourceType;
-    const rawPrice=isPlainObject(raw.priceQuerySchema)?raw.priceQuerySchema:null,observedPrice=raw.priceQueryService==="wan3"||rawPrice?.priceQueryService==="wan3"?{price:6,unit:"points",billingType:"fixed"}:null,priceService=nonEmptyString(raw.priceQueryService)??nonEmptyString(raw.priceService)??nonEmptyString(rawPrice?.priceQueryService),priceParams=isPlainObject(raw.priceQueryParams)?raw.priceQueryParams:isPlainObject(rawPrice?.params)?rawPrice.params:null;const priceQuerySchema=rawPrice===null&&priceService===undefined?null:{...(rawPrice??{}),...(priceService===undefined?{}:{priceQueryService:priceService}),...(priceParams===null?{}:{params:Object.fromEntries(Object.entries(priceParams).filter((entry):entry is [string,string|number|boolean]=>typeof entry[1]==="string"||typeof entry[1]==="number"||typeof entry[1]==="boolean"))})};
+    const rawPrice = isPlainObject(raw.priceQuerySchema)
+      ? raw.priceQuerySchema
+      : null;
+    const priceService = nonEmptyString(raw.priceQueryService)
+      ?? nonEmptyString(raw.priceService)
+      ?? nonEmptyString(rawPrice?.priceQueryService);
+    const priceParams = isPlainObject(raw.priceQueryParams)
+      ? raw.priceQueryParams
+      : isPlainObject(rawPrice?.params)
+        ? rawPrice.params
+        : null;
+    const priceFields = parameterRows
+      .filter(isPlainObject)
+      .map(normalizePriceField)
+      .filter((field): field is NormalizedPriceField => field !== null);
+    const shortVender = nonEmptyString(raw.shortVender);
+    const shortSenceCode = nonEmptyString(
+      raw.shortSenceCode ?? raw.shortSceneCode
+    );
+    const priceQuerySchema = rawPrice === null && priceService === undefined
+      ? null
+      : {
+          ...(rawPrice ?? {}),
+          ...(priceService === undefined
+            ? {}
+            : { priceQueryService: priceService }),
+          ...(shortVender === undefined ? {} : { shortVender }),
+          ...(shortSenceCode === undefined ? {} : { shortSenceCode }),
+          ...(priceFields.length === 0 ? {} : { fields: priceFields }),
+          ...(priceParams === null
+            ? {}
+            : {
+                params: Object.fromEntries(
+                  Object.entries(priceParams).filter(
+                    (entry): entry is [string, string | number | boolean] =>
+                      typeof entry[1] === "string"
+                      || typeof entry[1] === "number"
+                      || typeof entry[1] === "boolean"
+                  )
+                )
+              })
+        };
 
     return {
       id: asString(raw.id) ?? apiId,
@@ -222,7 +293,7 @@ export function normalizeModels(
       uploadStrategy:raw.uploadStrategy==="materials"||raw.materialUpload===true||sourceType==="image-to-video"?"materials":"general",
       priceQuerySchema,
       parameters,
-      pricing: fixedPricing(raw)??observedPrice,
+      pricing: priceService === undefined ? fixedPricing(raw) : null,
       rawRevision: createHash("sha256")
         .update(stableJson(raw))
         .digest("hex")

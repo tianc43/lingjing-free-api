@@ -1,9 +1,10 @@
 {
-  "source": "docs/protocol.md",
-  "observed": "2026-08-25",
+  "source": "reports/lingjing-video-pricing-2026-08-26.json",
+  "observed": "2026-08-26",
   "models": [
     {"display_name":"Seedance 2.0 mini","mode":"text-to-video","duration":"4","resolution":"480p","aspect_ratio":"16:9","points":92},
-    {"display_name":"Seedance-1.5-pro","mode":"image-to-video","duration":"5","resolution":"720p","aspect_ratio":"16:9","points":32},
-    {"display_name":"Hailuo-2.3-Fast","mode":"image-to-video","duration":"6","resolution":"1080p","points":231}
+    {"display_name":"Seedance 2.0 mini","mode":"text-to-video","duration":"5","resolution":"720p","aspect_ratio":"16:9","points":248},
+    {"display_name":"Seedance 2.0","mode":"text-to-video","duration":"5","resolution":"720p","aspect_ratio":"16:9","points":496},
+    {"display_name":"Seedance 2.5","mode":"text-to-video","duration":"5","resolution":"1080p","aspect_ratio":"21:9","points":1883}
   ]
 }

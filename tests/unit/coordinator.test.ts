@@ -23,6 +23,76 @@ afterEach(async () => {
 });
 
 describe("LingjingGenerationCoordinator", () => {
+  it("submits the same current live price request used for admission", async () => {
+    const model = {
+      id: "758",
+      apiId: "758",
+      alias: "seedance-2-0-mini",
+      displayName: "Seedance 2.0 mini",
+      sourceType: "text-to-video" as const,
+      modelCode: "Doubao-Seedance-2.0-mini",
+      refId: "758",
+      sceneCode: "text-to-video",
+      expectedAssetScene: "text-to-video",
+      uploadStrategy: "general" as const,
+      priceQuerySchema: {
+        priceQueryService: "sd2",
+        shortVender: "byte",
+        shortSenceCode: "t2v",
+        fields: [
+          { key: "model_name", billingItemType: "1", selectors: [{ matches: ["Doubao-Seedance-2.0-mini"], shortName: "sd2mini" }] },
+          { key: "duration", billingItemType: "5" },
+          { key: "mode", billingItemType: "1" },
+          { key: "aspect_ratio", billingItemType: "5" }
+        ]
+      },
+      parameters: [
+        { idx: "0", key: "prompt", displayName: "提示词", required: true, kind: "string" as const, defaultValue: "" },
+        { idx: "1", key: "model_name", displayName: "模型", required: true, kind: "enum" as const, defaultValue: "Doubao-Seedance-2.0-mini", options: ["Doubao-Seedance-2.0-mini"] },
+        { idx: "2", key: "duration", displayName: "时长", required: true, kind: "enum" as const, defaultValue: "5", options: ["4", "5"] },
+        { idx: "3", key: "mode", displayName: "清晰度", required: true, kind: "enum" as const, defaultValue: "720p", options: ["480p", "720p"] },
+        { idx: "4", key: "aspect_ratio", displayName: "画幅", required: true, kind: "enum" as const, defaultValue: "16:9", options: ["16:9", "9:16"] },
+        { idx: "5", key: "generate_audio", displayName: "生成音频", required: true, kind: "boolean" as const, defaultValue: true }
+      ],
+      pricing: null,
+      rawRevision: "fixture-live"
+    };
+    const app = createGenerationHarness({ model });
+    harnesses.push(app);
+    const handle = await app.coordinator.create(fixtureRequest({
+      kind: "video",
+      sourceType: "text-to-video",
+      model: "758",
+      values: {
+        prompt: "clouds",
+        duration: "4",
+        mode: "480p",
+        aspect_ratio: "16:9",
+        generate_audio: false
+      },
+      media: []
+    }));
+    await handle.wait(5_000);
+
+    expect(handle.job.quotedPoints).toBe(92);
+    expect(app.submittedPayloads()[0]).toMatchObject({
+      priceQueryResult: {
+        priceQueryRequest: {
+          enablePriceQuery: true,
+          priceQueryService: "sd2",
+          params: {
+            shortVender: "byte",
+            shortSenceCode: "t2v",
+            model_name: "sd2mini",
+            duration: "4",
+            mode: "480p",
+            aspect_ratio: "16:9"
+          }
+        }
+      }
+    });
+  });
+
   it("archives completed video outputs without another upstream submit", async () => {
     const app=harness();const archiveAll=vi.fn((input:{outputs:Array<{url:string;posterUrl:string|null}>})=>Promise.resolve(input.outputs.map(output=>({...output,url:"/v1/assets/asset-output"}))));
     (app.coordinator as unknown as {options:{outputArchiver?:{archiveAll:typeof archiveAll}}}).options.outputArchiver={archiveAll};

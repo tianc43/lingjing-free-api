@@ -1,2 +1,44 @@
-import{LingjingPriceService}from"./price-service.js";import type{RuntimeLookup}from"./postgres-account-transport-resolver.js";export class PostgresVideoQuoteResolver{constructor(private readonly runtimes:RuntimeLookup){}async quote(input:{modelId:string;mode:"text-to-video"|"image-to-video";duration?:number;resolution?:string;accountId:string}){const runtime=this.runtimes.listEnabled().find(item=>item.record.id===input.accountId);if(!runtime)throw new Error("Bound account runtime unavailable");const model=await runtime.catalog.resolve(input.modelId,input.mode,true),schema=model.priceQuerySchema;if(!schema)throw new Error("Video model has no live price query schema");const service=string(schema["priceQueryService"])??string(schema["service"])??string(schema["serviceName"]),template=object(schema["params"])??schema,params:Record<string,string|number|boolean>={};for(const parameter of model.parameters){const value=parameter.defaultValue;if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params[parameter.key]=value;}if(!service)throw new Error("Video price query service missing");for(const[key,value]of Object.entries(template)){if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params[key]=resolveValue(key,value,input,model.modelCode);}params["shortSenceCode"]??=input.mode==="image-to-video"?"i2v":"t2v";if(model.modelCode)params["model_name"]??=model.modelCode;if(input.duration!==undefined)params["duration"]=String(input.duration);if(input.resolution!==undefined){if(model.parameters.some(parameter=>parameter.key==="mode"))params["mode"]=input.resolution;else if(model.parameters.some(parameter=>parameter.key==="quality"))params["quality"]=input.resolution;else params["resolution"]=input.resolution;}return(await new LingjingPriceService(runtime.transport).calculate({enablePriceQuery:true,priceQueryService:service,params})).points;}}
-function string(value:unknown){return typeof value==="string"&&value.length>0?value:null;}function object(value:unknown){return typeof value==="object"&&value!==null&&!Array.isArray(value)?value as Record<string,unknown>:null;}function resolveValue(key:string,value:string|number|boolean,input:{mode:string;duration?:number;resolution?:string},modelCode:string|null){if(value==="duration"||key==="duration")return String(input.duration??value);if(value==="resolution"||key==="resolution")return input.resolution??String(value);if((key==="model_name"||value==="model_name")&&modelCode)return modelCode;return value;}
+import { buildPriceQuery } from "./price-query.js";
+import { LingjingPriceService } from "./price-service.js";
+import type { PriceQuery } from "./price-service.js";
+import type { RuntimeLookup } from "./postgres-account-transport-resolver.js";
+
+export interface VideoQuoteInput {
+  modelId: string;
+  mode: "text-to-video" | "image-to-video";
+  parameters: Record<string, unknown>;
+  accountId: string;
+}
+
+export interface VideoQuoteResult {
+  points: number;
+  priceQueryResult: {
+    priceQueryRequest: PriceQuery;
+  };
+}
+
+export class PostgresVideoQuoteResolver {
+  constructor(private readonly runtimes: RuntimeLookup) {}
+
+  async quote(input: VideoQuoteInput): Promise<VideoQuoteResult> {
+    const runtime = this.runtimes.listEnabled().find(
+      (item) => item.record.id === input.accountId
+    );
+    if (runtime === undefined) {
+      throw new Error("Bound account runtime unavailable");
+    }
+    const model = await runtime.catalog.resolve(
+      input.modelId,
+      input.mode,
+      true
+    );
+    const query = buildPriceQuery(model, input.parameters);
+    if (query === null) throw new Error("Video model has no live price query");
+    const result = await new LingjingPriceService(runtime.transport)
+      .calculate(query);
+    return {
+      points: result.points,
+      priceQueryResult: { priceQueryRequest: query }
+    };
+  }
+}

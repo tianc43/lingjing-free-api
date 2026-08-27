@@ -382,6 +382,74 @@ describe("AccountScheduler", () => {
     admitted.lease?.release();
   });
 
+  it("reserves the live platform quote instead of the catalog display price", async () => {
+    const dynamicModel: NormalizedModel = {
+      ...model,
+      id: "758",
+      apiId: "758",
+      alias: "seedance-2-0-mini",
+      sourceType: "text-to-video",
+      pricing: null,
+      parameters: [
+        { idx: "1", key: "model_name", displayName: "模型", required: true, kind: "enum", defaultValue: "Doubao-Seedance-2.0-mini", options: ["Doubao-Seedance-2.0-mini"] },
+        { idx: "2", key: "duration", displayName: "时长", required: true, kind: "enum", defaultValue: "5", options: ["4", "5"] },
+        { idx: "3", key: "mode", displayName: "清晰度", required: true, kind: "enum", defaultValue: "720p", options: ["480p", "720p"] },
+        { idx: "4", key: "aspect_ratio", displayName: "画幅", required: true, kind: "enum", defaultValue: "16:9", options: ["16:9", "9:16"] }
+      ],
+      priceQuerySchema: {
+        priceQueryService: "sd2",
+        shortVender: "byte",
+        shortSenceCode: "t2v",
+        fields: [
+          { key: "model_name", billingItemType: "1", selectors: [{ matches: ["Doubao-Seedance-2.0-mini"], shortName: "sd2mini" }] },
+          { key: "duration", billingItemType: "5" },
+          { key: "mode", billingItemType: "1" },
+          { key: "aspect_ratio", billingItemType: "5" }
+        ]
+      }
+    };
+    const candidate = runtime(record("acct_live"), {
+      resolve: () => Promise.resolve(dynamicModel)
+    });
+    let quotedBody: unknown;
+    const read = vi.fn(<T>(_path: string, init?: { body?: unknown }) => {
+      quotedBody = init?.body;
+      return Promise.resolve({
+        result: { totalPrice: 0.924048, discountedTotalPrice: 0.92 }
+      } as T);
+    });
+    candidate.transport = { read } as unknown as AccountRuntime["transport"];
+    const { scheduler, reserveOrGet } = schedulerFor([candidate]);
+
+    const admitted = await scheduler.admit({
+      ...admissionInput,
+      request: {
+        ...request,
+        kind: "video",
+        sourceType: "text-to-video",
+        model: "758",
+        values: {
+          duration: "4",
+          mode: "480p",
+          aspect_ratio: "16:9"
+        }
+      }
+    });
+
+    expect(admitted.job.quotedPoints).toBe(92);
+    expect(reserveOrGet).toHaveBeenCalledWith(expect.objectContaining({
+      quotedPoints: 92
+    }));
+    expect(read).toHaveBeenCalledWith(
+      "/joycreator/AIModelApiConsole/calculatePrice",
+      expect.any(Object)
+    );
+    expect(quotedBody).toMatchObject({
+      params: { model_name: "sd2mini" }
+    });
+    admitted.lease?.release();
+  });
+
   it("rejects an unknown quote when either account limit is configured", async () => {
     const candidate = runtime(record("acct_limited", {
       monthlyPointLimit: 10

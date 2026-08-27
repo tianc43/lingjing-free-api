@@ -325,6 +325,57 @@ describe("dynamic model normalization", () => {
     });
   });
 
+  it("keeps current live billing metadata and does not expose a dynamic video price as fixed", () => {
+    const model = normalizeModels("text-to-video", [{
+      apiId: "758",
+      aiModelName: "Seedance 2.0 mini",
+      price: 15,
+      enablePriceQuery: true,
+      priceQueryService: "sd2",
+      shortVender: "byte",
+      shortSenceCode: "t2v",
+      parametersMeta: [{
+        index: "1",
+        fieldName: "model_name",
+        required: true,
+        componentType: "selector",
+        defaultValue: "Doubao-Seedance-2.0-mini",
+        billingItemType: "1",
+        selectorValues: [{
+          key: "Doubao-Seedance-2.0-mini",
+          value: "Seedance 2.0 mini",
+          shortName: "sd2mini"
+        }]
+      }, {
+        index: "2",
+        fieldName: "duration",
+        required: true,
+        componentType: "selector",
+        defaultValue: "5",
+        billingItemType: "5",
+        selectorValues: [{ key: "4", value: "4s", shortName: "4s" }]
+      }]
+    }])[0];
+
+    expect(model?.pricing).toBeNull();
+    expect(model?.priceQuerySchema).toMatchObject({
+      priceQueryService: "sd2",
+      shortVender: "byte",
+      shortSenceCode: "t2v",
+      fields: [
+        {
+          key: "model_name",
+          billingItemType: "1",
+          selectors: [{
+            matches: ["Doubao-Seedance-2.0-mini", "Seedance 2.0 mini"],
+            shortName: "sd2mini"
+          }]
+        },
+        { key: "duration", billingItemType: "5" }
+      ]
+    });
+  });
+
   it("normalizes the current console detail metadata without guessing billing", () => {
     const models = normalizeModels("image-generation", [{
       apiId: "707",

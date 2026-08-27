@@ -16,9 +16,11 @@ import {
   publicSecurity,
   routeSchema
 } from "../api/schema.js";
-import type { AdminDependencies } from "../api/types.js";
+import type { AdminDependencies, AdminRuntimeView } from "../api/types.js";
 import { errors } from "../errors.js";
 import { presentModel } from "../api/presenters.js";
+import { buildPriceQuery } from "../lingjing/price-query.js";
+import { LingjingPriceService } from "../lingjing/price-service.js";
 import {
   setIfSupported,
   validateDynamicValues
@@ -61,6 +63,8 @@ import {
   overviewResponseSchema,
   playgroundModelsQuerySchema,
   playgroundModelsResponseSchema,
+  playgroundQuoteBodySchema,
+  playgroundQuoteResponseSchema,
   playgroundRunBodySchema,
   playgroundRunResponseSchema,
   resolveUnknownBodySchema,
@@ -211,6 +215,90 @@ function playgroundSourceTypes(query: {
   return query.mode === undefined
     ? ["text-to-video", "image-to-video"]
     : [query.mode];
+}
+
+type PlaygroundQuoteRuntime = AdminRuntimeView & Required<Pick<
+  AdminRuntimeView,
+  "transport" | "account" | "catalog"
+>>;
+
+function quoteCapableRuntime(
+  runtime: AdminRuntimeView
+): runtime is PlaygroundQuoteRuntime {
+  return runtime.transport !== undefined
+    && runtime.account !== undefined
+    && runtime.catalog !== undefined;
+}
+
+function compareQuoteRuntimes(
+  left: PlaygroundQuoteRuntime,
+  right: PlaygroundQuoteRuntime
+): number {
+  return left.record.priority - right.record.priority
+    || left.capacity.counts().active - right.capacity.counts().active
+    || (left.record.lastSelectedAt ?? Number.NEGATIVE_INFINITY)
+      - (right.record.lastSelectedAt ?? Number.NEGATIVE_INFINITY)
+    || left.record.id.localeCompare(right.record.id);
+}
+
+async function livePlaygroundPoints(
+  dependencies: AdminDependencies,
+  input: {
+    model: string;
+    mode: "text-to-video" | "image-to-video";
+    parameters: Record<string, unknown>;
+  }
+): Promise<number> {
+  const candidates = dependencies.runtimes.listEnabled()
+    .filter(quoteCapableRuntime)
+    .sort(compareQuoteRuntimes);
+  for (const runtime of candidates) {
+    const record = dependencies.accounts.findById(runtime.record.id);
+    if (record === null || !record.enabled || record.healthStatus !== "ready") {
+      continue;
+    }
+    try {
+      const [model, account] = await Promise.all([
+        runtime.catalog.resolve(input.model, input.mode, true),
+        runtime.account.describe()
+      ]);
+      const query = buildPriceQuery(model, input.parameters);
+      if (query === null) continue;
+      const quote = await new LingjingPriceService(runtime.transport)
+        .calculate(query);
+      const usage = dependencies.accounts.usage(
+        record.id,
+        budgetWindows()
+      );
+      if (
+        account.pointsBalance < quote.points
+        || (
+          record.dailyPointLimit !== 0
+          && usage.dayUsedPoints + quote.points > record.dailyPointLimit
+        )
+        || (
+          record.monthlyPointLimit !== 0
+          && usage.monthUsedPoints + quote.points > record.monthlyPointLimit
+        )
+      ) {
+        continue;
+      }
+      return quote.points;
+    } catch {
+      continue;
+    }
+  }
+  if (candidates.length > 0) throw errors.upstream();
+
+  const model = await dependencies.catalog.resolve(
+    input.model,
+    input.mode,
+    true
+  );
+  const query = buildPriceQuery(model, input.parameters);
+  if (query === null) throw errors.upstream();
+  return (await new LingjingPriceService(dependencies.transport)
+    .calculate(query)).points;
 }
 
 function findAccount(
@@ -867,6 +955,23 @@ export async function registerAdminRoutes(
           };
         })
       });
+    });
+
+    adminApp.post("/playground/quote", {
+      schema: routeSchema({
+        security: publicSecurity,
+        body: playgroundQuoteBodySchema,
+        response: {
+          200: playgroundQuoteResponseSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          502: errorResponseSchema
+        }
+      })
+    }, async (request, reply) => {
+      const body = playgroundQuoteBodySchema.parse(request.body);
+      const points = await livePlaygroundPoints(dependencies, body);
+      return noStore(reply).send({ points, source: "live" });
     });
 
     adminApp.post("/playground/run", {

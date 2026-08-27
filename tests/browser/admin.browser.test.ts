@@ -203,6 +203,48 @@ test.beforeAll(async () => {
       });
       return;
     }
+    if (url.pathname === "/admin/api/playground/models" && request.method === "GET") {
+      if (failModels) {
+        json(response, { error: { message: "Lingjing login required", code: "lingjing_session_expired" } }, 503);
+        return;
+      }
+      const kind = url.searchParams.get("type");
+      const mode = url.searchParams.get("mode") ?? "text-to-video";
+      if (kind === "image") {
+        json(response, { models: [{
+          id: "browser-image-model",
+          display_name: "Browser Image",
+          type: "image",
+          capabilities: { text: true, input_images: false },
+          parameters: [],
+          pricing: { points: 2 }
+        }] });
+        return;
+      }
+      json(response, { models: [{
+        id: mode === "image-to-video" ? "browser-i2v-mini" : "browser-t2v-mini",
+        display_name: mode === "image-to-video" ? "Seedance Mini I2V" : "Seedance Mini T2V",
+        type: "video",
+        mode,
+        capabilities: { text: true, input_images: mode === "image-to-video" },
+        parameters: [
+          { key: "duration", display_name: "时长", required: true, type: "enum", default: "4", options: ["4", "5"] },
+          { key: "mode", display_name: "清晰度", required: true, type: "enum", default: "480p", options: ["480p", "720p"] },
+          { key: "aspect_ratio", display_name: "画幅", required: true, type: "enum", default: "16:9", options: ["16:9", "9:16"] }
+        ],
+        pricing: null
+      }] });
+      return;
+    }
+    if (url.pathname === "/admin/api/playground/quote" && request.method === "POST") {
+      const input = await body(request);
+      const parameters = input.parameters as Record<string, unknown> | undefined;
+      json(response, {
+        points: parameters?.duration === "5" ? 115 : 92,
+        source: "live"
+      });
+      return;
+    }
     if (url.pathname === "/admin/api/settings" && fail运行环境) {
       json(
         response,
@@ -403,6 +445,7 @@ test.beforeAll(async () => {
         "/admin/",
         "/admin/accounts",
         "/admin/tasks",
+        "/admin/playground",
         "/admin/api-access",
         "/admin/settings",
       ].includes(url.pathname)
@@ -700,6 +743,8 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
 test("copies Agent-ready developer Markdown",async({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"开发者文档"}).click();await expect(page.getByRole("heading",{name:"开发者文档"})).toBeVisible();const markdown=page.getByLabel("Agent Markdown 开发文档");await expect(markdown).toHaveValue(/Idempotency-Key/u);await expect(markdown).toHaveValue(/unknown 绝不重提/u);await page.getByRole("button",{name:"复制 Markdown"}).click();await expect(page.getByRole("status")).toContainText(/Markdown 已复制|复制失败/u);});
 
 test("shows login recovery guidance when 调用测试 models need a session",async({page})=>{failModels=true;await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"调用测试"}).click();await expect(page.getByText("请先连接灵境账号")).toBeVisible();await expect(page.getByText("npm run login",{exact:false})).toBeVisible();await expect(page.getByRole("link",{name:"打开订阅账号"})).toHaveAttribute("href","/admin/accounts");});
+
+test("refreshes live video points when mode and parameters change",async({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"调用测试"}).click();await page.getByRole("button",{name:"视频"}).click();await expect(page.getByLabel("模型")).toHaveValue("browser-t2v-mini");await expect(page.getByText("预计 92 点",{exact:true})).toBeVisible();await page.getByLabel("时长").selectOption("5");await expect(page.getByText("预计 115 点",{exact:true})).toBeVisible();await page.getByLabel("视频模式").selectOption("image-to-video");await expect(page.getByLabel("模型")).toHaveValue("browser-i2v-mini");await expect(page.getByText("预计 92 点",{exact:true})).toBeVisible();});
 
 test("shows executable login commands for legacy and generated accounts", async ({
   page,

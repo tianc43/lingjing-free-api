@@ -356,6 +356,161 @@ describe("administrator API", () => {
     }));
   });
 
+  it("quotes the selected video mode and parameters without creating a job", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const dynamicModel = {
+      ...(await import("../helpers/test-app.js")).videoModel,
+      id: "758",
+      apiId: "758",
+      alias: "seedance-2-0-mini",
+      sourceType: "text-to-video" as const,
+      priceQuerySchema: {
+        priceQueryService: "sd2",
+        shortVender: "byte",
+        shortSenceCode: "t2v",
+        fields: [
+          {
+            key: "model_name",
+            billingItemType: "1",
+            selectors: [{
+              matches: ["Doubao-Seedance-2.0-mini"],
+              shortName: "sd2mini"
+            }]
+          },
+          { key: "duration", billingItemType: "5" },
+          { key: "mode", billingItemType: "1" },
+          { key: "aspect_ratio", billingItemType: "5" }
+        ]
+      },
+      parameters: [
+        { idx: "1", key: "model_name", displayName: "模型", required: true, kind: "enum" as const, defaultValue: "Doubao-Seedance-2.0-mini", options: ["Doubao-Seedance-2.0-mini"] },
+        { idx: "2", key: "duration", displayName: "时长", required: true, kind: "enum" as const, defaultValue: "5", options: ["4", "5"] },
+        { idx: "3", key: "mode", displayName: "清晰度", required: true, kind: "enum" as const, defaultValue: "720p", options: ["480p", "720p"] },
+        { idx: "4", key: "aspect_ratio", displayName: "画幅", required: true, kind: "enum" as const, defaultValue: "16:9", options: ["16:9", "9:16"] },
+        { idx: "5", key: "generate_audio", displayName: "生成音频", required: true, kind: "boolean" as const, defaultValue: true }
+      ],
+      pricing: null
+    };
+    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>)
+      .mockResolvedValue(dynamicModel);
+    const preferredRecord = fixture.accounts.recordObservation(
+      fixture.accounts.update(fixture.accounts.create({
+        name: "Preferred quote account",
+        priority: 0,
+        dailyPointLimit: 0,
+        monthlyPointLimit: 0
+      }).id, { enabled: true }).id,
+      {
+        healthStatus: "ready",
+        lastErrorCode: null,
+        subjectHash: "preferred",
+        membership: null,
+        pointsBalance: 100,
+        totalBalance: 100,
+        maxConcurrency: 2
+      }
+    );
+    const fallbackRecord = fixture.accounts.recordObservation(
+      fixture.accounts.update(fixture.accounts.create({
+        name: "Fallback quote account",
+        priority: 1,
+        dailyPointLimit: 0,
+        monthlyPointLimit: 0
+      }).id, { enabled: true }).id,
+      {
+        healthStatus: "ready",
+        lastErrorCode: null,
+        subjectHash: "fallback",
+        membership: null,
+        pointsBalance: 100,
+        totalBalance: 100,
+        maxConcurrency: 2
+      }
+    );
+    let quotedBody: unknown;
+    const preferredRead = (await import("vitest")).vi.fn(<T>(
+      _path: string,
+      init?: { body?: unknown }
+    ) => {
+      quotedBody = init?.body;
+      return Promise.resolve({
+        result: { totalPrice: 0.924048, discountedTotalPrice: 0.92 }
+      } as T);
+    });
+    const fallbackRead = (await import("vitest")).vi.fn(<T>() =>
+      Promise.resolve({
+        result: { totalPrice: 1.15, discountedTotalPrice: 1.15 }
+      } as T)
+    );
+    const runtime = (
+      record: typeof preferredRecord,
+      read: typeof preferredRead
+    ) => ({
+      record,
+      session: { describe: () => ({ mode: "browser-state", source: "fixture", sourceMtimeMs: 1, hasCsrf: true }) },
+      capacity: { counts: () => ({ active: 0, admitted: 0, queued: 0 }) },
+      transport: { read },
+      account: {
+        describe: () => Promise.resolve({
+          subject: record.subjectHash ?? "fixture",
+          spaceId: 1,
+          membership: null,
+          maxConcurrency: 2,
+          pointsBalance: 100,
+          couponBalance: 0,
+          availableAmount: 100,
+          totalBalance: 100,
+          resourcePackages: []
+        })
+      },
+      catalog: { list: () => Promise.resolve([dynamicModel]), resolve: () => Promise.resolve(dynamicModel) }
+    });
+    fixture.runtimes.listEnabled.mockReturnValue([
+      runtime(fallbackRecord, fallbackRead),
+      runtime(preferredRecord, preferredRead)
+    ]);
+
+    const quote = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/playground/quote",
+      payload: {
+        kind: "video",
+        model: "seedance-2-0-mini",
+        mode: "text-to-video",
+        parameters: {
+          duration: "4",
+          mode: "480p",
+          aspect_ratio: "16:9",
+          generate_audio: false
+        }
+      }
+    });
+
+    const coordinator = fixture.dependencies.coordinator as unknown as {
+      create: ReturnType<typeof import("vitest").vi.fn>;
+    };
+    expect(quote.statusCode).toBe(200);
+    expect(quote.json<{ points: number; source: string }>()).toEqual({
+      points: 92,
+      source: "live"
+    });
+    expect(coordinator.create).not.toHaveBeenCalled();
+    expect(preferredRead).toHaveBeenCalledWith(
+      "/joycreator/AIModelApiConsole/calculatePrice",
+      expect.any(Object)
+    );
+    expect(fallbackRead).not.toHaveBeenCalled();
+    expect(quotedBody).toMatchObject({
+      params: {
+        model_name: "sd2mini",
+        duration: "4",
+        mode: "480p",
+        aspect_ratio: "16:9"
+      }
+    });
+  });
+
   it("creates users, projects and project-scoped API keys", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);

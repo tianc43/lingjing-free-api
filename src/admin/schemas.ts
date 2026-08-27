@@ -116,6 +116,18 @@ export const playgroundRunBodySchema = z.object({
   }
 });
 
+export const playgroundQuoteBodySchema = z.object({
+  kind: z.literal("video"),
+  model: z.string().min(1),
+  mode: z.enum(["text-to-video", "image-to-video"]),
+  parameters: z.record(z.string(), z.unknown()).default({})
+}).strict();
+
+export const playgroundQuoteResponseSchema = z.object({
+  points: z.number().int().nonnegative(),
+  source: z.literal("live")
+}).strict();
+
 export const jobListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   status: z.enum([

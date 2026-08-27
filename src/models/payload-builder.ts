@@ -141,6 +141,7 @@ export function buildPayload(input: {
   }
 
   const priceQueryResult = input.model.priceQuerySchema === null
+    || typeof input.model.priceQuerySchema.priceQueryService === "string"
     ? undefined
     : derivePrice(input.model.priceQuerySchema, validated);
 

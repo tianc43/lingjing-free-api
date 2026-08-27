@@ -72,6 +72,18 @@ export interface PlaygroundInput {
   parameters: Record<string, unknown>;
 }
 
+export interface PlaygroundQuoteInput {
+  kind: "video";
+  model: string;
+  mode: "text-to-video" | "image-to-video";
+  parameters: Record<string, unknown>;
+}
+
+export interface PlaygroundQuote {
+  points: number;
+  source: "live";
+}
+
 export interface Overview {
   accounts: { total: number; enabled: number; ready: number; unhealthy: number; budget_exhausted: number };
   usage: { daily_used_points: number; monthly_used_points: number; daily_reserved_points: number; monthly_reserved_points: number };

@@ -52,6 +52,9 @@ export interface AdminRuntimeView {
   record: AccountRecord;
   session: Pick<SessionProvider, "describe">;
   capacity: Pick<CapacityManager, "counts">;
+  transport?: Pick<LingjingTransport, "read">;
+  account?: Pick<AccountService, "describe">;
+  catalog?: ModelCatalog;
 }
 
 export interface AdminDependencies {
@@ -72,7 +75,7 @@ export interface AdminDependencies {
   browserLogins?: Pick<import("../accounts/browser-login-manager.js").BrowserLoginManager,"start"|"find">;
   accounts: Pick<
     SqliteAccountRepository,
-    "create" | "update" | "findById" | "list"
+    "create" | "update" | "findById" | "list" | "usage"
   >;
   admissions: Pick<
     SqliteAdmissionRepository,
@@ -82,6 +85,7 @@ export interface AdminDependencies {
   repository: JobRepository;
   coordinator: Pick<GenerationCoordinator, "create" | "resolveUnknown">;
   catalog: ModelCatalog;
+  transport: Pick<LingjingTransport, "read">;
 }
 
 export interface AppDependencies {

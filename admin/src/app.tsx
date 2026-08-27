@@ -219,7 +219,7 @@ export function App() {
     : page === "identities"
       ? <><ResourceFailure error={resourceErrors.identities} onRetry={() => void loadIdentities()} />{resourceLoading.identities && users.length === 0 ? <Skeleton /> : <IdentitiesPage users={users} projects={projects} onCreateUser={createUser} onCreateProject={createProject} onToggleUser={toggleUser} onToggleProject={toggleProject} />}</>
     : page === "playground"
-      ? <PlaygroundPage loadModels={(kind, refresh) => api.playgroundModels(kind, refresh)} run={(input) => api.runPlayground(input)} getJob={(id) => api.job(id)} />
+      ? <PlaygroundPage loadModels={(kind, mode, refresh) => api.playgroundModels(kind, mode, refresh)} quote={(input) => api.quotePlayground(input)} run={(input) => api.runPlayground(input)} getJob={(id) => api.job(id)} />
     :page==="developer-docs"?<DeveloperDocsPage/>
     : page === "webhooks"
       ? <><ResourceFailure error={resourceErrors.webhooks} onRetry={()=>void loadWebhooks()}/>{resourceLoading.webhooks&&webhooks.length===0?<Skeleton/>:<WebhooksPage projects={projects} webhooks={webhooks} deliveries={webhookDeliveries} onConfigure={configureWebhook} onToggle={toggleWebhook} onReplay={replayWebhook}/>}</>

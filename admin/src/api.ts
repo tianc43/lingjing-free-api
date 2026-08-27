@@ -1,4 +1,4 @@
-import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, PlaygroundQuote, PlaygroundQuoteInput, Plan, Project, Settings, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -88,11 +88,14 @@ export class AdminApi {
   async checkAccount(id: string): Promise<Account> {
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}/check`, { method: "POST" })).account;
   }
-  async playgroundModels(kind: "image" | "video", refresh = false): Promise<PlaygroundModel[]> {
+  async playgroundModels(kind: "image" | "video", mode?: "text-to-video" | "image-to-video", refresh = false): Promise<PlaygroundModel[]> {
     const query = new URLSearchParams({ type: kind });
-    if (kind === "video") query.set("mode", "text-to-video");
+    if (kind === "video") query.set("mode", mode ?? "text-to-video");
     if (refresh) query.set("refresh", "true");
     return (await this.request<{ models: PlaygroundModel[] }>(`/playground/models?${query}`)).models;
+  }
+  async quotePlayground(input: PlaygroundQuoteInput): Promise<PlaygroundQuote> {
+    return await this.request("/playground/quote", { method: "POST", body: input });
   }
   async runPlayground(input: PlaygroundInput): Promise<Job> {
     return (await this.request<{ job: Job }>("/playground/run", { method: "POST", body: input })).job;

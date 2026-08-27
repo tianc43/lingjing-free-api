@@ -13,7 +13,25 @@ export interface NormalizedParameter {
   maxFiles?: number;
 }
 
-export interface NormalizedPriceQuery {priceQueryService?:string;params?:Record<string,string|number|boolean>;[key:string]:unknown;}
+export interface NormalizedPriceSelector {
+  matches: string[];
+  shortName?: string;
+}
+
+export interface NormalizedPriceField {
+  key: string;
+  billingItemType: string;
+  selectors?: NormalizedPriceSelector[];
+}
+
+export interface NormalizedPriceQuery {
+  priceQueryService?: string;
+  shortVender?: string;
+  shortSenceCode?: string;
+  params?: Record<string, string | number | boolean>;
+  fields?: NormalizedPriceField[];
+  [key: string]: unknown;
+}
 
 export interface NormalizedModel {
   id: string;

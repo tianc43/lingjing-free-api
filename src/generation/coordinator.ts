@@ -29,6 +29,7 @@ import type {
   JobTransition
 } from "../jobs/types.js";
 import { SubmitAmbiguousError, upstreamDiagnostics } from "../lingjing/error-map.js";
+import { buildPriceQuery } from "../lingjing/price-query.js";
 import type { OutputArchiver } from "../media/output-archiver.js";
 import type { SqliteAssetRepository } from "../media/asset-repository.js";
 import type { MediaInput, PreparedMedia } from "../media/types.js";
@@ -539,7 +540,19 @@ implements GenerationCoordinator {
             ...request.values,
             [parameter.key]:uploaded.map(material=>material.filePath)
           };
-      const payload=buildPayload({model,spaceId,values});const priceService=typeof model.priceQuerySchema?.priceQueryService==="string"?model.priceQuerySchema.priceQueryService:null;if(priceService!==null){const params:Record<string,string|number|boolean>={};for(const parameter of model.parameters){const value=values[parameter.key]??parameter.defaultValue;if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")params[parameter.key]=value;}if(priceService==="wan3"){params["shortVender"]="ali";params["shortSenceCode"]=model.sourceType==="image-to-video"?"i2v":"t2v";params["model_name"]="wan3";params["resolution"]=String(params["resolution"]??params["mode"]??"1080P");}const quoted=await runtime.transport.read<unknown>("/joycreator/AIModelApiConsole/calculatePrice",{method:"POST",body:{enablePriceQuery:true,priceQueryService:priceService,params}});const result=typeof quoted==="object"&&quoted!==null&&"result"in quoted?quoted.result:quoted;if(typeof result!=="object"||result===null||Array.isArray(result))throw errors.upstream();payload.priceQueryResult=Object.fromEntries(Object.entries(result));}
+      const payload = buildPayload({ model, spaceId, values });
+      const livePriceQuery = buildPriceQuery(model, values);
+      if (
+        typeof model.priceQuerySchema?.priceQueryService === "string"
+        && livePriceQuery === null
+      ) {
+        throw errors.upstream();
+      }
+      if (livePriceQuery !== null) {
+        payload.priceQueryResult = {
+          priceQueryRequest: livePriceQuery
+        };
+      }
       const upstreamFingerprint = fingerprintUpstreamPayload(payload);
 
       let discovery: DiscoveryResult;

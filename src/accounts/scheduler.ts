@@ -18,6 +18,8 @@ import type { AccountRuntimeRegistry } from "./runtime-registry.js";
 import type { SqliteAccountRepository } from "./sqlite-account-repository.js";
 import type { SqliteAdmissionRepository } from "./sqlite-admission-repository.js";
 import type { AccountRecord } from "./types.js";
+import { buildPriceQuery } from "../lingjing/price-query.js";
+import { LingjingPriceService } from "../lingjing/price-service.js";
 
 export type AccountAdmission =
   | {
@@ -347,7 +349,25 @@ export class AccountScheduler {
         if (cause instanceof AppError) validationError ??= cause;
         continue;
       }
-      const quote = quotedPoints(model, request.values);
+      let quote: number | null;
+      try {
+        const liveQuery = buildPriceQuery(model, request.values);
+        if (
+          typeof model.priceQuerySchema?.priceQueryService === "string"
+          && liveQuery === null
+        ) {
+          throw errors.upstream();
+        }
+        quote = liveQuery === null
+          ? quotedPoints(model, request.values)
+          : (await new LingjingPriceService(runtime.transport)
+            .calculate(liveQuery)).points;
+      } catch (cause) {
+        validationError ??= cause instanceof AppError
+          ? cause
+          : errors.upstream();
+        continue;
+      }
       if (quote === null) {
         if (
           record.dailyPointLimit !== 0

@@ -146,6 +146,7 @@ export interface GenerationHarness {
   releaseCount: () => number;
   budgetEvents: string[];
   submitCount: () => number;
+  submittedPayloads: () => unknown[];
   maximumCriticalConcurrency: () => number;
   criticalHistory: () => string[];
   warningLogs: Array<{
@@ -180,6 +181,8 @@ export interface GenerationHarness {
 }
 
 export function createGenerationHarness(options: {
+  model?: NormalizedModel;
+  priceResponse?: unknown;
   now?: () => number;
   unknownCapacityHoldMs?: number;
   mediaMaxFiles?: number;
@@ -267,9 +270,10 @@ export function createGenerationHarness(options: {
   let criticalConcurrency = 0;
   let maxCriticalConcurrency = 0;
   const criticalEvents: string[] = [];
+  const submittedPayloads: unknown[] = [];
   const resolvedModel: NormalizedModel = {
-    ...fixtureModel,
-    parameters: fixtureModel.parameters.map((parameter) =>
+    ...(options.model ?? fixtureModel),
+    parameters: (options.model ?? fixtureModel).parameters.map((parameter) =>
       parameter.kind === "image-list" && options.mediaMaxFiles !== undefined
         ? { ...parameter, maxFiles: options.mediaMaxFiles }
         : parameter
@@ -294,6 +298,11 @@ export function createGenerationHarness(options: {
     query?: Record<string, unknown>;
     body?: unknown;
   }) => {
+    if (path === "/joycreator/AIModelApiConsole/calculatePrice") {
+      return options.priceResponse ?? {
+        result: { totalPrice: 0.924048, discountedTotalPrice: 0.92 }
+      };
+    }
     if (path === "/joycreator/space/asset/list") {
       return critical(async () => {
         if (assetReadGate !== null) {
@@ -360,6 +369,7 @@ export function createGenerationHarness(options: {
         throw new Error(`Unexpected submit path ${path}`);
       }
       submissions += 1;
+      submittedPayloads.push(payload);
       criticalEvents.push(`submit:${String(submissions)}`);
       if (submitFailure !== null) {
         const cause = submitFailure;
@@ -376,8 +386,8 @@ export function createGenerationHarness(options: {
         );
         assets.push({
           id: `fixture-asset-${String(sequence)}`,
-          scene: fixtureModel.expectedAssetScene,
-          modelCode: fixtureModel.modelCode ?? "",
+          scene: resolvedModel.expectedAssetScene,
+          modelCode: resolvedModel.modelCode ?? "",
           createTime: submittedAt + offset,
           creationCode: `fixture-creation-${String(sequence)}`,
           taskId,
@@ -609,6 +619,7 @@ export function createGenerationHarness(options: {
     releaseCount: () => releaseCalls,
     budgetEvents,
     submitCount: () => submissions,
+    submittedPayloads: () => [...submittedPayloads],
     maximumCriticalConcurrency: () => maxCriticalConcurrency,
     criticalHistory: () => [...criticalEvents],
     warningLogs,
