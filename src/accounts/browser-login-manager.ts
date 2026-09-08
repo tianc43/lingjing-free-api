@@ -1,2 +1,47 @@
-import{randomUUID}from"node:crypto";import type{AppConfig}from"../config.js";import{accountSessionPaths}from"../session/create-provider.js";export type BrowserLoginStatus="running"|"completed"|"failed";export interface BrowserLoginView{id:string;accountId:string;status:BrowserLoginStatus;error:string|null;}
-type LoginRunner=(paths:{storageStatePath:string;sessionProfilePath:string})=>Promise<number>;export class BrowserLoginManager{private readonly logins=new Map<string,BrowserLoginView>();constructor(private readonly config:AppConfig,private readonly refresh:(accountId:string)=>Promise<unknown>,private readonly run:LoginRunner=async paths=>(await import("../cli/login.js")).runLoginCli(paths)){}start(accountId:string):BrowserLoginView{const active=[...this.logins.values()].find(item=>item.accountId===accountId&&item.status==="running");if(active)return active;const id=randomUUID(),view:BrowserLoginView={id,accountId,status:"running",error:null};this.logins.set(id,view);const paths=accountId==="legacy"?{storageStatePath:this.config.storageStatePath,sessionProfilePath:this.config.sessionProfilePath}:accountSessionPaths(this.config,accountId);void this.run(paths).then(async code=>{if(code!==0)throw new Error("Browser login did not complete");await this.refresh(accountId);view.status="completed";}).catch((cause:unknown)=>{view.status="failed";view.error=cause instanceof Error?cause.message:"Browser login failed";});return view;}find(id:string){return this.logins.get(id)??null;}}
+import { randomUUID } from "node:crypto";
+
+const LOGIN_URL = "https://lingjing.jdcloud.com/";
+
+export type BrowserLoginStatus = "running" | "completed" | "failed";
+
+export interface BrowserLoginView {
+  id: string;
+  accountId: string;
+  status: BrowserLoginStatus;
+  error: string | null;
+  loginUrl: string;
+}
+
+export class BrowserLoginManager {
+  private readonly logins = new Map<string, BrowserLoginView>();
+
+  start(accountId: string): BrowserLoginView {
+    const active = [...this.logins.values()].find(
+      (item) => item.accountId === accountId && item.status === "running"
+    );
+    if (active !== undefined) return active;
+    const view: BrowserLoginView = {
+      id: randomUUID(),
+      accountId,
+      status: "running",
+      error: null,
+      loginUrl: LOGIN_URL
+    };
+    this.logins.set(view.id, view);
+    return view;
+  }
+
+  complete(id: string, accountId: string): BrowserLoginView {
+    const login = this.logins.get(id);
+    if (login === undefined || login.accountId !== accountId) {
+      throw new Error("Browser login handoff not found");
+    }
+    login.status = "completed";
+    login.error = null;
+    return login;
+  }
+
+  find(id: string): BrowserLoginView | null {
+    return this.logins.get(id) ?? null;
+  }
+}

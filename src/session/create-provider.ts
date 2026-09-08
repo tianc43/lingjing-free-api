@@ -11,7 +11,9 @@ async function requireRegularFile(path: string): Promise<void> {
       throw new Error("not a file");
     }
   } catch {
-    throw new Error("Lingjing login required: run npm run login");
+    throw new Error(
+      "Lingjing login required: import a current Cookie in Admin or run npm run login locally"
+    );
   }
 }
 

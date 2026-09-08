@@ -109,19 +109,32 @@ test.beforeAll(async () => {
     const hasSession =
       request.headers.cookie?.includes("admin=fixture-session") === true;
     if (url.pathname === "/v1/models" && request.method === "GET") {
-      if(failModels){json(response,{error:{message:"Lingjing login required",code:"lingjing_session_expired"}},503);return;}
+      if (failModels) {
+        json(
+          response,
+          {
+            error: {
+              message: "Lingjing login required",
+              code: "lingjing_session_expired",
+            },
+          },
+          503,
+        );
+        return;
+      }
       const type = url.searchParams.get("type");
       json(response, {
         object: "list",
-        data: type === "image"
-          ? [{ id: "browser-image-model" }]
-          : [{ id: "browser-video-model" }]
+        data:
+          type === "image"
+            ? [{ id: "browser-image-model" }]
+            : [{ id: "browser-video-model" }],
       });
       return;
     }
     if (
-      ["/v1/images/generations", "/v1/videos"].includes(url.pathname)
-      && request.method === "POST"
+      ["/v1/images/generations", "/v1/videos"].includes(url.pathname) &&
+      request.method === "POST"
     ) {
       const input = await body(request);
       json(response, { accepted_model: input.model });
@@ -129,7 +142,13 @@ test.beforeAll(async () => {
     }
     if (url.pathname === "/admin/api/login" && request.method === "POST") {
       if ((await body(request)).password !== "fixture-admin-password") {
-        json(response, { error: { code: "invalid_password", message: "Incorrect password" } }, 401);
+        json(
+          response,
+          {
+            error: { code: "invalid_password", message: "Incorrect password" },
+          },
+          401,
+        );
         return;
       }
       response.setHeader(
@@ -181,7 +200,10 @@ test.beforeAll(async () => {
       json(response, { accounts });
       return;
     }
-    if (url.pathname === "/admin/api/sign-in-status" && request.method === "GET") {
+    if (
+      url.pathname === "/admin/api/sign-in-status" &&
+      request.method === "GET"
+    ) {
       json(response, {
         enabled: true,
         interval_ms: 60 * 60_000,
@@ -189,12 +211,14 @@ test.beforeAll(async () => {
         next_check_at: Date.now() + 60 * 60_000,
         last_run_started_at: Date.now() - 1_000,
         last_run_finished_at: Date.now(),
-        accounts: [{
-          account_id: "seed",
-          status: "already_signed",
-          current_frequency: 2,
-          checked_at: Date.now()
-        }]
+        accounts: [
+          {
+            account_id: "seed",
+            status: "already_signed",
+            current_frequency: 2,
+            checked_at: Date.now(),
+          },
+        ],
       });
       return;
     }
@@ -220,45 +244,99 @@ test.beforeAll(async () => {
       });
       return;
     }
-    if (url.pathname === "/admin/api/playground/models" && request.method === "GET") {
+    if (
+      url.pathname === "/admin/api/playground/models" &&
+      request.method === "GET"
+    ) {
       if (failModels) {
-        json(response, { error: { message: "Lingjing login required", code: "lingjing_session_expired" } }, 503);
+        json(
+          response,
+          {
+            error: {
+              message: "Lingjing login required",
+              code: "lingjing_session_expired",
+            },
+          },
+          503,
+        );
         return;
       }
       const kind = url.searchParams.get("type");
       const mode = url.searchParams.get("mode") ?? "text-to-video";
       if (kind === "image") {
-        json(response, { models: [{
-          id: "browser-image-model",
-          display_name: "Browser Image",
-          type: "image",
-          capabilities: { text: true, input_images: false },
-          parameters: [],
-          pricing: { points: 2 }
-        }] });
+        json(response, {
+          models: [
+            {
+              id: "browser-image-model",
+              display_name: "Browser Image",
+              type: "image",
+              capabilities: { text: true, input_images: false },
+              parameters: [],
+              pricing: { points: 2 },
+            },
+          ],
+        });
         return;
       }
-      json(response, { models: [{
-        id: mode === "image-to-video" ? "browser-i2v-mini" : "browser-t2v-mini",
-        display_name: mode === "image-to-video" ? "Seedance Mini I2V" : "Seedance Mini T2V",
-        type: "video",
-        mode,
-        capabilities: { text: true, input_images: mode === "image-to-video" },
-        parameters: [
-          { key: "duration", display_name: "时长", required: true, type: "enum", default: "4", options: ["4", "5"] },
-          { key: "mode", display_name: "清晰度", required: true, type: "enum", default: "480p", options: ["480p", "720p"] },
-          { key: "aspect_ratio", display_name: "画幅", required: true, type: "enum", default: "16:9", options: ["16:9", "9:16"] }
+      json(response, {
+        models: [
+          {
+            id:
+              mode === "image-to-video"
+                ? "browser-i2v-mini"
+                : "browser-t2v-mini",
+            display_name:
+              mode === "image-to-video"
+                ? "Seedance Mini I2V"
+                : "Seedance Mini T2V",
+            type: "video",
+            mode,
+            capabilities: {
+              text: true,
+              input_images: mode === "image-to-video",
+            },
+            parameters: [
+              {
+                key: "duration",
+                display_name: "时长",
+                required: true,
+                type: "enum",
+                default: "4",
+                options: ["4", "5"],
+              },
+              {
+                key: "mode",
+                display_name: "清晰度",
+                required: true,
+                type: "enum",
+                default: "480p",
+                options: ["480p", "720p"],
+              },
+              {
+                key: "aspect_ratio",
+                display_name: "画幅",
+                required: true,
+                type: "enum",
+                default: "16:9",
+                options: ["16:9", "9:16"],
+              },
+            ],
+            pricing: null,
+          },
         ],
-        pricing: null
-      }] });
+      });
       return;
     }
-    if (url.pathname === "/admin/api/playground/quote" && request.method === "POST") {
+    if (
+      url.pathname === "/admin/api/playground/quote" &&
+      request.method === "POST"
+    ) {
       const input = await body(request);
-      const parameters = input.parameters as Record<string, unknown> | undefined;
+      const parameters = input.parameters as
+        Record<string, unknown> | undefined;
       json(response, {
         points: parameters?.duration === "5" ? 115 : 92,
-        source: "live"
+        source: "live",
       });
       return;
     }
@@ -302,7 +380,9 @@ test.beforeAll(async () => {
         project_id: String(input.project_id ?? "prj_legacy"),
         name: String(input.name),
         key_prefix: "ljk_browser_",
-        scopes: Array.isArray(input.scopes) ? input.scopes.map(String) : ["video:create"],
+        scopes: Array.isArray(input.scopes)
+          ? input.scopes.map(String)
+          : ["video:create"],
         enabled: true,
         expires_at: null,
         created_at: now,
@@ -311,23 +391,40 @@ test.beforeAll(async () => {
         revoked_at: null,
       };
       apiKeys = [...apiKeys, key];
-      json(response, { key, api_key: ["ljk_", "fixture-secret-shown-once"].join("") }, 201);
+      json(
+        response,
+        { key, api_key: ["ljk_", "fixture-secret-shown-once"].join("") },
+        201,
+      );
       return;
     }
-    const apiKeyToggle = /^\/admin\/api\/api-keys\/([^/]+)\/(enable|disable)$/.exec(url.pathname);
+    const apiKeyToggle =
+      /^\/admin\/api\/api-keys\/([^/]+)\/(enable|disable)$/.exec(url.pathname);
     if (apiKeyToggle !== null && request.method === "POST") {
-      apiKeys = apiKeys.map((key) => key.id === apiKeyToggle[1]
-        ? { ...key, enabled: apiKeyToggle[2] === "enable", updated_at: Date.now() }
-        : key);
-      json(response, { key: apiKeys.find((key) => key.id === apiKeyToggle[1]) });
+      apiKeys = apiKeys.map((key) =>
+        key.id === apiKeyToggle[1]
+          ? {
+              ...key,
+              enabled: apiKeyToggle[2] === "enable",
+              updated_at: Date.now(),
+            }
+          : key,
+      );
+      json(response, {
+        key: apiKeys.find((key) => key.id === apiKeyToggle[1]),
+      });
       return;
     }
     const apiKeyRevoke = /^\/admin\/api\/api-keys\/([^/]+)$/.exec(url.pathname);
     if (apiKeyRevoke !== null && request.method === "DELETE") {
-      apiKeys = apiKeys.map((key) => key.id === apiKeyRevoke[1]
-        ? { ...key, revoked_at: Date.now(), updated_at: Date.now() }
-        : key);
-      json(response, { key: apiKeys.find((key) => key.id === apiKeyRevoke[1]) });
+      apiKeys = apiKeys.map((key) =>
+        key.id === apiKeyRevoke[1]
+          ? { ...key, revoked_at: Date.now(), updated_at: Date.now() }
+          : key,
+      );
+      json(response, {
+        key: apiKeys.find((key) => key.id === apiKeyRevoke[1]),
+      });
       return;
     }
     if (url.pathname === "/admin/api/logout" && request.method === "POST") {
@@ -363,13 +460,16 @@ test.beforeAll(async () => {
         response,
         {
           account,
-          login_command: `npm run login -- --account-id ${account.id}`,
+          credential_update_path: `/admin/api/accounts/${account.id}/credentials`,
         },
         201,
       );
       return;
     }
-    if (url.pathname === "/admin/api/accounts/import" && request.method === "POST") {
+    if (
+      url.pathname === "/admin/api/accounts/import" &&
+      request.method === "POST"
+    ) {
       const input = await body(request);
       const account: Account = {
         id: `browser-${nextId++}`,
@@ -396,10 +496,53 @@ test.beforeAll(async () => {
       json(response, { account }, 201);
       return;
     }
+    const browserLogin =
+      /^\/admin\/api\/accounts\/([^/]+)\/browser-login$/.exec(url.pathname);
+    if (browserLogin !== null && request.method === "POST") {
+      json(response, {
+        login: {
+          id: "00000000-0000-4000-8000-000000000001",
+          account_id: browserLogin[1],
+          status: "running",
+          error: null,
+          login_url: "about:blank#lingjing-login",
+        },
+      });
+      return;
+    }
+    const credentials = /^\/admin\/api\/accounts\/([^/]+)\/credentials$/.exec(
+      url.pathname,
+    );
+    if (credentials !== null && request.method === "POST") {
+      accounts = accounts.map((account) =>
+        account.id === credentials[1]
+          ? {
+              ...account,
+              has_session: true,
+              health_status: "ready",
+              last_checked_at: Date.now(),
+              updated_at: Date.now(),
+            }
+          : account,
+      );
+      json(response, {
+        account: accounts.find((account) => account.id === credentials[1]),
+      });
+      return;
+    }
     const check = /^\/admin\/api\/accounts\/([^/]+)\/check$/.exec(url.pathname);
     if (check !== null && request.method === "POST") {
       if (failHealth) {
-        json(response, { error: { code: "health_unavailable", message: "Health unavailable" } }, 503);
+        json(
+          response,
+          {
+            error: {
+              code: "health_unavailable",
+              message: "Health unavailable",
+            },
+          },
+          503,
+        );
         return;
       }
       const account = accounts.find((item) => item.id === check[1]);
@@ -451,6 +594,10 @@ test.beforeAll(async () => {
           response.end(await readFile(file));
           return;
         } catch {
+          if (response.headersSent) {
+            response.destroy();
+            return;
+          }
           json(response, { error: "not_found" }, 404);
           return;
         }
@@ -518,43 +665,60 @@ test.beforeEach(() => {
   ];
 });
 
-test("operator manages API access keys and copies service examples", async ({ page }) => {
+test("operator manages API access keys and copies service examples", async ({
+  page,
+}) => {
   await page.goto("http://127.0.0.1:4174/admin/");
   await page.getByLabel("管理员密码").fill("fixture-admin-password");
   await page.getByRole("button", { name: "登录" }).click();
   await page.getByRole("link", { name: "API 密钥" }).click();
-  await expect(page.getByText("http://127.0.0.1:4174/v1", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("http://127.0.0.1:4174/v1", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "创建 API 密钥" }).click();
   await page.getByLabel("密钥名称").fill("Dify");
-  await page.getByRole("button", { name: /创建密钥|创建 API 密钥/u }).last().click();
+  await page
+    .getByRole("button", { name: /创建密钥|创建 API 密钥/u })
+    .last()
+    .click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText("此密钥仅显示一次")).toBeVisible();
   await page.getByRole("button", { name: "完成" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
-  await expect(page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", { exact: true })).toBeVisible();
-  const imageExample = await page.locator(".command").filter({
-    has: page.getByText("生成图片", { exact: true })
-  }).locator("code").innerText();
-  const videoExample = await page.locator(".command").filter({
-    has: page.getByText("生成视频", { exact: true })
-  }).locator("code").innerText();
-  const executeExample = async (
-    script: string,
-    expectedModel: string
-  ) => {
-    const urls = [...script.matchAll(/curl -sS "([^"]+)"/gu)]
-      .map((match) => match[1]);
+  await expect(
+    page.getByText("Authorization: Bearer ${LINGJING_API_KEY}", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const imageExample = await page
+    .locator(".command")
+    .filter({
+      has: page.getByText("生成图片", { exact: true }),
+    })
+    .locator("code")
+    .innerText();
+  const videoExample = await page
+    .locator(".command")
+    .filter({
+      has: page.getByText("生成视频", { exact: true }),
+    })
+    .locator("code")
+    .innerText();
+  const executeExample = async (script: string, expectedModel: string) => {
+    const urls = [...script.matchAll(/curl -sS "([^"]+)"/gu)].map(
+      (match) => match[1],
+    );
     expect(urls).toHaveLength(1);
     const generationUrl = urls[0];
     expect(generationUrl).toBeDefined();
     const model = expectedModel;
     const generated = await page.request.post(generationUrl!, {
       headers: { authorization: "Bearer fixture-browser-key" },
-      data: { model }
+      data: { model },
     });
     expect(generated.status()).toBe(200);
     expect(await generated.json()).toMatchObject({
-      accepted_model: expectedModel
+      accepted_model: expectedModel,
     });
   };
   await executeExample(imageExample, "browser-image-model");
@@ -584,7 +748,7 @@ for (const viewport of [
       if (viewport.name === "desktop")
         await page
           .getByRole("link", {
-            name:next==="overview"?"总览":"任务",
+            name: next === "overview" ? "总览" : "任务",
           })
           .click();
       else await page.getByLabel("页面导航").selectOption(next);
@@ -601,23 +765,41 @@ for (const viewport of [
     await page.getByLabel("管理员密码").fill("incorrect");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page.getByText("Incorrect password")).toBeVisible();
-    await expect(page.getByLabel("管理员密码")).toHaveAttribute("aria-describedby", "login-password-error");
-    await page
-      .getByLabel("管理员密码")
-      .fill("fixture-admin-password");
+    await expect(page.getByLabel("管理员密码")).toHaveAttribute(
+      "aria-describedby",
+      "login-password-error",
+    );
+    await page.getByLabel("管理员密码").fill("fixture-admin-password");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/\/admin\/accounts$/);
     await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
     await expect(page.getByText("已启用 · 每小时检查")).toBeVisible();
     await expect(page.getByText("签到：今日已签到")).toBeVisible();
     await expect(page.getByText("当前连续 2 天")).toBeVisible();
+    const loginPageOpened = page.context().waitForEvent("page");
+    await page.getByRole("button", { name: "登录 Seed account" }).click();
+    const loginPage = await loginPageOpened;
+    await expect.poll(() => loginPage.url()).toBe("about:blank#lingjing-login");
+    await loginPage.close();
+    await expect(
+      page.getByRole("dialog", { name: "更新 Seed account 的凭据" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/在你自己的浏览器中完成灵境登录/u),
+    ).toBeVisible();
+    await page
+      .getByLabel("灵境 Cookie")
+      .fill(
+        "csrfToken=fixture-renewed-csrf; pin=fixture-pin; thor=fixture-renewed-auth",
+      );
+    await page.getByRole("button", { name: "验证并更新" }).click();
+    await expect(page.getByText("已更新 Seed account 的凭据")).toBeVisible();
+    await expect(page.getByText("fixture-renewed-csrf")).toHaveCount(0);
     const seedCheck = page.getByRole("button", {
       name: "刷新余额 Seed account",
     });
     await seedCheck.click();
-    await expect(
-      page.getByText("已刷新 Seed account 的余额"),
-    ).toBeVisible();
+    await expect(page.getByText("已刷新 Seed account 的余额")).toBeVisible();
     page.once("dialog", (dialog) => void dialog.dismiss());
     await page.getByRole("button", { name: "禁用 Seed account" }).click();
     await expect(
@@ -644,27 +826,37 @@ for (const viewport of [
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "添加账号" })).toBeFocused();
     await page.getByRole("button", { name: "添加账号" }).click();
-    await expect(page.getByRole("link", { name: "打开灵境登录页" })).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
+    await expect(
+      page.getByRole("link", { name: "打开灵境登录页" }),
+    ).toHaveAttribute("href", "https://lingjing.jdcloud.com/");
     await expect(page.getByText(/切勿发送到聊天、日志或 Git/u)).toBeVisible();
     await page.getByLabel("优先级").fill("-1");
     await page.getByLabel("每日点数限额").fill("1.5");
     await page.getByLabel("每月点数限额").fill("-2");
     await page.getByRole("button", { name: "验证并添加" }).click();
-    for (const field of ["账号名称", "优先级", "每日点数限额", "每月点数限额"]) await expect(page.getByLabel(field)).toHaveAttribute("aria-invalid", "true");
+    for (const field of ["账号名称", "优先级", "每日点数限额", "每月点数限额"])
+      await expect(page.getByLabel(field)).toHaveAttribute(
+        "aria-invalid",
+        "true",
+      );
     await expect(page.getByLabel("账号名称")).toBeFocused();
     await page.getByLabel("账号名称").fill(`Browser ${viewport.name}`);
     await page.getByLabel("优先级").fill("7");
     await page.getByLabel("每日点数限额").fill("10");
     await page.getByLabel("每月点数限额").fill("100");
     await page.getByLabel("Cookie 格式").selectOption("header");
-    await page.getByLabel("灵境 Cookie").fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
+    await page
+      .getByLabel("灵境 Cookie")
+      .fill("csrfToken=fixture-csrf; pin=fixture-pin; thor=fixture-auth");
     await page.getByRole("button", { name: "验证并添加" }).click();
     const importedAccount = page.locator(".account-row").filter({
-      has: page.getByText(`Browser ${viewport.name}`, { exact: true })
+      has: page.getByText(`Browser ${viewport.name}`, { exact: true }),
     });
     await expect(importedAccount).toContainText("Premium");
     await expect(importedAccount).toContainText("总余额 150");
-    await expect(page.getByText("npm run login -- --account-id")).toHaveCount(0);
+    await expect(page.getByText("npm run login -- --account-id")).toHaveCount(
+      0,
+    );
     await expect(
       page.getByRole("button", { name: `禁用 Browser ${viewport.name}` }),
     ).toBeVisible();
@@ -698,7 +890,9 @@ for (const viewport of [
       const kind = page.locator("td[data-label='类型']");
       await expect(kind).toBeVisible();
       await expect(kind).toHaveText("image");
-      await expect(page.getByRole("columnheader", { name: "类型" })).toHaveCount(1);
+      await expect(
+        page.getByRole("columnheader", { name: "类型" }),
+      ).toHaveCount(1);
     }
     await expect(
       page.evaluate(
@@ -722,36 +916,36 @@ for (const viewport of [
     ).resolves.toBe(true);
   });
 
-test("moves focus to the page heading on history navigation", async ({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"运行环境"}).click();await expect(page.getByRole("heading",{name:"设置"})).toBeFocused();await page.goBack();await expect(page.getByRole("heading",{name:"账号"})).toBeFocused();});
+test("moves focus to the page heading on history navigation", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "运行环境" }).click();
+  await expect(page.getByRole("heading", { name: "设置" })).toBeFocused();
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "账号" })).toBeFocused();
+});
 
 test("keeps initial session 401 signed out but expires an established session", async ({
   page,
 }) => {
   await page.goto("http://127.0.0.1:4174/admin/");
-  await expect(
-    page.getByRole("heading", { name: "管理员登录" }),
-  ).toBeVisible();
-  await page
-    .getByLabel("管理员密码")
-    .fill("fixture-admin-password");
+  await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
   expireNext = true;
   await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
-  await expect(
-    page.getByRole("heading", { name: "管理员登录" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Session expired"),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
+  await expect(page.getByText("Session expired")).toBeVisible();
 });
 
 test("keeps accounts usable when settings load fails", async ({ page }) => {
   fail运行环境 = true;
   await page.goto("http://127.0.0.1:4174/admin/");
-  await page
-    .getByLabel("管理员密码")
-    .fill("fixture-admin-password");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByText("Seed account")).toBeVisible();
   await page.getByRole("link", { name: "运行环境" }).click();
@@ -760,13 +954,59 @@ test("keeps accounts usable when settings load fails", async ({ page }) => {
   await expect(page.getByText("Seed account")).toBeVisible();
 });
 
-test("copies Agent-ready developer Markdown",async({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"开发者文档"}).click();await expect(page.getByRole("heading",{name:"开发者文档"})).toBeVisible();const markdown=page.getByLabel("Agent Markdown 开发文档");await expect(markdown).toHaveValue(/Idempotency-Key/u);await expect(markdown).toHaveValue(/unknown 绝不重提/u);await page.getByRole("button",{name:"复制 Markdown"}).click();await expect(page.getByRole("status")).toContainText(/Markdown 已复制|复制失败/u);});
+test("copies Agent-ready developer Markdown", async ({ page }) => {
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "开发者文档" }).click();
+  await expect(page.getByRole("heading", { name: "开发者文档" })).toBeVisible();
+  const markdown = page.getByLabel("Agent Markdown 开发文档");
+  await expect(markdown).toHaveValue(/Idempotency-Key/u);
+  await expect(markdown).toHaveValue(/unknown 绝不重提/u);
+  await page.getByRole("button", { name: "复制 Markdown" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    /Markdown 已复制|复制失败/u,
+  );
+});
 
-test("shows login recovery guidance when 调用测试 models need a session",async({page})=>{failModels=true;await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"调用测试"}).click();await expect(page.getByText("请先连接灵境账号")).toBeVisible();await expect(page.getByText("npm run login",{exact:false})).toBeVisible();await expect(page.getByRole("link",{name:"打开订阅账号"})).toHaveAttribute("href","/admin/accounts");});
+test("shows remote credential recovery guidance when 调用测试 models need a session", async ({
+  page,
+}) => {
+  failModels = true;
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "调用测试" }).click();
+  await expect(page.getByText("请先连接灵境账号")).toBeVisible();
+  await expect(
+    page.getByText(/在自己的浏览器登录灵境后导入或更新 Cookie/u),
+  ).toBeVisible();
+  await expect(page.getByText("npm run login", { exact: false })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("link", { name: "打开订阅账号" }),
+  ).toHaveAttribute("href", "/admin/accounts");
+});
 
-test("refreshes live video points when mode and parameters change",async({page})=>{await page.goto("http://127.0.0.1:4174/admin/");await page.getByLabel("管理员密码").fill("fixture-admin-password");await page.getByRole("button",{name:"登录"}).click();await page.getByRole("link",{name:"调用测试"}).click();await page.getByRole("button",{name:"视频"}).click();await expect(page.getByLabel("模型")).toHaveValue("browser-t2v-mini");await expect(page.getByText("预计 92 点",{exact:true})).toBeVisible();await page.getByLabel("时长").selectOption("5");await expect(page.getByText("预计 115 点",{exact:true})).toBeVisible();await page.getByLabel("视频模式").selectOption("image-to-video");await expect(page.getByLabel("模型")).toHaveValue("browser-i2v-mini");await expect(page.getByText("预计 92 点",{exact:true})).toBeVisible();});
+test("refreshes live video points when mode and parameters change", async ({
+  page,
+}) => {
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "调用测试" }).click();
+  await page.getByRole("button", { name: "视频" }).click();
+  await expect(page.getByLabel("模型")).toHaveValue("browser-t2v-mini");
+  await expect(page.getByText("预计 92 点", { exact: true })).toBeVisible();
+  await page.getByLabel("时长").selectOption("5");
+  await expect(page.getByText("预计 115 点", { exact: true })).toBeVisible();
+  await page.getByLabel("视频模式").selectOption("image-to-video");
+  await expect(page.getByLabel("模型")).toHaveValue("browser-i2v-mini");
+  await expect(page.getByText("预计 92 点", { exact: true })).toBeVisible();
+});
 
-test("shows executable login commands for legacy and generated accounts", async ({
+test("shows remote-safe credential guidance for legacy and generated accounts", async ({
   page,
 }) => {
   const seed = accounts[0]!;
@@ -794,30 +1034,40 @@ test("shows executable login commands for legacy and generated accounts", async 
     "已扣除 12，已预留 3，上限 10",
   );
   await page.getByRole("link", { name: "运行环境" }).click();
-  await expect(page.getByText("npm run login", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "账号凭据" })).toBeVisible();
   await expect(
-    page.getByText(
-      "npm run login -- --account-id acct_0123456789abcdef01234567",
-      { exact: true },
-    ),
+    page.getByText(/管理台会在你的本地浏览器打开灵境/u),
   ).toBeVisible();
-  await expect(page.getByText("--account-id legacy")).toHaveCount(0);
+  await expect(page.getByText("npm run login", { exact: false })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("link", { name: "打开订阅账号" }),
+  ).toHaveAttribute("href", "/admin/accounts");
 });
 
-test("logout clears an app action failure before returning to sign in", async ({ page }) => {
+test("logout clears an app action failure before returning to sign in", async ({
+  page,
+}) => {
   await page.goto("http://127.0.0.1:4174/admin/");
   await page.getByLabel("管理员密码").fill("fixture-admin-password");
   await page.getByRole("button", { name: "登录" }).click();
   failHealth = true;
   await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
-  await page.evaluate(() => { history.pushState({}, "", "/admin/settings"); dispatchEvent(new PopStateEvent("popstate")); });
+  await page.evaluate(() => {
+    history.pushState({}, "", "/admin/settings");
+    dispatchEvent(new PopStateEvent("popstate"));
+  });
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
-  await page.getByRole("link", { name: "订阅账号" }).click();
+  await page.getByRole("link", { name: "订阅账号", exact: true }).click();
   await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
   await expect(page.getByText("Health unavailable")).toBeVisible();
   await page.getByRole("button", { name: "退出登录" }).click();
   await expect(page.getByRole("heading", { name: "管理员登录" })).toBeVisible();
   await expect(page.getByText("Health unavailable")).toHaveCount(0);
-  await expect(page.getByLabel("管理员密码")).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByLabel("管理员密码")).toHaveAttribute(
+    "aria-invalid",
+    "false",
+  );
 });

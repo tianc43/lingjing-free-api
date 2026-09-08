@@ -11,14 +11,28 @@ import { SqliteAccountRepository } from "./sqlite-account-repository.js";
 import type { AccountRecord } from "./types.js";
 import type { AccountRuntime } from "./runtime.js";
 
-type RuntimeConfig = Pick<AppConfig,
-  "sessionMode" | "storageStatePath" | "cookieFilePath" | "sessionProfilePath" |
-  "dataDirectory" | "maxConcurrency" | "maxQueuedRequests" | "modelCacheTtlMs">;
+type RuntimeConfig = Pick<
+  AppConfig,
+  | "sessionMode"
+  | "storageStatePath"
+  | "cookieFilePath"
+  | "sessionProfilePath"
+  | "dataDirectory"
+  | "maxConcurrency"
+  | "maxQueuedRequests"
+  | "modelCacheTtlMs"
+>;
 
 export interface AccountRuntimeRegistryOptions {
-  accounts: Pick<SqliteAccountRepository, "list" | "findById" | "recordObservation">;
+  accounts: Pick<
+    SqliteAccountRepository,
+    "list" | "findById" | "recordObservation"
+  >;
   config: RuntimeConfig;
-  sessionFactory?: (config: RuntimeConfig, accountId?: string) => Promise<SessionProvider>;
+  sessionFactory?: (
+    config: RuntimeConfig,
+    accountId?: string,
+  ) => Promise<SessionProvider>;
   transportFactory?: (session: SessionProvider) => LingjingTransport;
 }
 
@@ -30,7 +44,7 @@ function observationForUnavailableSession() {
     membership: null,
     pointsBalance: null,
     totalBalance: null,
-    maxConcurrency: null
+    maxConcurrency: null,
   };
 }
 
@@ -42,20 +56,27 @@ function observationForUnhealthyRuntime() {
     membership: null,
     pointsBalance: null,
     totalBalance: null,
-    maxConcurrency: null
+    maxConcurrency: null,
   };
 }
 
 function invalidSession(cause: unknown): boolean {
   if (cause instanceof SyntaxError) return true;
   if (!(cause instanceof Error)) return false;
-  return cause.message === "Lingjing login required: run npm run login"
-    || cause.message === "Invalid Playwright storage-state file"
-    || cause.message === "Invalid Lingjing session profile";
+  return (
+    cause.message ===
+      "Lingjing login required: import a current Cookie in Admin or run npm run login locally" ||
+    cause.message === "Invalid Playwright storage-state file" ||
+    cause.message === "Invalid Lingjing session profile"
+  );
 }
 
 export class AccountRuntimeRegistry {
   private readonly runtimes = new Map<string, AccountRuntime>();
+  private readonly retiredCoordination = new Map<
+    string,
+    Pick<AccountRuntime, "capacity" | "discoveryLock">
+  >();
   private readonly refreshTails = new Map<string, Promise<void>>();
   private readyPromise: Promise<void> | null = null;
 
@@ -69,8 +90,7 @@ export class AccountRuntimeRegistry {
   listEnabled(): AccountRuntime[] {
     return [...this.runtimes.values()].filter(
       (runtime) =>
-        runtime.record.enabled
-        && runtime.record.healthStatus === "ready"
+        runtime.record.enabled && runtime.record.healthStatus === "ready",
     );
   }
 
@@ -89,12 +109,11 @@ export class AccountRuntimeRegistry {
   }
 
   refresh(accountId: string): Promise<AccountRuntime | null> {
-    const previous = this.refreshTails.get(accountId)
-      ?? Promise.resolve();
+    const previous = this.refreshTails.get(accountId) ?? Promise.resolve();
     const result = previous.then(() => this.refreshNow(accountId));
     const tail = result.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     this.refreshTails.set(accountId, tail);
     void tail.then(() => {
@@ -105,12 +124,37 @@ export class AccountRuntimeRegistry {
     return result;
   }
 
-  private async refreshNow(
-    accountId: string
-  ): Promise<AccountRuntime | null> {
+  retire(accountId: string): Promise<void> {
+    const previous = this.refreshTails.get(accountId) ?? Promise.resolve();
+    const result = previous.then(async () => {
+      const runtime = this.runtimes.get(accountId);
+      if (runtime !== undefined) {
+        this.retiredCoordination.set(accountId, {
+          capacity: runtime.capacity,
+          discoveryLock: runtime.discoveryLock,
+        });
+      }
+      await runtime?.session.retire?.();
+      this.runtimes.delete(accountId);
+    });
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.refreshTails.set(accountId, tail);
+    void tail.then(() => {
+      if (this.refreshTails.get(accountId) === tail) {
+        this.refreshTails.delete(accountId);
+      }
+    });
+    return result;
+  }
+
+  private async refreshNow(accountId: string): Promise<AccountRuntime | null> {
     const record = this.options.accounts.findById(accountId);
     if (record === null) {
       this.runtimes.delete(accountId);
+      this.retiredCoordination.delete(accountId);
       return null;
     }
     return await this.createRuntime(record);
@@ -118,6 +162,7 @@ export class AccountRuntimeRegistry {
 
   close(): Promise<void> {
     this.runtimes.clear();
+    this.retiredCoordination.clear();
     return Promise.resolve();
   }
 
@@ -128,11 +173,16 @@ export class AccountRuntimeRegistry {
     }
   }
 
-  private async createRuntime(record: AccountRecord): Promise<AccountRuntime | null> {
+  private async createRuntime(
+    record: AccountRecord,
+  ): Promise<AccountRuntime | null> {
     const sessionFactory = this.options.sessionFactory ?? createSessionProvider;
     let session: SessionProvider;
     try {
-      session = await sessionFactory(this.options.config, record.id === "legacy" ? undefined : record.id);
+      session = await sessionFactory(
+        this.options.config,
+        record.id === "legacy" ? undefined : record.id,
+      );
       await session.load();
       await session.loadProfile();
     } catch (cause) {
@@ -140,7 +190,7 @@ export class AccountRuntimeRegistry {
         record,
         invalidSession(cause)
           ? observationForUnavailableSession()
-          : observationForUnhealthyRuntime()
+          : observationForUnhealthyRuntime(),
       );
     }
 
@@ -148,11 +198,14 @@ export class AccountRuntimeRegistry {
     let account: AccountService;
     let snapshot: Awaited<ReturnType<AccountService["describe"]>>;
     try {
-      transport = (this.options.transportFactory ?? ((item) => new LingjingClient({ session: item })))(session);
+      transport = (
+        this.options.transportFactory ??
+        ((item) => new LingjingClient({ session: item }))
+      )(session);
       account = new AccountService({
         read: transport.read.bind(transport),
         session,
-        config: this.options.config
+        config: this.options.config,
       });
       snapshot = await account.describe();
     } catch {
@@ -166,33 +219,45 @@ export class AccountRuntimeRegistry {
       membership: snapshot.membership,
       pointsBalance: snapshot.pointsBalance,
       totalBalance: snapshot.totalBalance,
-      maxConcurrency: snapshot.maxConcurrency
+      maxConcurrency: snapshot.maxConcurrency,
     });
     const published = this.runtimes.get(record.id);
+    const retired = this.retiredCoordination.get(record.id);
     const runtime: AccountRuntime = {
       record: observed,
       session,
       transport,
       account,
-      catalog: new CatalogService(transport, this.options.config.modelCacheTtlMs),
-      capacity: published?.capacity ?? new CapacityManager(
-        snapshot.maxConcurrency,
-        this.options.config.maxQueuedRequests
+      catalog: new CatalogService(
+        transport,
+        this.options.config.modelCacheTtlMs,
       ),
-      discoveryLock: published?.discoveryLock ?? new DiscoveryLock()
+      capacity:
+        published?.capacity ??
+        retired?.capacity ??
+        new CapacityManager(
+          snapshot.maxConcurrency,
+          this.options.config.maxQueuedRequests,
+        ),
+      discoveryLock:
+        published?.discoveryLock ??
+        retired?.discoveryLock ??
+        new DiscoveryLock(),
     };
     this.runtimes.set(record.id, runtime);
+    this.retiredCoordination.delete(record.id);
     return runtime;
   }
 
   private recordFailure(
     record: AccountRecord,
-    observation: ReturnType<typeof observationForUnavailableSession>
-      | ReturnType<typeof observationForUnhealthyRuntime>
+    observation:
+      | ReturnType<typeof observationForUnavailableSession>
+      | ReturnType<typeof observationForUnhealthyRuntime>,
   ): AccountRuntime | null {
     const observed = this.options.accounts.recordObservation(
       record.id,
-      observation
+      observation,
     );
     const existing = this.runtimes.get(record.id);
     if (existing === undefined) return null;

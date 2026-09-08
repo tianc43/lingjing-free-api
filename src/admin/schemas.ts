@@ -123,6 +123,12 @@ export const playgroundQuoteBodySchema = z.object({
   parameters: z.record(z.string(), z.unknown()).default({})
 }).strict();
 
+export const updateAccountCredentialsBodySchema = z.object({
+  cookie_format: z.enum(["header", "json"]),
+  cookie_input: z.string().min(1).max(65_536),
+  login_id: z.uuid().optional()
+}).strict();
+
 export const playgroundQuoteResponseSchema = z.object({
   points: z.number().int().nonnegative(),
   source: z.literal("live")
@@ -209,7 +215,7 @@ export const accountResponseSchema = z.object({
 }).strict();
 
 export const createAccountResponseSchema = accountResponseSchema.extend({
-  login_command: z.string()
+  credential_update_path: z.string()
 }).strict();
 
 export const accountListResponseSchema = z.object({

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerPostgresAdminRoutes } from "../admin/postgres-routes.js";
 import { registerAdminStatic } from "../admin/static.js";
+import type { BrowserLoginManager } from "../accounts/browser-login-manager.js";
 import { postgresBearerAuth } from "../api/postgres-auth.js";
 import { registerErrorHandler } from "../api/error-handler.js";
 import { requestPrincipal } from "../api/principal.js";
@@ -9,11 +10,14 @@ import { registerPostgresUploadRoutes } from "../api/routes/postgres-uploads.js"
 import { registerPostgresVideoRoutes } from "../api/routes/postgres-videos.js";
 import type { OptionalRedisCoordinator } from "../coordination/redis-coordinator.js";
 import type { SignInStatusReader } from "../accounts/sign-in-repositories.js";
-import type { VideoQuoteInput, VideoQuoteResult } from "../lingjing/postgres-quote-resolver.js";
+import type {
+  VideoQuoteInput,
+  VideoQuoteResult,
+} from "../lingjing/postgres-quote-resolver.js";
 import type { ObjectStore } from "../media/object-store.js";
 import {
   PostgresModelCatalog,
-  type PostgresVideoModel
+  type PostgresVideoModel,
 } from "../models/postgres-model-catalog.js";
 import type { PostgresRepositoryGraph } from "./postgres-repository-graph.js";
 
@@ -22,23 +26,35 @@ type QuotePort = { quote(input: VideoQuoteInput): Promise<VideoQuoteResult> };
 export async function createPostgresApiRuntime(
   graph: PostgresRepositoryGraph,
   objects?: ObjectStore,
-  models: readonly PostgresVideoModel[] = [{
-    id: "m",
-    apiId: "m",
-    sceneCode: "t2v",
-    modelCode: "",
-    spaceId: 0,
-    uploadStrategy: "general",
-    modes: ["text-to-video", "image-to-video"]
-  }],
+  models: readonly PostgresVideoModel[] = [
+    {
+      id: "m",
+      apiId: "m",
+      sceneCode: "t2v",
+      modelCode: "",
+      spaceId: 0,
+      uploadStrategy: "general",
+      modes: ["text-to-video", "image-to-video"],
+    },
+  ],
   adminPassword?: string,
   redis?: OptionalRedisCoordinator,
   runtimeRefresher?: {
-    refresh(accountId: string): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
+    refresh(
+      accountId: string,
+    ): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
+    retire?(accountId: string): Promise<void>;
   },
   dataDirectory?: string,
   quote?: QuotePort,
-  dailySignInStatus?: SignInStatusReader
+  dailySignInStatus?: SignInStatusReader,
+  maxConcurrency = 5,
+  browserLogins?: BrowserLoginManager,
+  legacySessionPaths?: {
+    storageStatePath: string;
+    sessionProfilePath: string;
+  },
+  sessionMode?: "browser-state" | "cookie-file",
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   registerErrorHandler(app);
@@ -52,7 +68,11 @@ export async function createPostgresApiRuntime(
       runtimeRefresher,
       dataDirectory,
       quote,
-      dailySignInStatus
+      dailySignInStatus,
+      maxConcurrency,
+      browserLogins,
+      legacySessionPaths,
+      sessionMode,
     );
   }
   await registerAdminStatic(app, adminPassword !== undefined);
@@ -61,7 +81,7 @@ export async function createPostgresApiRuntime(
     return {
       status: "ok",
       database: "postgres",
-      schema_version: graph.runtime.schemaVersion
+      schema_version: graph.runtime.schemaVersion,
     };
   });
   app.register((protectedApp) => {
@@ -71,7 +91,7 @@ export async function createPostgresApiRuntime(
       graph,
       new PostgresModelCatalog(models),
       quote,
-      redis
+      redis,
     );
     if (objects !== undefined) {
       registerPostgresAssetRoutes(protectedApp, graph, objects);
@@ -83,7 +103,7 @@ export async function createPostgresApiRuntime(
         user_id: principal.userId,
         project_id: principal.projectId,
         api_key_id: principal.apiKeyId,
-        scopes: [...principal.scopes].sort()
+        scopes: [...principal.scopes].sort(),
       };
     });
   });

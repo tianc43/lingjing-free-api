@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { AdminApi } from "./api";
 import { AccountDialog } from "./components/account-dialog";
+import { AccountCredentialsDialog } from "./components/account-credentials-dialog";
 import { AccountOnboardingDialog } from "./components/account-onboarding-dialog";
 import { ApiKeyDialog } from "./components/api-key-dialog";
 import { AppShell, type PageName } from "./components/app-shell";
@@ -17,7 +18,7 @@ const PlansPage=lazy(()=>import("./pages/plans-page").then(module=>({default:mod
 const PlaygroundPage=lazy(()=>import("./pages/playground-page").then(module=>({default:module.PlaygroundPage})));
 const UsagePage=lazy(()=>import("./pages/usage-page").then(module=>({default:module.UsagePage})));
 const WebhooksPage=lazy(()=>import("./pages/webhooks-page").then(module=>({default:module.WebhooksPage})));
-import type { Account, AccountImportInput, AccountInput, ApiKey, Job, Overview, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, AccountCredentialInput, AccountImportInput, AccountInput, ApiKey, Job, Overview, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 type ResourceName = "accounts" | "overview" | "jobs" | "settings" | "apiKeys" | "identities" | "plans" | "usage" | "webhooks";
 type ResourceErrors = Partial<Record<ResourceName, string>>;
@@ -58,9 +59,14 @@ export function App() {
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Account | undefined>(undefined);
+  const [credentialsTarget, setCredentialsTarget] = useState<{
+    account: Account;
+    loginId: string;
+  } | undefined>(undefined);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  const [checking,setChecking]=useState<string|null>(null);const[loggingIn,setLoggingIn]=useState<string|null>(null);
+  const [checking,setChecking]=useState<string|null>(null);
+  const [loggingIn,setLoggingIn]=useState<string|null>(null);
   const api = useMemo(() => new AdminApi(() => {
     setAuthenticated(false);
     setApiKeySecret(null);
@@ -163,6 +169,18 @@ export function App() {
     setOnboardingOpen(false);
     await load();
   };
+  const updateCredentials = async (input: AccountCredentialInput) => {
+    if (credentialsTarget === undefined) return;
+    const { account, loginId } = credentialsTarget;
+    await api.updateAccountCredentials(account.id, {
+      ...input,
+      login_id: loginId
+    });
+    setError(null);
+    setCredentialsTarget(undefined);
+    setNotice(`已更新 ${account.name} 的凭据`);
+    await loadAccounts();
+  };
   const toggle = async (account: Account) => {
     if (account.enabled && account.active_jobs > 0 && !window.confirm(`要停用 ${account.name} 吗？${account.active_jobs} 个进行中的任务将继续，但不会再启动新任务。`)) return;
     try {
@@ -186,7 +204,25 @@ export function App() {
       setChecking(null);
     }
   };
-  const browserLogin=async(account:Account)=>{setLoggingIn(account.id);setError(null);try{const started=await api.startBrowserLogin(account.id);setNotice("浏览器已打开，请在该窗口完成灵境登录。");for(let attempt=0;attempt<600;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));const status=await api.browserLogin(started.id);if(status.status==="completed"){setNotice(`已刷新 ${account.name} 的凭据`);await loadAccounts();return;}if(status.status==="failed")throw new Error(status.error??"浏览器登录失败");}throw new Error("浏览器登录超时");}catch(cause){setError(cause instanceof Error?cause.message:"浏览器登录失败");}finally{setLoggingIn(null);}};
+  const browserLogin = async (account: Account) => {
+    const loginWindow = window.open("about:blank", "_blank");
+    if (loginWindow !== null) loginWindow.opener = null;
+    setLoggingIn(account.id);
+    setError(null);
+    try {
+      const login = await api.startBrowserLogin(account.id);
+      if (loginWindow !== null) loginWindow.location.href = login.login_url;
+      setCredentialsTarget({ account, loginId: login.id });
+      setNotice(loginWindow === null
+        ? "浏览器阻止了自动打开。请点击回填窗口中的链接登录灵境，然后提交 Cookie。"
+        : "已在本地浏览器打开灵境。完成登录后，请在回填窗口提交 Cookie。");
+    } catch (cause) {
+      loginWindow?.close();
+      setError(cause instanceof Error ? cause.message : "无法启动登录交接");
+    } finally {
+      setLoggingIn(null);
+    }
+  };
   const createApiKey = async (input: CreateKeyInput) => {
     const created = await api.createApiKey(input);
     setApiKeys((current) => [...current, created.key]);
@@ -246,13 +282,14 @@ export function App() {
         ? <><ResourceFailure error={resourceErrors.jobs} onRetry={() => void loadJobs()} />{resourceLoading.jobs && jobs.length === 0 ? <Skeleton /> : <TasksPage accounts={accounts} jobs={jobs} />}</>
         : page === "api-access"
           ? <><ResourceFailure error={resourceErrors.settings ?? resourceErrors.apiKeys} onRetry={() => { void loadSettings(); void loadApiKeys(); }} />{(settings === null && resourceLoading.settings) || resourceLoading.apiKeys && apiKeys.length === 0 ? <Skeleton /> : settings !== null && <ApiAccessPage settings={settings} keys={apiKeys} users={users} projects={projects} onCreate={createApiKey} onToggle={toggleApiKey} onRevoke={revokeApiKey} />}</>
-          : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage accounts={accounts} settings={settings} />}</>;
+          : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage settings={settings} />}</>;
 
   return <AppShell page={page} onNavigate={navigate} onLogout={logout}>
     {error !== null && <section className="retry-state" role="alert"><p>{error}</p></section>}
     {notice && <p className="command-notice" aria-live="polite">{notice}</p>}
     <Suspense fallback={<Skeleton />}>{pageContent}</Suspense>
     {dialog !== undefined && <AccountDialog account={dialog} onClose={() => setDialog(undefined)} onSave={save} />}
+    {credentialsTarget !== undefined && <AccountCredentialsDialog account={credentialsTarget.account} onClose={() => setCredentialsTarget(undefined)} onUpdate={updateCredentials} />}
     {onboardingOpen && <AccountOnboardingDialog onClose={() => setOnboardingOpen(false)} onImport={importAccount} />}
     {apiKeySecret !== null && page === "api-access" && <ApiKeyDialog secret={apiKeySecret} onClose={() => setApiKeySecret(null)} />}
   </AppShell>;

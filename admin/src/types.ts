@@ -22,8 +22,6 @@ export interface Account {
   updated_at: number;
 }
 
-export interface BrowserLogin {id:string;account_id:string;status:"running"|"completed"|"failed";error:string|null;}
-
 export interface Job {
   id: string;
   account_name: string;
@@ -70,6 +68,14 @@ export interface PlaygroundInput {
   mode?: "text-to-video" | "image-to-video";
   input_image?: string;
   parameters: Record<string, unknown>;
+}
+
+export interface BrowserLogin {
+  id: string;
+  account_id: string;
+  status: "running" | "completed" | "failed";
+  error: string | null;
+  login_url: string;
 }
 
 export type AccountSignInStatus = "checking" | "signed" | "already_signed"
@@ -174,4 +180,10 @@ export interface AccountInput {
 export interface AccountImportInput extends AccountInput {
   cookie_format: "header" | "json";
   cookie_input: string;
+}
+
+export interface AccountCredentialInput {
+  cookie_format: "header" | "json";
+  cookie_input: string;
+  login_id?: string;
 }

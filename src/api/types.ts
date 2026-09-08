@@ -72,8 +72,11 @@ export interface AdminDependencies {
     SqliteApiKeyRepository,
     "create" | "list" | "setEnabled" | "revoke" | "verify"
   >;
-  cookieImporter: Pick<CookieImportService, "import">;
-  browserLogins?: Pick<import("../accounts/browser-login-manager.js").BrowserLoginManager,"start"|"find">;
+  cookieImporter: Pick<CookieImportService, "import" | "replace">;
+  browserLogins?: Pick<
+    import("../accounts/browser-login-manager.js").BrowserLoginManager,
+    "start" | "find" | "complete"
+  >;
   dailySignIn?: SignInStatusReader;
   accounts: Pick<
     SqliteAccountRepository,

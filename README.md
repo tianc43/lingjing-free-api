@@ -32,7 +32,7 @@ Windows PowerShell 可用 `Copy-Item .env.example .env` 代替 `cp`；密钥生�
 - `data/auth/storage-state.json`：Playwright Cookie 状态；
 - `data/auth/session-profile.json`：账号定位所需的最小配置。
 
-浏览器登录只能在本机运行，版本一 Docker 镜像内不包含登录 GUI。既有 CLI 会话过期、CSRF 失效或切换账号时，在停止写入竞争后重新执行对应登录命令；服务会在下次加载时采用新文件。
+生产 Docker 镜像不在服务器启动登录 GUI。远端部署中的既有会话过期、CSRF 失效或切换账号时，在管理台点击“重新登录”：前端会在用户本地浏览器打开灵境，并同时显示 Cookie 回填窗口；用户登录后粘贴 Cookie，服务器验证成功才替换会话。
 
 首次升级会把现有 `data/auth` 记录为 `legacy` 账号，不移动或重写会话文件。新增账号应使用管理控制台的 Cookie 导入流程。
 
@@ -126,7 +126,7 @@ PostgreSQL Browser 命令会自动启动并清理隔离 PostgreSQL 容器，等�
 
 设置非空 `LINGJING_ADMIN_PASSWORD` 后，访问 `http://127.0.0.1:8000/admin/`。管理员密码只创建管理会话，不能调用生成 API；`LINGJING_API_KEY` 只保护兼容 API，也不能登录管理控制台。管理员登录使用 `HttpOnly`、`SameSite=Strict` Cookie，修改操作还要求同源 CSRF；进程重启后需要重新登录。
 
-控制台可以通过 Cookie 导入新增账号，也可以编辑、检查、启用和禁用账号。禁用只阻止新任务，不中断已经提交的任务；删除、角色、导出和告警不在当前 MVP。Cookie 导入成功后账号已完成验证并启用；导入失败不会保留可调度账号。状态为 `needs_login` 的既有账号按 [故障排查](docs/troubleshooting.md) 处理。
+控制台可以通过 Cookie 导入新增账号，也可以通过“重新登录”在本地打开灵境并回填既有账号 Cookie，还支持编辑、检查、启用和禁用。回填会先验证新 Cookie，成功后才替换服务器会话，不会返回或记录 Cookie。禁用只阻止新任务，不中断已经提交的任务；删除、角色、导出和告警不在当前 MVP。Cookie 导入成功后账号已完成验证并启用；导入失败不会保留可调度账号。状态为 `needs_login` 的既有账号按 [故障排查](docs/troubleshooting.md) 处理。
 
 服务启动时会立即检查一次签到，之后每个整点对所有已启用且会话健康的账号继续检查，避免因服务重启错过当天签到。每个账号先读取当天签到状态：已签到则跳过，未签到才提交当前活动编号，并在提交后再次读取状态确认。提交前会持久化“账号 + 活动 + 北京日期”闸门；即使验证结果不确定、服务重启或 PostgreSQL 切换实例，当天也不会重复提交。单账号失败不会阻塞其他账号，结果写入安全运行日志且不包含 Cookie、CSRF 或账号名称。账号页面会展示自动签到是否运行、最近与下次检查时间，以及各账号的签到结果。PostgreSQL 多实例使用数据库 advisory lock，确保同一时刻只有一个实例执行整轮签到。
 
@@ -136,7 +136,7 @@ PostgreSQL Browser 命令会自动启动并清理隔离 PostgreSQL 容器，等�
 
 1. 打开 `<origin>/admin/`，用 `LINGJING_ADMIN_PASSWORD` 登录，再进入“灵境”账号页。
 2. 在灵境网页完成登录。在浏览器开发者工具的一个已认证请求中手工复制 `Cookie` Header，或从浏览器导出 Cookie JSON；选择相应格式粘贴到控制台并填写账号名称/预算。网页控制台**不能**自动读取跨域 Cookie，也不能读取带 `HttpOnly` 属性的 Cookie，这是浏览器的同源与 Cookie 安全边界。
-3. 提交导入并等待控制台验证；成功响应表示账号已经启用，可确认显示的会员和余额摘要。导入响应和账号列表不会回显 Cookie。
+3. 新账号提交导入；既有账号点击“重新登录”，在自动打开的本地灵境页面完成登录后，将 Cookie 粘贴到同时出现的回填窗口。等待控制台验证后确认会员和余额摘要。任何响应和账号列表都不会回显 Cookie。
 4. 在“Users & projects”创建下游调用主体，在“Plans”分配视频能力、日/月点数与并发限制，再进入“API keys”为指定 Project 创建最小权限 Key。明文 Key 与 Webhook Secret 只在成功创建或轮换时显示一次。
 5. 使用控制台显示的 Base URL（通常为 `<origin>/v1`）和 `Authorization: Bearer ${LINGJING_API_KEY}` 调用。这里的 `${LINGJING_API_KEY}` 是调用方环境变量；迁移后应赋值为刚创建的托管 Key，而不是把 Key 写进代码。
 6. 怀疑泄露时先禁用 Key 验证调用会得到 401；确认不再需要时撤销。禁用可以重新启用，撤销是终态，不能重新启用或恢复同一明文值。

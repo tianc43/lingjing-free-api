@@ -23,7 +23,9 @@ Get-Item -LiteralPath .\data\auth\storage-state.json, .\data\auth\session-profil
   Select-Object Name, Length, LastWriteTime
 ```
 
-停止服务写入竞争，在本机刷新会话再启动：
+远端部署无需停止服务。在“订阅账号”点击目标账号的“重新登录”，管理台会在本地浏览器打开灵境并显示回填窗口。登录后从已认证请求复制 Cookie，粘贴并验证；更新成功后再执行“刷新余额”。
+
+只有在本机非容器环境中，才使用 CLI 刷新 legacy 会话：
 
 ```powershell
 docker compose stop
@@ -36,24 +38,18 @@ curl.exe -sS http://127.0.0.1:8000/v1/session -H "Authorization: Bearer $env:LIN
 
 ## 账号状态：`needs_login`
 
-`legacy` 使用 `data/auth`；新增账号使用 `data/accounts/<account-id>`。在管理控制台复制账号的固定登录命令，在本机完成登录：
-
-```powershell
-npm run login -- --account-id acct_0123456789abcdef01234567
-```
-
-然后只检查文件元数据，不读取会话内容：
+`legacy` 使用 `data/auth`；新增账号使用 `data/accounts/<account-id>`。远端部署统一在管理台点击目标账号的“重新登录”，在本地打开的灵境页面登录后回填当前 Cookie，并等待验证成功。然后只检查文件元数据，不读取会话内容：
 
 ```powershell
 Get-ChildItem -LiteralPath .\data\accounts\acct_0123456789abcdef01234567 |
   Select-Object Name, Length, LastWriteTime
 ```
 
-回到 `/admin/` 对该账号执行“检查”；健康变为 ready 后再启用。若仍是 `needs_login`，确认命令中的账号 ID 与控制台一致、目录对当前用户可写，并确认 `LINGJING_DATA_DIRECTORY` 指向同一个 `data` 根目录。不要复制 `legacy` 会话给另一个账号，也不要通过网页 API 上传 Cookie。
+回到 `/admin/` 对该账号执行“刷新余额”；健康变为 ready 后再启用。若仍是 `needs_login`，确认更新的是正确账号、Cookie 包含当前 `csrfToken` 和 `pin`，并确认服务器数据目录可写。不要复制 `legacy` 会话给另一个账号；Cookie 只应提交给同源、HTTPS、管理员认证和 CSRF 保护的凭据更新接口。
 
 ## CSRF 失效：`lingjing_csrf_expired`
 
-读取类请求会自动使缓存失效并重载一次会话；持续失败时不要复制或打印 CSRF。按上节执行 `npm run login`。确认系统时间正确，并检查文件元数据：
+读取类请求会自动使缓存失效并重载一次会话；持续失败时不要复制或打印 CSRF。远端按上节使用“重新登录”完成 Cookie 回填，本机非容器环境才运行 `npm run login`。确认系统时间正确，并检查文件元数据：
 
 ```powershell
 Get-Date

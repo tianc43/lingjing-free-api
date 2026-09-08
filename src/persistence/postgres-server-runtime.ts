@@ -1,18 +1,22 @@
 import type { FastifyInstance } from "fastify";
+import type { BrowserLoginManager } from "../accounts/browser-login-manager.js";
 import type { SignInStatusReader } from "../accounts/sign-in-repositories.js";
 import type { OptionalRedisCoordinator } from "../coordination/redis-coordinator.js";
 import { PostgresArchiveWorker } from "../jobs/postgres-archive-worker.js";
 import { PostgresReconciliationWorker } from "../jobs/postgres-reconciliation-worker.js";
 import { PostgresWorkerOrchestrator } from "../jobs/postgres-worker-orchestrator.js";
 import { createPostgresProtocolWorkers } from "../lingjing/postgres-protocol-worker-factory.js";
-import type { VideoQuoteInput, VideoQuoteResult } from "../lingjing/postgres-quote-resolver.js";
+import type {
+  VideoQuoteInput,
+  VideoQuoteResult,
+} from "../lingjing/postgres-quote-resolver.js";
 import type { RuntimeLookup } from "../lingjing/postgres-account-transport-resolver.js";
 import type { ObjectStore } from "../media/object-store.js";
 import type { PreparedMedia } from "../media/types.js";
 import type { PostgresVideoModel } from "../models/postgres-model-catalog.js";
 import {
   PostgresWebhookDeliveryWorker,
-  type WebhookSendPort
+  type WebhookSendPort,
 } from "../webhooks/postgres-delivery-worker.js";
 import { createPostgresApiRuntime } from "./postgres-api-runtime.js";
 import type { PostgresRepositoryGraph } from "./postgres-repository-graph.js";
@@ -29,10 +33,20 @@ export async function createPostgresServerRuntime(input: {
   adminPassword?: string | null;
   dataDirectory?: string;
   runtimeRefresher?: {
-    refresh(accountId: string): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
+    refresh(
+      accountId: string,
+    ): Promise<import("../accounts/runtime.js").AccountRuntime | null>;
+    retire?(accountId: string): Promise<void>;
   };
   quote?: { quote(input: VideoQuoteInput): Promise<VideoQuoteResult> };
   dailySignInStatus?: SignInStatusReader;
+  maxConcurrency?: number;
+  browserLogins?: BrowserLoginManager;
+  legacySessionPaths?: {
+    storageStatePath: string;
+    sessionProfilePath: string;
+  };
+  sessionMode?: "browser-state" | "cookie-file";
   redis?: OptionalRedisCoordinator;
 }): Promise<{
   app: FastifyInstance;
@@ -50,42 +64,50 @@ export async function createPostgresServerRuntime(input: {
     input.runtimeRefresher,
     input.dataDirectory,
     input.quote,
-    input.dailySignInStatus
+    input.dailySignInStatus,
+    input.maxConcurrency,
+    input.browserLogins,
+    input.legacySessionPaths,
+    input.sessionMode,
   );
   const reconcile = new PostgresReconciliationWorker(
     input.graph,
     protocol.poller,
-    `${input.workerId}-reconcile`
+    `${input.workerId}-reconcile`,
   );
   const archive = new PostgresArchiveWorker(
     input.graph,
     input.objects,
     (url) => input.fetchOutput(url),
     `${input.workerId}-archive`,
-    input.retentionMs
+    input.retentionMs,
   );
   const webhooks = new PostgresWebhookDeliveryWorker(
     input.graph.webhooks,
     input.webhookTransport,
-    `${input.workerId}-webhook`
+    `${input.workerId}-webhook`,
   );
   const workers = new PostgresWorkerOrchestrator(input.graph, {
     ...protocol,
     reconcile,
     archive,
-    webhooks
+    webhooks,
   });
   let closed = false;
-  let subscription: Awaited<ReturnType<NonNullable<typeof input.redis>["subscribeJobs"]>> | null = null;
+  let subscription: Awaited<
+    ReturnType<NonNullable<typeof input.redis>["subscribeJobs"]>
+  > | null = null;
   return {
     app,
     workers,
     start: () => {
       workers.start();
       if (input.redis !== undefined) {
-        void input.redis.subscribeJobs(() => void workers.tick()).then(
-          (value) => { subscription = value; }
-        );
+        void input.redis
+          .subscribeJobs(() => void workers.tick())
+          .then((value) => {
+            subscription = value;
+          });
       }
     },
     close: async () => {
@@ -95,6 +117,6 @@ export async function createPostgresServerRuntime(input: {
       await workers.close();
       await app.close();
       await input.graph.close();
-    }
+    },
   };
 }

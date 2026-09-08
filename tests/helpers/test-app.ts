@@ -3,7 +3,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
-import type { FastifyInstance, InjectOptions, LightMyRequestResponse } from "fastify";
+import type {
+  FastifyInstance,
+  InjectOptions,
+  LightMyRequestResponse,
+} from "fastify";
 import { vi } from "vitest";
 import { buildApp, type AppDependencies } from "../../src/app.js";
 import type { AppConfig } from "../../src/config.js";
@@ -12,6 +16,7 @@ import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { SqliteAccountRepository } from "../../src/accounts/sqlite-account-repository.js";
 import { SqliteAdmissionRepository } from "../../src/accounts/sqlite-admission-repository.js";
 import { CookieImportService } from "../../src/accounts/cookie-import-service.js";
+import { BrowserLoginManager } from "../../src/accounts/browser-login-manager.js";
 import { SqliteApiKeyRepository } from "../../src/api-keys/sqlite-api-key-repository.js";
 import { SqliteIdentityRepository } from "../../src/identity/sqlite-identity-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
@@ -38,13 +43,15 @@ export const imageModel: NormalizedModel = {
   expectedAssetScene: "private-asset-scene",
   uploadStrategy: "general",
   priceQuerySchema: null,
-  parameters: [{
-    idx: "private-index",
-    key: "prompt",
-    displayName: "Prompt",
-    required: true,
-    kind: "string"
-  }],
+  parameters: [
+    {
+      idx: "private-index",
+      key: "prompt",
+      displayName: "Prompt",
+      required: true,
+      kind: "string",
+    },
+  ],
   pricing: {
     points: 2,
     currency: "CNY",
@@ -53,7 +60,7 @@ export const imageModel: NormalizedModel = {
       unit: "image",
       cost: 2,
       signature: "private-price-signature",
-      rawPayload: "private-raw-payload"
+      rawPayload: "private-raw-payload",
     },
     apiId: "private-pricing-api-id",
     assetId: "private-pricing-asset-id",
@@ -62,9 +69,9 @@ export const imageModel: NormalizedModel = {
     token: "private-pricing-token",
     "p-r_i.c e": "private-adversarial-price-key",
     nested: { spaceId: 91_001 },
-    mystery: "private-pricing-mystery"
+    mystery: "private-pricing-mystery",
   },
-  rawRevision: "private-revision"
+  rawRevision: "private-revision",
 };
 
 export const videoModel: NormalizedModel = {
@@ -73,7 +80,7 @@ export const videoModel: NormalizedModel = {
   apiId: "808",
   alias: "fixture-video",
   displayName: "Fixture Video",
-  sourceType: "image-to-video"
+  sourceType: "image-to-video",
 };
 
 const accountSnapshot: AccountSnapshot = {
@@ -85,7 +92,7 @@ const accountSnapshot: AccountSnapshot = {
   couponBalance: 3,
   availableAmount: 123,
   totalBalance: 130,
-  resourcePackages: [{ name: "fixture", balance: 7 }]
+  resourcePackages: [{ name: "fixture", balance: 7 }],
 };
 
 const config: AppConfig = {
@@ -118,7 +125,7 @@ const config: AppConfig = {
   maxQueuedRequests: 20,
   logLevel: "info",
   docsEnabled: true,
-  adminPassword: null
+  adminPassword: null,
 };
 
 export interface TestApp {
@@ -135,6 +142,7 @@ export interface TestApp {
   admissions: SqliteAdmissionRepository;
   runtimes: {
     refresh: ReturnType<typeof vi.fn>;
+    retire: ReturnType<typeof vi.fn>;
     listEnabled: ReturnType<typeof vi.fn>;
   };
   capturedPinoOutput(): string;
@@ -146,14 +154,14 @@ type TestAppOverrides = Omit<Partial<AppDependencies>, "config"> & {
 };
 
 export async function createTestApp(
-  overrides: TestAppOverrides = {}
+  overrides: TestAppOverrides = {},
 ): Promise<TestApp> {
   const directory = mkdtempSync(join(tmpdir(), "lingjing-api-test-"));
   const { config: configOverrides, ...dependencyOverrides } = overrides;
   const testConfig: AppConfig = {
     ...config,
     dataDirectory: join(directory, "data"),
-    ...configOverrides
+    ...configOverrides,
   };
   const store = new SqliteStore(join(directory, "jobs.sqlite"));
   const repository = new SqliteJobRepository(store);
@@ -170,7 +178,7 @@ export async function createTestApp(
     write(chunk, _encoding, callback) {
       logOutput += String(chunk);
       callback();
-    }
+    },
   });
   const account = {
     throwOnDescribe: null as Error | null,
@@ -178,7 +186,7 @@ export async function createTestApp(
       return account.throwOnDescribe === null
         ? Promise.resolve(accountSnapshot)
         : Promise.reject(account.throwOnDescribe);
-    })
+    }),
   };
   const catalogCalls: SourceType[] = [];
   const catalogRefreshes: boolean[] = [];
@@ -195,6 +203,13 @@ export async function createTestApp(
     capacity: CapacityManager;
   }> = [];
   const runtimes = {
+    retire: vi.fn((accountId: string) => {
+      const existing = loadedRuntimes.findIndex(
+        (item) => item.record.id === accountId,
+      );
+      if (existing !== -1) loadedRuntimes.splice(existing, 1);
+      return Promise.resolve();
+    }),
     refresh: vi.fn((accountId: string) => {
       const record = accounts.findById(accountId);
       if (record === null || !record.enabled) return Promise.resolve(null);
@@ -205,22 +220,22 @@ export async function createTestApp(
             mode: "browser-state",
             source: "fixture-admin-session",
             sourceMtimeMs: 123,
-            hasCsrf: true
-          })
+            hasCsrf: true,
+          }),
         },
         capacity: new CapacityManager(
           record.maxConcurrency ?? config.maxConcurrency,
-          testConfig.maxQueuedRequests
-        )
+          testConfig.maxQueuedRequests,
+        ),
       };
       const existing = loadedRuntimes.findIndex(
-        (item) => item.record.id === accountId
+        (item) => item.record.id === accountId,
       );
       if (existing === -1) loadedRuntimes.push(runtime);
       else loadedRuntimes[existing] = runtime;
       return Promise.resolve(runtime);
     }),
-    listEnabled: vi.fn(() => loadedRuntimes)
+    listEnabled: vi.fn(() => loadedRuntimes),
   };
   const capacity = new CapacityManager(5, 20);
   const cookieImporter = new CookieImportService({
@@ -228,9 +243,9 @@ export async function createTestApp(
     config: testConfig,
     runtimes: runtimes as unknown as Pick<
       import("../../src/accounts/runtime-registry.js").AccountRuntimeRegistry,
-      "refresh"
+      "refresh" | "retire"
     >,
-    describeAccount: account.describe
+    describeAccount: account.describe,
   });
   const dependencies: AppDependencies = {
     config: testConfig,
@@ -240,41 +255,41 @@ export async function createTestApp(
     identities,
     apiKeys,
     cookieImporter,
+    browserLogins: new BrowserLoginManager(),
     logger: createLogger("info", destination),
     session: {
       mode: "browser-state",
       load: vi.fn(),
-      loadProfile: vi.fn(() => Promise.resolve({
-        originPin: "fixture-private-pin"
-      })),
+      loadProfile: vi.fn(() =>
+        Promise.resolve({
+          originPin: "fixture-private-pin",
+        }),
+      ),
       applySetCookies: vi.fn(),
       describe: () => ({
         mode: "browser-state",
         source: "private-storage-state-path",
         sourceMtimeMs: 123,
-        hasCsrf: true
+        hasCsrf: true,
       }),
-      invalidate: vi.fn()
+      invalidate: vi.fn(),
     },
     transport: {
       read: vi.fn(),
       submitOnce: vi.fn(),
       uploadApi: vi.fn(),
-      putSigned: vi.fn()
+      putSigned: vi.fn(),
     },
     account,
     catalog: {
-      list: vi.fn((
-        sourceType: SourceType,
-        refresh: boolean = false
-      ) => {
+      list: vi.fn((sourceType: SourceType, refresh: boolean = false) => {
         catalogCalls.push(sourceType);
         catalogRefreshes.push(refresh);
-        return Promise.resolve(sourceType === "image-generation"
-          ? [imageModel]
-          : [videoModel]);
+        return Promise.resolve(
+          sourceType === "image-generation" ? [imageModel] : [videoModel],
+        );
       }),
-      resolve: vi.fn()
+      resolve: vi.fn(),
     },
     repository,
     accounts,
@@ -283,36 +298,30 @@ export async function createTestApp(
     coordinator: {
       create: vi.fn(),
       resume: vi.fn(),
-      resolveUnknown: vi.fn((
-        accountId: string,
-        jobId: string,
-        action: "charge" | "release"
-      ) => {
-        const resolved = admissions.resolveUnknown(accountId, jobId, action);
-        capacity.releaseJob(jobId);
-        loadedRuntimes.find(
-          (runtime) => runtime.record.id === accountId
-        )?.capacity.releaseJob(jobId);
-        return resolved;
-      }),
-      stopPollers: vi.fn()
+      resolveUnknown: vi.fn(
+        (accountId: string, jobId: string, action: "charge" | "release") => {
+          const resolved = admissions.resolveUnknown(accountId, jobId, action);
+          capacity.releaseJob(jobId);
+          loadedRuntimes
+            .find((runtime) => runtime.record.id === accountId)
+            ?.capacity.releaseJob(jobId);
+          return resolved;
+        },
+      ),
+      stopPollers: vi.fn(),
     },
     capacity,
     recovery: {
-      ready: true
+      ready: true,
     },
     media: {
-      createRequestBudget: () => createTempBudget(
-        config.maxRequestMediaBytes
-      ),
-      prepareStream: () => Promise.reject(
-        new Error("Fixture media stream is not configured")
-      ),
-      fetchOutput: () => Promise.reject(
-        new Error("Fixture output fetch is not configured")
-      )
+      createRequestBudget: () => createTempBudget(config.maxRequestMediaBytes),
+      prepareStream: () =>
+        Promise.reject(new Error("Fixture media stream is not configured")),
+      fetchOutput: () =>
+        Promise.reject(new Error("Fixture output fetch is not configured")),
     },
-    ...dependencyOverrides
+    ...dependencyOverrides,
   };
   const app = await buildApp(dependencies);
   return {
@@ -331,20 +340,20 @@ export async function createTestApp(
       repository.close();
       store.close();
       removeTestDirectory(directory);
-    }
+    },
   };
 }
 
 export function authorizedInject(
   app: FastifyInstance,
-  options: InjectOptions
+  options: InjectOptions,
 ): Promise<LightMyRequestResponse> {
   return app.inject({
     ...options,
     headers: {
       ...options.headers,
-      authorization: `Bearer ${API_KEY}`
-    }
+      authorization: `Bearer ${API_KEY}`,
+    },
   });
 }
 

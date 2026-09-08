@@ -12,8 +12,17 @@ export interface SessionProvider {
   load(): Promise<SessionSnapshot>;
   loadProfile(): Promise<{ originPin: string }>;
   applySetCookies(url: URL, headers: string[]): Promise<void>;
-  describe(): { mode: string; source: string; sourceMtimeMs: number | null; hasCsrf: boolean };
+  retire?(): Promise<void>;
+  describe(): {
+    mode: string;
+    source: string;
+    sourceMtimeMs: number | null;
+    hasCsrf: boolean;
+  };
   invalidate(): void;
 }
 
-export type AtomicWriter = (targetPath: string, value: unknown) => Promise<void>;
+export type AtomicWriter = (
+  targetPath: string,
+  value: unknown,
+) => Promise<void>;

@@ -1,15 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  InjectOptions,
-  LightMyRequestResponse
-} from "fastify";
+import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { budgetWindows } from "../../src/accounts/budget.js";
 import { CookieImportRollbackError } from "../../src/accounts/cookie-import-service.js";
 import { adminCookieOptions } from "../../src/admin/routes.js";
 import {
   createTestApp,
   fixtureHash,
-  type TestApp
+  type TestApp,
 } from "../helpers/test-app.js";
 import { assertNoSensitiveValues } from "../helpers/secret-scan.js";
 
@@ -23,8 +20,8 @@ afterEach(async () => {
 async function adminFixture(enabled = true): Promise<TestApp> {
   const fixture = await createTestApp({
     config: {
-      adminPassword: enabled ? ADMIN_PASSWORD : null
-    }
+      adminPassword: enabled ? ADMIN_PASSWORD : null,
+    },
   });
   fixtures.push(fixture);
   return fixture;
@@ -34,15 +31,16 @@ async function login(fixture: TestApp) {
   const response = await fixture.app.inject({
     method: "POST",
     url: "/admin/api/login",
-    payload: { password: ADMIN_PASSWORD }
+    payload: { password: ADMIN_PASSWORD },
   });
   const body = response.json<{
     csrf_token: string;
     expires_at: number;
   }>();
   const setCookie = response.headers["set-cookie"];
-  const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)
-    ?.split(";")[0];
+  const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(
+    ";",
+  )[0];
   if (cookie === undefined) throw new Error("Admin cookie was not set");
   return { response, body, cookie };
 }
@@ -55,14 +53,14 @@ function mutate(
     method: "POST" | "PATCH" | "DELETE";
     url: string;
     payload?: object;
-  }
+  },
 ): Promise<LightMyRequestResponse> {
   const injectOptions: InjectOptions = {
     ...options,
     headers: {
       cookie,
-      "x-csrf-token": csrfToken
-    }
+      "x-csrf-token": csrfToken,
+    },
   };
   return fixture.app.inject(injectOptions);
 }
@@ -75,7 +73,7 @@ describe("administrator API", () => {
       const response = await fixture.app.inject({ url });
       expect(response.statusCode).toBe(404);
       expect(response.json()).toMatchObject({
-        error: { code: "route_not_found" }
+        error: { code: "route_not_found" },
       });
       expect(response.body).not.toContain("invalid_api_key");
     }
@@ -86,7 +84,7 @@ describe("administrator API", () => {
     const rejected = await fixture.app.inject({
       method: "POST",
       url: "/admin/api/login",
-      payload: { password: "fixture-wrong-password" }
+      payload: { password: "fixture-wrong-password" },
     });
     expect(rejected.statusCode).toBe(401);
 
@@ -101,7 +99,7 @@ describe("administrator API", () => {
 
     const session = await fixture.app.inject({
       url: "/admin/api/session",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(session.statusCode).toBe(200);
     expect(session.json()).toMatchObject({ authenticated: true });
@@ -110,7 +108,7 @@ describe("administrator API", () => {
       method: "POST",
       url: "/admin/api/login",
       headers: { "x-forwarded-proto": "https" },
-      payload: { password: ADMIN_PASSWORD }
+      payload: { password: ADMIN_PASSWORD },
     });
     expect(forwarded.headers["set-cookie"]).not.toContain("Secure");
 
@@ -120,11 +118,11 @@ describe("administrator API", () => {
   it("requires session authentication and CSRF for state changes", async () => {
     const fixture = await adminFixture();
     const unauthenticated = await fixture.app.inject({
-      url: "/admin/api/accounts"
+      url: "/admin/api/accounts",
     });
     expect(unauthenticated.statusCode).toBe(401);
     expect(unauthenticated.json()).toMatchObject({
-      error: { code: "admin_authentication_required" }
+      error: { code: "admin_authentication_required" },
     });
 
     const { cookie } = await login(fixture);
@@ -136,12 +134,12 @@ describe("administrator API", () => {
         name: "Fixture account",
         priority: 1,
         daily_point_limit: 20,
-        monthly_point_limit: 100
-      }
+        monthly_point_limit: 100,
+      },
     });
     expect(missing.statusCode).toBe(403);
     expect(missing.json()).toMatchObject({
-      error: { code: "invalid_csrf_token" }
+      error: { code: "invalid_csrf_token" },
     });
   });
 
@@ -157,8 +155,9 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin; thor=fixture-auth"
-      }
+        cookie_input:
+          "csrfToken=fixture-csrf; pin=fixture-private-pin; thor=fixture-auth",
+      },
     });
 
     expect(response.statusCode).toBe(201);
@@ -167,8 +166,8 @@ describe("administrator API", () => {
         name: "Imported",
         enabled: true,
         health_status: "ready",
-        membership: "pro"
-      }
+        membership: "pro",
+      },
     });
     expect(response.body).not.toContain("fixture-csrf");
     expect(response.body).not.toContain("fixture-private-pin");
@@ -182,12 +181,12 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "pin=fixture-private-pin"
-      }
+        cookie_input: "pin=fixture-private-pin",
+      },
     });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json()).toMatchObject({
-      error: { code: "invalid_request" }
+      error: { code: "invalid_request" },
     });
 
     const duplicate = await mutate(fixture, cookie, body.csrf_token, {
@@ -199,25 +198,28 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
-      }
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin",
+      },
     });
     expect(duplicate.statusCode).toBe(409);
     expect(duplicate.json()).toMatchObject({
-      error: { code: "account_name_conflict" }
+      error: { code: "account_name_conflict" },
     });
   });
 
   it("sanitizes invalid and timed-out imported sessions", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);
-    const importer = (fixture.dependencies as unknown as {
-      cookieImporter: { import(): Promise<never> };
-    }).cookieImporter;
+    const importer = (
+      fixture.dependencies as unknown as {
+        cookieImporter: { import(): Promise<never> };
+      }
+    ).cookieImporter;
     const originalImport = importer.import.bind(importer);
-    importer.import = () => Promise.reject(
-      new Error("fixture-private-pin upstream refused imported cookie")
-    );
+    importer.import = () =>
+      Promise.reject(
+        new Error("fixture-private-pin upstream refused imported cookie"),
+      );
     const invalid = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: "/admin/api/accounts/import",
@@ -227,16 +229,17 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
-      }
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin",
+      },
     });
     expect(invalid.statusCode).toBe(401);
     expect(invalid.json()).toMatchObject({
-      error: { code: "invalid_imported_session" }
+      error: { code: "invalid_imported_session" },
     });
     expect(invalid.body).not.toContain("fixture-private-pin");
 
-    importer.import = () => Promise.reject(new Error("fixture import timed out"));
+    importer.import = () =>
+      Promise.reject(new Error("fixture import timed out"));
     const timedOut = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: "/admin/api/accounts/import",
@@ -246,12 +249,12 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
-      }
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin",
+      },
     });
     expect(timedOut.statusCode).toBe(504);
     expect(timedOut.json()).toMatchObject({
-      error: { code: "import_validation_timeout" }
+      error: { code: "import_validation_timeout" },
     });
     importer.import = originalImport;
   });
@@ -259,9 +262,11 @@ describe("administrator API", () => {
   it("returns a dedicated sanitized server error when cookie import rollback is incomplete", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);
-    const importer = (fixture.dependencies as unknown as {
-      cookieImporter: { import(): Promise<never> };
-    }).cookieImporter;
+    const importer = (
+      fixture.dependencies as unknown as {
+        cookieImporter: { import(): Promise<never> };
+      }
+    ).cookieImporter;
     importer.import = () => Promise.reject(new CookieImportRollbackError());
 
     const response = await mutate(fixture, cookie, body.csrf_token, {
@@ -273,8 +278,8 @@ describe("administrator API", () => {
         daily_point_limit: 0,
         monthly_point_limit: 0,
         cookie_format: "header",
-        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin"
-      }
+        cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin",
+      },
     });
 
     expect(response.statusCode).toBe(500);
@@ -283,14 +288,14 @@ describe("administrator API", () => {
         message: "Cookie import rollback was incomplete",
         type: "server_error",
         param: null,
-        code: "cookie_import_rollback_incomplete"
-      }
+        code: "cookie_import_rollback_incomplete",
+      },
     });
     assertNoSensitiveValues(response.body, [
       "fixture-csrf",
       "fixture-private-pin",
       "C:\\private\\session",
-      "upstream refresh failure"
+      "upstream refresh failure",
     ]);
   });
 
@@ -300,9 +305,11 @@ describe("administrator API", () => {
     const coordinator = fixture.dependencies.coordinator as unknown as {
       create: ReturnType<typeof import("vitest").vi.fn>;
     };
-    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>).mockResolvedValue(
-      (await import("../helpers/test-app.js")).imageModel
-    );
+    (
+      fixture.dependencies.catalog.resolve as ReturnType<
+        typeof import("vitest").vi.fn
+      >
+    ).mockResolvedValue((await import("../helpers/test-app.js")).imageModel);
     coordinator.create.mockResolvedValue({
       job: {
         id: "playground-job",
@@ -321,17 +328,19 @@ describe("administrator API", () => {
         completedAt: null,
         failedAt: null,
         createdAt: Date.now(),
-        updatedAt: Date.now()
-      }
+        updatedAt: Date.now(),
+      },
     });
 
     const models = await fixture.app.inject({
       url: "/admin/api/playground/models?type=image",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(models.statusCode).toBe(200);
     expect(models.json()).toMatchObject({
-      models: [{ id: "fixture-image", type: "image", display_name: "Fixture Image" }]
+      models: [
+        { id: "fixture-image", type: "image", display_name: "Fixture Image" },
+      ],
     });
     expect(models.body).not.toContain("private-ref-id");
 
@@ -342,18 +351,89 @@ describe("administrator API", () => {
         kind: "image",
         model: "fixture-image",
         prompt: "Fixture prompt",
-        parameters: {}
-      }
+        parameters: {},
+      },
     });
     expect(run.statusCode).toBe(202);
-    expect(run.json()).toMatchObject({ job: { id: "playground-job", status: "queued" } });
-    expect(coordinator.create).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "image",
-      sourceType: "image-generation",
-      model: "fixture-image",
-      values: { prompt: "Fixture prompt" },
-      media: []
-    }));
+    expect(run.json()).toMatchObject({
+      job: { id: "playground-job", status: "queued" },
+    });
+    expect(coordinator.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "image",
+        sourceType: "image-generation",
+        model: "fixture-image",
+        values: { prompt: "Fixture prompt" },
+        media: [],
+      }),
+    );
+  });
+
+  it("updates an existing account credential without returning cookie material", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const imported = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts/import",
+      payload: {
+        name: "Remote credential update",
+        priority: 2,
+        daily_point_limit: 10,
+        monthly_point_limit: 100,
+        cookie_format: "header",
+        cookie_input:
+          "csrfToken=fixture-first-csrf; pin=fixture-private-pin; thor=fixture-first-auth",
+      },
+    });
+    const accountId = imported.json<{ account: { id: string } }>().account.id;
+    const browserLogin = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: `/admin/api/accounts/${accountId}/browser-login`,
+    });
+    expect(browserLogin.statusCode).toBe(200);
+    const handoff = browserLogin.json<{
+      login: { id: string; status: string; login_url: string };
+    }>().login;
+    expect(handoff).toMatchObject({
+      status: "running",
+      login_url: "https://lingjing.jdcloud.com/",
+    });
+
+    const response = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: `/admin/api/accounts/${accountId}/credentials`,
+      payload: {
+        cookie_format: "header",
+        cookie_input:
+          "csrfToken=fixture-renewed-csrf; pin=fixture-private-pin; thor=fixture-renewed-auth",
+        login_id: handoff.id,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      account: {
+        id: accountId,
+        name: "Remote credential update",
+        enabled: true,
+        health_status: "ready",
+      },
+    });
+    assertNoSensitiveValues(response.body, [
+      "fixture-renewed-csrf",
+      "fixture-private-pin",
+      "fixture-renewed-auth",
+    ]);
+
+    const completed = await fixture.app.inject({
+      method: "GET",
+      url: `/admin/api/accounts/browser-logins/${handoff.id}`,
+      headers: { cookie },
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toMatchObject({
+      login: { status: "completed", account_id: accountId },
+    });
   });
 
   it("returns the hourly automatic sign-in status without exposing credentials", async () => {
@@ -367,21 +447,23 @@ describe("administrator API", () => {
           nextCheckAt: 1_800_000_000_000,
           lastRunStartedAt: 1_799_999_900_000,
           lastRunFinishedAt: 1_799_999_901_000,
-          accounts: [{
-            accountId: "legacy",
-            status: "already_signed",
-            currentFrequency: 2,
-            checkedAt: 1_799_999_901_000
-          }]
-        })
-      }
+          accounts: [
+            {
+              accountId: "legacy",
+              status: "already_signed",
+              currentFrequency: 2,
+              checkedAt: 1_799_999_901_000,
+            },
+          ],
+        }),
+      },
     });
     fixtures.push(fixture);
     const { cookie } = await login(fixture);
 
     const response = await fixture.app.inject({
       url: "/admin/api/sign-in-status",
-      headers: { cookie }
+      headers: { cookie },
     });
 
     expect(response.statusCode).toBe(200);
@@ -392,12 +474,14 @@ describe("administrator API", () => {
       next_check_at: 1_800_000_000_000,
       last_run_started_at: 1_799_999_900_000,
       last_run_finished_at: 1_799_999_901_000,
-      accounts: [{
-        account_id: "legacy",
-        status: "already_signed",
-        current_frequency: 2,
-        checked_at: 1_799_999_901_000
-      }]
+      accounts: [
+        {
+          account_id: "legacy",
+          status: "already_signed",
+          current_frequency: 2,
+          checked_at: 1_799_999_901_000,
+        },
+      ],
     });
     expect(response.body).not.toContain("cookie");
     expect(response.body).not.toContain("csrf");
@@ -420,34 +504,81 @@ describe("administrator API", () => {
           {
             key: "model_name",
             billingItemType: "1",
-            selectors: [{
-              matches: ["Doubao-Seedance-2.0-mini"],
-              shortName: "sd2mini"
-            }]
+            selectors: [
+              {
+                matches: ["Doubao-Seedance-2.0-mini"],
+                shortName: "sd2mini",
+              },
+            ],
           },
           { key: "duration", billingItemType: "5" },
           { key: "mode", billingItemType: "1" },
-          { key: "aspect_ratio", billingItemType: "5" }
-        ]
+          { key: "aspect_ratio", billingItemType: "5" },
+        ],
       },
       parameters: [
-        { idx: "1", key: "model_name", displayName: "模型", required: true, kind: "enum" as const, defaultValue: "Doubao-Seedance-2.0-mini", options: ["Doubao-Seedance-2.0-mini"] },
-        { idx: "2", key: "duration", displayName: "时长", required: true, kind: "enum" as const, defaultValue: "5", options: ["4", "5"] },
-        { idx: "3", key: "mode", displayName: "清晰度", required: true, kind: "enum" as const, defaultValue: "720p", options: ["480p", "720p"] },
-        { idx: "4", key: "aspect_ratio", displayName: "画幅", required: true, kind: "enum" as const, defaultValue: "16:9", options: ["16:9", "9:16"] },
-        { idx: "5", key: "generate_audio", displayName: "生成音频", required: true, kind: "boolean" as const, defaultValue: true }
+        {
+          idx: "1",
+          key: "model_name",
+          displayName: "模型",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "Doubao-Seedance-2.0-mini",
+          options: ["Doubao-Seedance-2.0-mini"],
+        },
+        {
+          idx: "2",
+          key: "duration",
+          displayName: "时长",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "5",
+          options: ["4", "5"],
+        },
+        {
+          idx: "3",
+          key: "mode",
+          displayName: "清晰度",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "720p",
+          options: ["480p", "720p"],
+        },
+        {
+          idx: "4",
+          key: "aspect_ratio",
+          displayName: "画幅",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "16:9",
+          options: ["16:9", "9:16"],
+        },
+        {
+          idx: "5",
+          key: "generate_audio",
+          displayName: "生成音频",
+          required: true,
+          kind: "boolean" as const,
+          defaultValue: true,
+        },
       ],
-      pricing: null
+      pricing: null,
     };
-    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>)
-      .mockResolvedValue(dynamicModel);
+    (
+      fixture.dependencies.catalog.resolve as ReturnType<
+        typeof import("vitest").vi.fn
+      >
+    ).mockResolvedValue(dynamicModel);
     const preferredRecord = fixture.accounts.recordObservation(
-      fixture.accounts.update(fixture.accounts.create({
-        name: "Preferred quote account",
-        priority: 0,
-        dailyPointLimit: 0,
-        monthlyPointLimit: 0
-      }).id, { enabled: true }).id,
+      fixture.accounts.update(
+        fixture.accounts.create({
+          name: "Preferred quote account",
+          priority: 0,
+          dailyPointLimit: 0,
+          monthlyPointLimit: 0,
+        }).id,
+        { enabled: true },
+      ).id,
       {
         healthStatus: "ready",
         lastErrorCode: null,
@@ -455,16 +586,19 @@ describe("administrator API", () => {
         membership: null,
         pointsBalance: 100,
         totalBalance: 100,
-        maxConcurrency: 2
-      }
+        maxConcurrency: 2,
+      },
     );
     const fallbackRecord = fixture.accounts.recordObservation(
-      fixture.accounts.update(fixture.accounts.create({
-        name: "Fallback quote account",
-        priority: 1,
-        dailyPointLimit: 0,
-        monthlyPointLimit: 0
-      }).id, { enabled: true }).id,
+      fixture.accounts.update(
+        fixture.accounts.create({
+          name: "Fallback quote account",
+          priority: 1,
+          dailyPointLimit: 0,
+          monthlyPointLimit: 0,
+        }).id,
+        { enabled: true },
+      ).id,
       {
         healthStatus: "ready",
         lastErrorCode: null,
@@ -472,50 +606,60 @@ describe("administrator API", () => {
         membership: null,
         pointsBalance: 100,
         totalBalance: 100,
-        maxConcurrency: 2
-      }
+        maxConcurrency: 2,
+      },
     );
     let quotedBody: unknown;
-    const preferredRead = (await import("vitest")).vi.fn(<T>(
-      _path: string,
-      init?: { body?: unknown }
-    ) => {
-      quotedBody = init?.body;
-      return Promise.resolve({
-        result: { totalPrice: 0.924048, discountedTotalPrice: 0.92 }
-      } as T);
-    });
+    const preferredRead = (await import("vitest")).vi.fn(
+      <T>(_path: string, init?: { body?: unknown }) => {
+        quotedBody = init?.body;
+        return Promise.resolve({
+          result: { totalPrice: 0.924048, discountedTotalPrice: 0.92 },
+        } as T);
+      },
+    );
     const fallbackRead = (await import("vitest")).vi.fn(<T>() =>
       Promise.resolve({
-        result: { totalPrice: 1.15, discountedTotalPrice: 1.15 }
-      } as T)
+        result: { totalPrice: 1.15, discountedTotalPrice: 1.15 },
+      } as T),
     );
     const runtime = (
       record: typeof preferredRecord,
-      read: typeof preferredRead
+      read: typeof preferredRead,
     ) => ({
       record,
-      session: { describe: () => ({ mode: "browser-state", source: "fixture", sourceMtimeMs: 1, hasCsrf: true }) },
+      session: {
+        describe: () => ({
+          mode: "browser-state",
+          source: "fixture",
+          sourceMtimeMs: 1,
+          hasCsrf: true,
+        }),
+      },
       capacity: { counts: () => ({ active: 0, admitted: 0, queued: 0 }) },
       transport: { read },
       account: {
-        describe: () => Promise.resolve({
-          subject: record.subjectHash ?? "fixture",
-          spaceId: 1,
-          membership: null,
-          maxConcurrency: 2,
-          pointsBalance: 100,
-          couponBalance: 0,
-          availableAmount: 100,
-          totalBalance: 100,
-          resourcePackages: []
-        })
+        describe: () =>
+          Promise.resolve({
+            subject: record.subjectHash ?? "fixture",
+            spaceId: 1,
+            membership: null,
+            maxConcurrency: 2,
+            pointsBalance: 100,
+            couponBalance: 0,
+            availableAmount: 100,
+            totalBalance: 100,
+            resourcePackages: [],
+          }),
       },
-      catalog: { list: () => Promise.resolve([dynamicModel]), resolve: () => Promise.resolve(dynamicModel) }
+      catalog: {
+        list: () => Promise.resolve([dynamicModel]),
+        resolve: () => Promise.resolve(dynamicModel),
+      },
     });
     fixture.runtimes.listEnabled.mockReturnValue([
       runtime(fallbackRecord, fallbackRead),
-      runtime(preferredRecord, preferredRead)
+      runtime(preferredRecord, preferredRead),
     ]);
 
     const quote = await mutate(fixture, cookie, body.csrf_token, {
@@ -529,9 +673,9 @@ describe("administrator API", () => {
           duration: "4",
           mode: "480p",
           aspect_ratio: "16:9",
-          generate_audio: false
-        }
-      }
+          generate_audio: false,
+        },
+      },
     });
 
     const coordinator = fixture.dependencies.coordinator as unknown as {
@@ -540,12 +684,12 @@ describe("administrator API", () => {
     expect(quote.statusCode).toBe(200);
     expect(quote.json<{ points: number; source: string }>()).toEqual({
       points: 92,
-      source: "live"
+      source: "live",
     });
     expect(coordinator.create).not.toHaveBeenCalled();
     expect(preferredRead).toHaveBeenCalledWith(
       "/joycreator/AIModelApiConsole/calculatePrice",
-      expect.any(Object)
+      expect.any(Object),
     );
     expect(fallbackRead).not.toHaveBeenCalled();
     expect(quotedBody).toMatchObject({
@@ -553,8 +697,8 @@ describe("administrator API", () => {
         model_name: "sd2mini",
         duration: "4",
         mode: "480p",
-        aspect_ratio: "16:9"
-      }
+        aspect_ratio: "16:9",
+      },
     });
 
     const formulaModel = {
@@ -569,30 +713,87 @@ describe("administrator API", () => {
         shortVender: "byte",
         shortSenceCode: "t2v",
         fields: [
-          { index: "2", key: "model_name", billingItemType: "1", selectors: [{ matches: ["Doubao-Seedance-1.5-pro"], shortName: "sda15p" }] },
-          { index: "3", key: "duration", billingItemType: "1", selectors: [{ matches: ["5"], shortName: "5s" }] },
-          { index: "4", key: "mode", billingItemType: "1", selectors: [{ matches: ["480p"], shortName: "480p" }] },
-          { index: "6", key: "generate_audio", billingItemType: "1", selectors: [{ matches: ["false"], shortName: "F" }] }
-        ]
+          {
+            index: "2",
+            key: "model_name",
+            billingItemType: "1",
+            selectors: [
+              { matches: ["Doubao-Seedance-1.5-pro"], shortName: "sda15p" },
+            ],
+          },
+          {
+            index: "3",
+            key: "duration",
+            billingItemType: "1",
+            selectors: [{ matches: ["5"], shortName: "5s" }],
+          },
+          {
+            index: "4",
+            key: "mode",
+            billingItemType: "1",
+            selectors: [{ matches: ["480p"], shortName: "480p" }],
+          },
+          {
+            index: "6",
+            key: "generate_audio",
+            billingItemType: "1",
+            selectors: [{ matches: ["false"], shortName: "F" }],
+          },
+        ],
       },
       parameters: [
-        { idx: "2", key: "model_name", displayName: "模型", required: true, kind: "enum" as const, defaultValue: "Doubao-Seedance-1.5-pro", options: ["Doubao-Seedance-1.5-pro"] },
-        { idx: "3", key: "duration", displayName: "时长", required: true, kind: "enum" as const, defaultValue: "5", options: ["5"] },
-        { idx: "4", key: "mode", displayName: "清晰度", required: true, kind: "enum" as const, defaultValue: "480p", options: ["480p"] },
-        { idx: "6", key: "generate_audio", displayName: "音频", required: true, kind: "boolean" as const, defaultValue: false }
-      ]
+        {
+          idx: "2",
+          key: "model_name",
+          displayName: "模型",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "Doubao-Seedance-1.5-pro",
+          options: ["Doubao-Seedance-1.5-pro"],
+        },
+        {
+          idx: "3",
+          key: "duration",
+          displayName: "时长",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "5",
+          options: ["5"],
+        },
+        {
+          idx: "4",
+          key: "mode",
+          displayName: "清晰度",
+          required: true,
+          kind: "enum" as const,
+          defaultValue: "480p",
+          options: ["480p"],
+        },
+        {
+          idx: "6",
+          key: "generate_audio",
+          displayName: "音频",
+          required: true,
+          kind: "boolean" as const,
+          defaultValue: false,
+        },
+      ],
     };
     fixture.runtimes.listEnabled.mockReturnValue([]);
-    (fixture.dependencies.catalog.resolve as ReturnType<typeof import("vitest").vi.fn>)
-      .mockResolvedValue(formulaModel);
-    const compatibilityTransport = fixture.dependencies.transport as unknown as {
+    (
+      fixture.dependencies.catalog.resolve as ReturnType<
+        typeof import("vitest").vi.fn
+      >
+    ).mockResolvedValue(formulaModel);
+    const compatibilityTransport = fixture.dependencies
+      .transport as unknown as {
       read: ReturnType<typeof import("vitest").vi.fn>;
     };
     let formulaPath: string | undefined;
     compatibilityTransport.read.mockImplementation(<T>(nextPath: string) => {
       formulaPath = nextPath;
       return Promise.resolve({
-        result: { totalPrice: 0.32, discountedTotalPrice: 0.32 }
+        result: { totalPrice: 0.32, discountedTotalPrice: 0.32 },
       } as T);
     });
     const formulaQuote = await mutate(fixture, cookie, body.csrf_token, {
@@ -602,15 +803,13 @@ describe("administrator API", () => {
         kind: "video",
         model: "seedance-1-5-pro",
         mode: "image-to-video",
-        parameters: {}
-      }
+        parameters: {},
+      },
     });
     expect(formulaQuote.json<{ points: number }>()).toMatchObject({
-      points: 32
+      points: 32,
     });
-    expect(formulaPath).toBe(
-      "/openApi/billingprice/calculateTotalPriceV2"
-    );
+    expect(formulaPath).toBe("/openApi/billingprice/calculateTotalPriceV2");
   });
 
   it("creates users, projects and project-scoped API keys", async () => {
@@ -619,14 +818,14 @@ describe("administrator API", () => {
     const userResponse = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: "/admin/api/users",
-      payload: { name: "Studio A" }
+      payload: { name: "Studio A" },
     });
     expect(userResponse.statusCode).toBe(201);
     const user = userResponse.json<{ user: { id: string } }>().user;
     const projectResponse = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: "/admin/api/projects",
-      payload: { user_id: user.id, name: "Campaign" }
+      payload: { user_id: user.id, name: "Campaign" },
     });
     expect(projectResponse.statusCode).toBe(201);
     const project = projectResponse.json<{ project: { id: string } }>().project;
@@ -637,16 +836,16 @@ describe("administrator API", () => {
         name: "Video worker",
         user_id: user.id,
         project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"]
-      }
+        scopes: ["models:read", "video:create", "video:read"],
+      },
     });
     expect(keyResponse.statusCode).toBe(201);
     expect(keyResponse.json()).toMatchObject({
       key: {
         user_id: user.id,
         project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"]
-      }
+        scopes: ["models:read", "video:create", "video:read"],
+      },
     });
     const secret = keyResponse.json<{ api_key: string }>().api_key;
     const apiKeys = fixture.dependencies.apiKeys as unknown as {
@@ -656,7 +855,7 @@ describe("administrator API", () => {
     await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: `/admin/api/projects/${project.id}/status`,
-      payload: { status: "disabled" }
+      payload: { status: "disabled" },
     });
     expect(apiKeys.authenticate(secret)).toBeNull();
   });
@@ -667,7 +866,7 @@ describe("administrator API", () => {
     const create = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: "/admin/api/api-keys",
-      payload: { name: "Dify" }
+      payload: { name: "Dify" },
     });
     expect(create.statusCode).toBe(201);
     const created = create.json<{
@@ -677,89 +876,101 @@ describe("administrator API", () => {
     expect(created.api_key).toMatch(/^ljk_/u);
 
     const managedAuthorization = `Bearer ${created.api_key}`;
-    expect(await fixture.app.inject({
-      method: "GET",
-      url: "/v1/models?type=image",
-      headers: { authorization: managedAuthorization }
-    })).toHaveProperty("statusCode", 200);
-    expect(await fixture.app.inject({
-      method: "GET",
-      url: "/unregistered-api-route",
-      headers: { authorization: managedAuthorization }
-    })).toHaveProperty("statusCode", 404);
-    expect(await fixture.app.inject({
-      method: "GET",
-      url: "/v1/models?type=image",
-      headers: { authorization: "Bearer fixture-downstream-secret" }
-    })).toHaveProperty("statusCode", 200);
+    expect(
+      await fixture.app.inject({
+        method: "GET",
+        url: "/v1/models?type=image",
+        headers: { authorization: managedAuthorization },
+      }),
+    ).toHaveProperty("statusCode", 200);
+    expect(
+      await fixture.app.inject({
+        method: "GET",
+        url: "/unregistered-api-route",
+        headers: { authorization: managedAuthorization },
+      }),
+    ).toHaveProperty("statusCode", 404);
+    expect(
+      await fixture.app.inject({
+        method: "GET",
+        url: "/v1/models?type=image",
+        headers: { authorization: "Bearer fixture-downstream-secret" },
+      }),
+    ).toHaveProperty("statusCode", 200);
 
     const listed = await fixture.app.inject({
       url: "/admin/api/api-keys",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(listed.statusCode).toBe(200);
     expect(listed.body).not.toContain(created.api_key);
     expect(listed.json()).toMatchObject({
-      api_keys: [expect.objectContaining({ id: created.key.id, name: "Dify" })]
+      api_keys: [expect.objectContaining({ id: created.key.id, name: "Dify" })],
     });
 
     const disabled = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: `/admin/api/api-keys/${created.key.id}/disable`
+      url: `/admin/api/api-keys/${created.key.id}/disable`,
     });
     expect(disabled.statusCode).toBe(200);
-    expect(await fixture.app.inject({
-      url: "/v1/models?type=image",
-      headers: { authorization: managedAuthorization }
-    })).toHaveProperty("statusCode", 401);
+    expect(
+      await fixture.app.inject({
+        url: "/v1/models?type=image",
+        headers: { authorization: managedAuthorization },
+      }),
+    ).toHaveProperty("statusCode", 401);
 
     const enabled = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: `/admin/api/api-keys/${created.key.id}/enable`
+      url: `/admin/api/api-keys/${created.key.id}/enable`,
     });
     expect(enabled.statusCode).toBe(200);
-    expect(await fixture.app.inject({
-      url: "/v1/models?type=image",
-      headers: { authorization: managedAuthorization }
-    })).toHaveProperty("statusCode", 200);
+    expect(
+      await fixture.app.inject({
+        url: "/v1/models?type=image",
+        headers: { authorization: managedAuthorization },
+      }),
+    ).toHaveProperty("statusCode", 200);
 
     const revoked = await mutate(fixture, cookie, body.csrf_token, {
       method: "DELETE",
-      url: `/admin/api/api-keys/${created.key.id}`
+      url: `/admin/api/api-keys/${created.key.id}`,
     });
     expect(revoked.statusCode).toBe(200);
     const revokedKey = revoked.json<{ key: Record<string, unknown> }>().key;
     expect(revokedKey).toMatchObject({
       id: created.key.id,
-      enabled: true
+      enabled: true,
     });
     expect(revokedKey.revoked_at).toEqual(expect.any(Number));
-    expect(await fixture.app.inject({
-      url: "/v1/models",
-      headers: { authorization: managedAuthorization }
-    })).toHaveProperty("statusCode", 401);
+    expect(
+      await fixture.app.inject({
+        url: "/v1/models",
+        headers: { authorization: managedAuthorization },
+      }),
+    ).toHaveProperty("statusCode", 401);
 
     for (const action of ["enable", "disable"] as const) {
       const rejected = await mutate(fixture, cookie, body.csrf_token, {
         method: "POST",
-        url: `/admin/api/api-keys/${created.key.id}/${action}`
+        url: `/admin/api/api-keys/${created.key.id}/${action}`,
       });
       expect(rejected.statusCode).toBe(409);
       expect(rejected.json()).toMatchObject({
-        error: { code: "api_key_revoked" }
+        error: { code: "api_key_revoked" },
       });
     }
     const afterRejectedUpdates = await fixture.app.inject({
       url: "/admin/api/api-keys",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(afterRejectedUpdates.json()).toMatchObject({
-      api_keys: [expect.objectContaining(revokedKey)]
+      api_keys: [expect.objectContaining(revokedKey)],
     });
 
     const unknown = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: "/admin/api/api-keys/unknown/enable"
+      url: "/admin/api/api-keys/unknown/enable",
     });
     expect(unknown.statusCode).toBe(404);
   });
@@ -779,8 +990,8 @@ describe("administrator API", () => {
         name: "Valid schema input",
         priority: 0,
         daily_point_limit: 0,
-        monthly_point_limit: 0
-      }
+        monthly_point_limit: 0,
+      },
     });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.body).not.toContain("fixture repository validation detail");
@@ -796,8 +1007,8 @@ describe("administrator API", () => {
         name: "Another valid schema input",
         priority: 0,
         daily_point_limit: 0,
-        monthly_point_limit: 0
-      }
+        monthly_point_limit: 0,
+      },
     });
     expect(unrelated.statusCode).toBe(502);
     expect(unrelated.body).not.toContain("fixture unrelated database failure");
@@ -813,17 +1024,17 @@ describe("administrator API", () => {
         name: "Fixture account",
         priority: 2,
         daily_point_limit: 20,
-        monthly_point_limit: 100
-      }
+        monthly_point_limit: 100,
+      },
     });
     expect(created.statusCode).toBe(201);
     const createdBody = created.json<{
       account: Record<string, unknown> & { id: string; enabled: boolean };
-      login_command: string;
+      credential_update_path: string;
     }>();
     expect(createdBody.account.enabled).toBe(false);
-    expect(createdBody.login_command).toBe(
-      `npm run login -- --account-id ${createdBody.account.id}`
+    expect(createdBody.credential_update_path).toBe(
+      `/admin/api/accounts/${createdBody.account.id}/credentials`,
     );
     expect(Object.keys(createdBody.account).sort()).toEqual([
       "active_jobs",
@@ -846,27 +1057,22 @@ describe("administrator API", () => {
       "priority",
       "subject_hash",
       "total_balance",
-      "updated_at"
+      "updated_at",
     ]);
 
-    const duplicateCreate = await mutate(
-      fixture,
-      cookie,
-      body.csrf_token,
-      {
-        method: "POST",
-        url: "/admin/api/accounts",
-        payload: {
-          name: "Fixture account",
-          priority: 0,
-          daily_point_limit: 0,
-          monthly_point_limit: 0
-        }
-      }
-    );
+    const duplicateCreate = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST",
+      url: "/admin/api/accounts",
+      payload: {
+        name: "Fixture account",
+        priority: 0,
+        daily_point_limit: 0,
+        monthly_point_limit: 0,
+      },
+    });
     expect(duplicateCreate.statusCode).toBe(409);
     expect(duplicateCreate.json()).toMatchObject({
-      error: { code: "account_name_conflict" }
+      error: { code: "account_name_conflict" },
     });
 
     const patched = await mutate(fixture, cookie, body.csrf_token, {
@@ -876,30 +1082,25 @@ describe("administrator API", () => {
         name: "Renamed fixture",
         priority: 1,
         daily_point_limit: 30,
-        monthly_point_limit: 120
-      }
+        monthly_point_limit: 120,
+      },
     });
     expect(patched.statusCode).toBe(200);
     expect(patched.json()).toMatchObject({
       account: {
         name: "Renamed fixture",
-        daily_point_limit: 30
-      }
+        daily_point_limit: 30,
+      },
     });
 
-    const duplicateRename = await mutate(
-      fixture,
-      cookie,
-      body.csrf_token,
-      {
-        method: "PATCH",
-        url: `/admin/api/accounts/${createdBody.account.id}`,
-        payload: { name: "Legacy account" }
-      }
-    );
+    const duplicateRename = await mutate(fixture, cookie, body.csrf_token, {
+      method: "PATCH",
+      url: `/admin/api/accounts/${createdBody.account.id}`,
+      payload: { name: "Legacy account" },
+    });
     expect(duplicateRename.statusCode).toBe(409);
     expect(duplicateRename.json()).toMatchObject({
-      error: { code: "account_name_conflict" }
+      error: { code: "account_name_conflict" },
     });
 
     for (const payload of [
@@ -911,62 +1112,61 @@ describe("administrator API", () => {
       { priority: Number.MAX_SAFE_INTEGER + 1 },
       { priority: -1 },
       { daily_point_limit: 1.5 },
-      { monthly_point_limit: -1 }
+      { monthly_point_limit: -1 },
     ]) {
       const rejected = await mutate(fixture, cookie, body.csrf_token, {
         method: "PATCH",
         url: `/admin/api/accounts/${createdBody.account.id}`,
-        payload
+        payload,
       });
       expect(rejected.statusCode).toBe(400);
     }
 
     const enabled = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: `/admin/api/accounts/${createdBody.account.id}/enable`
+      url: `/admin/api/accounts/${createdBody.account.id}/enable`,
     });
     expect(enabled.statusCode).toBe(200);
     expect(fixture.runtimes.refresh).toHaveBeenLastCalledWith(
-      createdBody.account.id
+      createdBody.account.id,
     );
 
     const checked = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: `/admin/api/accounts/${createdBody.account.id}/check`
+      url: `/admin/api/accounts/${createdBody.account.id}/check`,
     });
     expect(checked.statusCode).toBe(200);
     expect(checked.json()).toMatchObject({
-      account: { membership: null }
+      account: { membership: null },
     });
     expect(fixture.runtimes.refresh).toHaveBeenLastCalledWith(
-      createdBody.account.id
+      createdBody.account.id,
     );
 
     const disabled = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: `/admin/api/accounts/${createdBody.account.id}/disable`
+      url: `/admin/api/accounts/${createdBody.account.id}/disable`,
     });
     expect(disabled.statusCode).toBe(200);
     expect(disabled.json()).toMatchObject({ account: { enabled: false } });
 
     const listed = await fixture.app.inject({
       url: "/admin/api/accounts",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(listed.statusCode).toBe(200);
-    const listedAccount = listed.json<{
-      accounts: Array<{ id: string; membership: string | null }>;
-    }>().accounts.find((account) => account.id === createdBody.account.id);
+    const listedAccount = listed
+      .json<{
+        accounts: Array<{ id: string; membership: string | null }>;
+      }>()
+      .accounts.find((account) => account.id === createdBody.account.id);
     expect(listedAccount).toMatchObject({ membership: null });
-    assertNoSensitiveValues(
-      listed.body,
-      [
-        ADMIN_PASSWORD,
-        "data/auth",
-        "fixture-private-pin",
-        "private-storage-state-path"
-      ]
-    );
+    assertNoSensitiveValues(listed.body, [
+      ADMIN_PASSWORD,
+      "data/auth",
+      "fixture-private-pin",
+      "private-storage-state-path",
+    ]);
   });
 
   it("returns sanitized overview, jobs, settings and resolves only a bound unknown job", async () => {
@@ -976,7 +1176,7 @@ describe("administrator API", () => {
       name: "Unknown owner",
       priority: 1,
       dailyPointLimit: 100,
-      monthlyPointLimit: 100
+      monthlyPointLimit: 100,
     });
     fixture.accounts.update(account.id, { enabled: true });
     fixture.accounts.recordObservation(account.id, {
@@ -986,14 +1186,14 @@ describe("administrator API", () => {
       membership: null,
       pointsBalance: 100,
       totalBalance: 100,
-      maxConcurrency: 2
+      maxConcurrency: 2,
     });
     await fixture.runtimes.refresh(account.id);
     const disabledReady = fixture.accounts.create({
       name: "Disabled ready",
       priority: 2,
       dailyPointLimit: 0,
-      monthlyPointLimit: 0
+      monthlyPointLimit: 0,
     });
     fixture.accounts.recordObservation(disabledReady.id, {
       healthStatus: "ready",
@@ -1002,13 +1202,13 @@ describe("administrator API", () => {
       membership: null,
       pointsBalance: 50,
       totalBalance: 50,
-      maxConcurrency: 1
+      maxConcurrency: 1,
     });
     const unhealthy = fixture.accounts.create({
       name: "Unhealthy account",
       priority: 3,
       dailyPointLimit: 0,
-      monthlyPointLimit: 0
+      monthlyPointLimit: 0,
     });
     fixture.accounts.update(unhealthy.id, { enabled: true });
     fixture.accounts.recordObservation(unhealthy.id, {
@@ -1018,7 +1218,7 @@ describe("administrator API", () => {
       membership: null,
       pointsBalance: 70,
       totalBalance: 70,
-      maxConcurrency: 1
+      maxConcurrency: 1,
     });
     const admitted = fixture.admissions.reserveOrGet({
       accountId: account.id,
@@ -1032,29 +1232,29 @@ describe("administrator API", () => {
       expectedAssetScene: "fixture-scene",
       requestFingerprint: fixtureHash(),
       idempotencyKeyHash: null,
-      spaceId: 1
+      spaceId: 1,
     });
     if (admitted.outcome !== "created") {
       throw new Error("Fixture job was not created");
     }
     fixture.repository.transition(admitted.job.id, ["queued"], {
-      status: "submitting"
+      status: "submitting",
     });
     fixture.admissions.charge(admitted.job.id);
     fixture.repository.transition(admitted.job.id, ["submitting"], {
       status: "unknown",
-      unknownHoldUntil: Date.now() + 60_000
+      unknownHoldUntil: Date.now() + 60_000,
     });
 
     for (const url of [
       "/admin/api/overview",
       "/admin/api/jobs",
       `/admin/api/jobs/${admitted.job.id}`,
-      "/admin/api/settings"
+      "/admin/api/settings",
     ]) {
       const response = await fixture.app.inject({
         url,
-        headers: { cookie }
+        headers: { cookie },
       });
       expect(response.statusCode).toBe(200);
       assertNoSensitiveValues(response.body, [
@@ -1062,7 +1262,7 @@ describe("administrator API", () => {
         admitted.job.requestFingerprint,
         "fixture-api-id",
         "fixture-model-code",
-        "fixture-scene"
+        "fixture-scene",
       ]);
     }
 
@@ -1072,26 +1272,26 @@ describe("administrator API", () => {
         cookie,
         host: "localhost:8000",
         "x-forwarded-host": "proxy.example:9443",
-        "x-forwarded-proto": "https"
-      }
+        "x-forwarded-proto": "https",
+      },
     });
     expect(settings.json()).toMatchObject({
       shared_api_key_configured: true,
       legacy_api_key_configured: true,
-      api_base_url: "http://localhost:8000/v1"
+      api_base_url: "http://localhost:8000/v1",
     });
 
     const overview = await fixture.app.inject({
       url: "/admin/api/overview",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(overview.json()).toMatchObject({
-      balance: { available_points: 100 }
+      balance: { available_points: 100 },
     });
 
     const detail = await fixture.app.inject({
       url: `/admin/api/jobs/${admitted.job.id}`,
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(detail.json()).toMatchObject({
       job: {
@@ -1099,48 +1299,48 @@ describe("administrator API", () => {
         account_name: "Unknown owner",
         quoted_points: 4,
         budget_state: "charged",
-        status: "unknown"
-      }
+        status: "unknown",
+      },
     });
 
     const wrongAccount = fixture.accounts.create({
       name: "Wrong owner",
       priority: 2,
       dailyPointLimit: 0,
-      monthlyPointLimit: 0
+      monthlyPointLimit: 0,
     });
     const rejected = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: `/admin/api/accounts/${wrongAccount.id}/resolve-unknown`,
-      payload: { job_id: admitted.job.id, action: "release" }
+      payload: { job_id: admitted.job.id, action: "release" },
     });
     expect(rejected.statusCode).toBe(409);
 
     const resolved = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: `/admin/api/accounts/${account.id}/resolve-unknown`,
-      payload: { job_id: admitted.job.id, action: "release" }
+      payload: { job_id: admitted.job.id, action: "release" },
     });
     expect(resolved.statusCode).toBe(200);
     expect(resolved.json()).toMatchObject({
-      job: { id: admitted.job.id, budget_state: "released" }
+      job: { id: admitted.job.id, budget_state: "released" },
     });
 
     const repeated = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
       url: `/admin/api/accounts/${account.id}/resolve-unknown`,
-      payload: { job_id: admitted.job.id, action: "charge" }
+      payload: { job_id: admitted.job.id, action: "charge" },
     });
     expect(repeated.statusCode).toBe(409);
 
     const logout = await mutate(fixture, cookie, body.csrf_token, {
       method: "POST",
-      url: "/admin/api/logout"
+      url: "/admin/api/logout",
     });
     expect(logout.statusCode).toBe(204);
     const expired = await fixture.app.inject({
       url: "/admin/api/session",
-      headers: { cookie }
+      headers: { cookie },
     });
     expect(expired.statusCode).toBe(401);
   });

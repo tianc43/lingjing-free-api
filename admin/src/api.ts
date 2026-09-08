@@ -1,4 +1,4 @@
-import type { Account, BrowserLogin, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, Job, Overview, PlaygroundInput, PlaygroundModel, PlaygroundQuote, PlaygroundQuoteInput, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, AccountCredentialInput, AccountImportInput, AccountInput, ApiKey, ApiKeyScope, BrowserLogin, Job, Overview, PlaygroundInput, PlaygroundModel, PlaygroundQuote, PlaygroundQuoteInput, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -71,11 +71,11 @@ export class AdminApi {
   async revokeApiKey(key: ApiKey): Promise<ApiKey> {
     return (await this.request<{ key: ApiKey }>(`/api-keys/${encodeURIComponent(key.id)}`, { method: "DELETE" })).key;
   }
-  async createAccount(input: AccountInput): Promise<{ account: Account; login_command: string }> {
-    return await this.request("/accounts", { method: "POST", body: input });
-  }
   async importAccount(input: AccountImportInput): Promise<Account> {
     return (await this.request<{ account: Account }>("/accounts/import", { method: "POST", body: input })).account;
+  }
+  async updateAccountCredentials(id: string, input: AccountCredentialInput): Promise<Account> {
+    return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}/credentials`, { method: "POST", body: input })).account;
   }
   async updateAccount(id: string, input: AccountInput): Promise<Account> {
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}`, { method: "PATCH", body: input })).account;
@@ -84,8 +84,6 @@ export class AdminApi {
     const action = enabled ? "enable" : "disable";
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(account.id)}/${action}`, { method: "POST" })).account;
   }
-  async startBrowserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/${encodeURIComponent(id)}/browser-login`,{method:"POST"})).login;}
-  async browserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/browser-logins/${encodeURIComponent(id)}`)).login;}
   async checkAccount(id: string): Promise<Account> {
     return (await this.request<{ account: Account }>(`/accounts/${encodeURIComponent(id)}/check`, { method: "POST" })).account;
   }
@@ -95,6 +93,8 @@ export class AdminApi {
     if (refresh) query.set("refresh", "true");
     return (await this.request<{ models: PlaygroundModel[] }>(`/playground/models?${query}`)).models;
   }
+  async startBrowserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/${encodeURIComponent(id)}/browser-login`,{method:"POST"})).login;}
+  async browserLogin(id:string):Promise<BrowserLogin>{return(await this.request<{login:BrowserLogin}>(`/accounts/browser-logins/${encodeURIComponent(id)}`)).login;}
   async quotePlayground(input: PlaygroundQuoteInput): Promise<PlaygroundQuote> {
     return await this.request("/playground/quote", { method: "POST", body: input });
   }

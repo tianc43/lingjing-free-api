@@ -15,7 +15,10 @@ import { CapacityManager } from "../../src/jobs/capacity.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
-import { accountSessionPaths, createSessionProvider } from "../../src/session/create-provider.js";
+import {
+  accountSessionPaths,
+  createSessionProvider,
+} from "../../src/session/create-provider.js";
 import type { SessionProvider } from "../../src/session/types.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
@@ -33,17 +36,19 @@ function transport(pointsBalance = 40): LingjingTransport {
       const responses: Record<string, unknown> = {
         "/api/user/describeBaseInfo": {},
         "/joycreator/team/space/menu/list": [{ spaceId: 0 }],
-        "/joycreator/member/queryMember?pin=fixture-origin-pin": { membership: "fixture" },
+        "/joycreator/member/queryMember?pin=fixture-origin-pin": {
+          membership: "fixture",
+        },
         "/api/wallet/describeAccountCoupons": {
           pointsBalance,
-          totalBalance: 55
-        }
+          totalBalance: 55,
+        },
       };
       return Promise.resolve(responses[path] as T);
     },
     submitOnce: () => Promise.reject(new Error("not used")),
     uploadApi: () => Promise.reject(new Error("not used")),
-    putSigned: () => Promise.reject(new Error("not used"))
+    putSigned: () => Promise.reject(new Error("not used")),
   };
 }
 
@@ -66,18 +71,24 @@ function accountRecord(id: string): AccountRecord {
     lastCheckedAt: null,
     lastSelectedAt: null,
     createdAt: 1,
-    updatedAt: 1
+    updatedAt: 1,
   };
 }
 
 function session(): SessionProvider {
   return {
     mode: "browser-state",
-    load: () => Promise.resolve({} as Awaited<ReturnType<SessionProvider["load"]>>),
+    load: () =>
+      Promise.resolve({} as Awaited<ReturnType<SessionProvider["load"]>>),
     loadProfile: () => Promise.resolve({ originPin: "fixture-origin-pin" }),
     applySetCookies: () => Promise.resolve(),
-    describe: () => ({ mode: "browser-state", source: "fixture", sourceMtimeMs: null, hasCsrf: false }),
-    invalidate: () => undefined
+    describe: () => ({
+      mode: "browser-state",
+      source: "fixture",
+      sourceMtimeMs: null,
+      hasCsrf: false,
+    }),
+    invalidate: () => undefined,
   };
 }
 
@@ -85,15 +96,36 @@ describe("AccountRuntimeRegistry", () => {
   it("derives generated account paths from the configured data directory", () => {
     const config = parseConfig({
       LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
-      DATA_DIRECTORY: "fixture-data"
+      DATA_DIRECTORY: "fixture-data",
     });
-    expect(accountSessionPaths(config, "acct_0123456789abcdef01234567")).toEqual({
-      storageStatePath: join("fixture-data", "accounts", "acct_0123456789abcdef01234567", "storage-state.json"),
-      cookieFilePath: join("fixture-data", "accounts", "acct_0123456789abcdef01234567", "cookie.txt"),
-      sessionProfilePath: join("fixture-data", "accounts", "acct_0123456789abcdef01234567", "session-profile.json")
+    expect(
+      accountSessionPaths(config, "acct_0123456789abcdef01234567"),
+    ).toEqual({
+      storageStatePath: join(
+        "fixture-data",
+        "accounts",
+        "acct_0123456789abcdef01234567",
+        "storage-state.json",
+      ),
+      cookieFilePath: join(
+        "fixture-data",
+        "accounts",
+        "acct_0123456789abcdef01234567",
+        "cookie.txt",
+      ),
+      sessionProfilePath: join(
+        "fixture-data",
+        "accounts",
+        "acct_0123456789abcdef01234567",
+        "session-profile.json",
+      ),
     });
-    expect(() => accountSessionPaths(config, "legacy")).toThrow("Invalid account ID");
-    expect(() => accountSessionPaths(config, "../../escape")).toThrow("Invalid account ID");
+    expect(() => accountSessionPaths(config, "legacy")).toThrow(
+      "Invalid account ID",
+    );
+    expect(() => accountSessionPaths(config, "../../escape")).toThrow(
+      "Invalid account ID",
+    );
   });
 
   it("records the upstream membership in a ready account observation", async () => {
@@ -103,17 +135,17 @@ describe("AccountRuntimeRegistry", () => {
     const registry = new AccountRuntimeRegistry({
       accounts,
       config: parseConfig({
-        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length"
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       }),
       sessionFactory: () => Promise.resolve(session()),
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
     try {
       await registry.ready();
       expect(accounts.findById("legacy")).toMatchObject({
         healthStatus: "ready",
-        membership: "fixture"
+        membership: "fixture",
       });
     } finally {
       await registry.close();
@@ -128,40 +160,103 @@ describe("AccountRuntimeRegistry", () => {
       LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       LINGJING_STORAGE_STATE: join(directory, "legacy-state.json"),
       LINGJING_SESSION_PROFILE: join(directory, "legacy-profile.json"),
-      DATA_DIRECTORY: join(directory, "data")
+      DATA_DIRECTORY: join(directory, "data"),
     });
     const source = new URL("fixtures/", import.meta.url);
     await cp(source, directory, { recursive: true });
     await cp(join(directory, "storage-state.json"), config.storageStatePath);
-    await cp(join(directory, "session-profile.json"), config.sessionProfilePath);
+    await cp(
+      join(directory, "session-profile.json"),
+      config.sessionProfilePath,
+    );
 
     const store = new SqliteStore(":memory:");
     const accounts = new SqliteAccountRepository(store);
     accounts.ensureLegacyAccount("data/auth");
-    const second = accounts.create({ name: "Second", priority: 1, dailyPointLimit: 0, monthlyPointLimit: 0 });
+    const second = accounts.create({
+      name: "Second",
+      priority: 1,
+      dailyPointLimit: 0,
+      monthlyPointLimit: 0,
+    });
     accounts.update(second.id, { enabled: true });
     const secondPaths = accountSessionPaths(config, second.id);
     await mkdir(dirname(secondPaths.storageStatePath), { recursive: true });
-    await cp(join(directory, "storage-state.json"), secondPaths.storageStatePath, { recursive: true, force: true });
-    await cp(join(directory, "session-profile.json"), secondPaths.sessionProfilePath, { recursive: true, force: true });
+    await cp(
+      join(directory, "storage-state.json"),
+      secondPaths.storageStatePath,
+      { recursive: true, force: true },
+    );
+    await cp(
+      join(directory, "session-profile.json"),
+      secondPaths.sessionProfilePath,
+      { recursive: true, force: true },
+    );
 
     const transportFactory = vi.fn(() => transport());
     const registry = new AccountRuntimeRegistry({
       accounts,
       config,
       sessionFactory: createSessionProvider,
-      transportFactory
+      transportFactory,
     });
 
     await registry.ready();
-    expect(registry.listEnabled().map((runtime) => runtime.record.id))
-      .toEqual(["legacy", second.id]);
-    expect(registry.require("legacy").session)
-      .not.toBe(registry.require(second.id).session);
+    expect(registry.listEnabled().map((runtime) => runtime.record.id)).toEqual([
+      "legacy",
+      second.id,
+    ]);
+    expect(registry.require("legacy").session).not.toBe(
+      registry.require(second.id).session,
+    );
     await registry.refresh(second.id);
     expect(transportFactory).toHaveBeenCalledTimes(3);
     await registry.close();
     store.close();
+  });
+
+  it("preserves active capacity and discovery guards across session retirement", async () => {
+    let current = accountRecord("legacy");
+    const retire = vi.fn(() => Promise.resolve());
+    const registry = new AccountRuntimeRegistry({
+      accounts: {
+        list: () => [current],
+        findById: () => current,
+        recordObservation: (_id, observation) => {
+          current = {
+            ...current,
+            ...observation,
+            lastCheckedAt: 1,
+            updatedAt: 1,
+          };
+          return current;
+        },
+      },
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
+        LINGJING_MAX_CONCURRENCY: "1",
+        MAX_QUEUED_REQUESTS: "0",
+      }),
+      sessionFactory: () => Promise.resolve({ ...session(), retire }),
+      transportFactory: () => transport(),
+    });
+
+    await registry.ready();
+    const initial = registry.require("legacy");
+    initial.capacity.restore("fixture-active-job", "processing", null);
+    await registry.retire("legacy");
+    expect(retire).toHaveBeenCalledOnce();
+    expect(registry.find("legacy")).toBeNull();
+
+    const replacement = await registry.refresh("legacy");
+    if (replacement === null) throw new Error("Replacement runtime missing");
+    expect(replacement.capacity).toBe(initial.capacity);
+    expect(replacement.discoveryLock).toBe(initial.discoveryLock);
+    expect(replacement.capacity.activeJobIds()).toEqual(["fixture-active-job"]);
+    expect(() => replacement.capacity.admit("fixture-over-admission")).toThrow(
+      "Generation capacity queue is full",
+    );
+    await registry.close();
   });
 
   it("retains a usable disabled runtime but excludes it from new admissions", async () => {
@@ -175,16 +270,16 @@ describe("AccountRuntimeRegistry", () => {
             ...disabled,
             ...observation,
             lastCheckedAt: 1,
-            updatedAt: 1
+            updatedAt: 1,
           };
           return disabled;
-        }
+        },
       },
       config: parseConfig({
-        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length"
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       }),
       sessionFactory: () => Promise.resolve(session()),
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
     await registry.ready();
@@ -207,7 +302,7 @@ describe("AccountRuntimeRegistry", () => {
       membership: null,
       pointsBalance: 100,
       totalBalance: 100,
-      maxConcurrency: 1
+      maxConcurrency: 1,
     });
     const repository = new SqliteJobRepository(store);
     const admissions = new SqliteAdmissionRepository(store);
@@ -223,21 +318,20 @@ describe("AccountRuntimeRegistry", () => {
       spaceId: 0,
       accountId: "legacy",
       quotedPoints: 2,
-      windows: budgetWindows()
+      windows: budgetWindows(),
     });
     if (admitted.outcome !== "created") {
       throw new Error("Fixture admission was not created");
     }
     repository.transition(admitted.job.id, ["queued"], {
       status: "submitting",
-      submittedAt: Date.now()
+      submittedAt: Date.now(),
     });
     const holdUntil = Date.now() + 60_000;
-    const unknown = repository.transition(
-      admitted.job.id,
-      ["submitting"],
-      { status: "unknown", unknownHoldUntil: holdUntil }
-    );
+    const unknown = repository.transition(admitted.job.id, ["submitting"], {
+      status: "unknown",
+      unknownHoldUntil: holdUntil,
+    });
 
     let refreshCalls = 0;
     let markSlowStarted: (() => void) | undefined;
@@ -251,10 +345,9 @@ describe("AccountRuntimeRegistry", () => {
     const registry = new AccountRuntimeRegistry({
       accounts,
       config: parseConfig({
-        LINGJING_API_KEY:
-          "fixture-local-secret-with-sufficient-length",
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
         LINGJING_MAX_CONCURRENCY: "1",
-        MAX_QUEUED_REQUESTS: "0"
+        MAX_QUEUED_REQUESTS: "0",
       }),
       sessionFactory: async () => {
         refreshCalls += 1;
@@ -264,7 +357,7 @@ describe("AccountRuntimeRegistry", () => {
         }
         return session();
       },
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
     const fastPromise = registry.refresh("legacy");
@@ -284,8 +377,9 @@ describe("AccountRuntimeRegistry", () => {
     expect(final.capacity).toBe(fast.capacity);
     expect(final.discoveryLock).toBe(fast.discoveryLock);
     expect(final.capacity.activeJobIds()).toEqual([unknown.id]);
-    expect(() => final.capacity.admit("fixture-over-admission"))
-      .toThrow("Generation capacity queue is full");
+    expect(() => final.capacity.admit("fixture-over-admission")).toThrow(
+      "Generation capacity queue is full",
+    );
 
     const coordinator = new LingjingGenerationCoordinator({
       repository,
@@ -294,24 +388,21 @@ describe("AccountRuntimeRegistry", () => {
         registry,
         accounts,
         admissions,
-        capacity: globalCapacity
+        capacity: globalCapacity,
       }),
       admissions,
-      prepareMedia: () => Promise.reject(
-        new Error("Fixture does not prepare media")
-      ),
+      prepareMedia: () =>
+        Promise.reject(new Error("Fixture does not prepare media")),
       registry: new JobRunnerRegistry(),
       assetDiscoveryTimeoutMs: 30,
       unknownCapacityHoldMs: 60_000,
-      taskPollIntervalMs: 1
+      taskPollIntervalMs: 1,
     });
-    expect(coordinator.resolveUnknown(
-      "legacy",
-      unknown.id,
-      "release"
-    )).toMatchObject({
+    expect(
+      coordinator.resolveUnknown("legacy", unknown.id, "release"),
+    ).toMatchObject({
       state: "released",
-      job: { status: "failed" }
+      job: { status: "failed" },
     });
     expect(globalCapacity.counts().active).toBe(0);
     expect(fast.capacity.counts().active).toBe(0);
@@ -347,14 +438,13 @@ describe("AccountRuntimeRegistry", () => {
             ...current,
             ...observation,
             lastCheckedAt: observationCalls,
-            updatedAt: observationCalls
+            updatedAt: observationCalls,
           };
           return current;
-        }
+        },
       },
       config: parseConfig({
-        LINGJING_API_KEY:
-          "fixture-local-secret-with-sufficient-length"
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       }),
       sessionFactory: () => {
         factoryCalls += 1;
@@ -365,59 +455,53 @@ describe("AccountRuntimeRegistry", () => {
           load: async () => {
             markFirstStarted?.();
             await firstGate;
-            return {} as Awaited<
-              ReturnType<SessionProvider["load"]>
-            >;
-          }
+            return {} as Awaited<ReturnType<SessionProvider["load"]>>;
+          },
         });
       },
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
     const failed = registry.refresh("legacy");
     const failedResult = failed.then(
       (value) => ({ value, cause: null }),
-      (cause: unknown) => ({ value: null, cause })
+      (cause: unknown) => ({ value: null, cause }),
     );
     await firstStarted;
     const queued = registry.refresh("legacy");
     const queuedResult = queued.then(
       (value) => ({ value, cause: null }),
-      (cause: unknown) => ({ value: null, cause })
+      (cause: unknown) => ({ value: null, cause }),
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const callsWhileFirstWasBlocked = factoryCalls;
     releaseFirst?.();
     const [firstOutcome, queuedOutcome] = await Promise.all([
       failedResult,
-      queuedResult
+      queuedResult,
     ]);
 
     expect(firstOutcome.cause).toMatchObject({
-      message: "fixture first observation failure"
+      message: "fixture first observation failure",
     });
     expect(firstOutcome.value).toBeNull();
     expect(queuedOutcome.cause).toBeNull();
     expect(queuedOutcome.value).toMatchObject({
-      record: { healthStatus: "ready" }
+      record: { healthStatus: "ready" },
     });
     expect(callsWhileFirstWasBlocked).toBe(1);
     await expect(registry.refresh("legacy")).resolves.toMatchObject({
-      record: { healthStatus: "ready" }
+      record: { healthStatus: "ready" },
     });
     expect(factoryCalls).toBe(3);
   });
 
   it("allows different accounts to refresh concurrently", async () => {
-    const first = accountRecord(
-      "acct_0123456789abcdef01234567"
-    );
-    const second = accountRecord(
-      "acct_89abcdef0123456701234567"
-    );
+    const first = accountRecord("acct_0123456789abcdef01234567");
+    const second = accountRecord("acct_89abcdef0123456701234567");
     const records = new Map([
       [first.id, first],
-      [second.id, second]
+      [second.id, second],
     ]);
     const started = new Set<string>();
     let markBothStarted: (() => void) | undefined;
@@ -436,12 +520,11 @@ describe("AccountRuntimeRegistry", () => {
           ...(records.get(id) as AccountRecord),
           ...observation,
           lastCheckedAt: 1,
-          updatedAt: 1
-        })
+          updatedAt: 1,
+        }),
       },
       config: parseConfig({
-        LINGJING_API_KEY:
-          "fixture-local-secret-with-sufficient-length"
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       }),
       sessionFactory: async (_config, accountId) => {
         if (accountId === undefined) {
@@ -452,7 +535,7 @@ describe("AccountRuntimeRegistry", () => {
         await gate;
         return session();
       },
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
     const firstRefresh = registry.refresh(first.id);
@@ -460,8 +543,9 @@ describe("AccountRuntimeRegistry", () => {
     await bothStarted;
     expect(started).toEqual(new Set([first.id, second.id]));
     releaseBoth?.();
-    await expect(Promise.all([firstRefresh, secondRefresh]))
-      .resolves.toHaveLength(2);
+    await expect(
+      Promise.all([firstRefresh, secondRefresh]),
+    ).resolves.toHaveLength(2);
   });
 
   it.each(["charge", "release"] as const)(
@@ -477,13 +561,12 @@ describe("AccountRuntimeRegistry", () => {
       const registry = new AccountRuntimeRegistry({
         accounts,
         config: parseConfig({
-          LINGJING_API_KEY:
-            "fixture-local-secret-with-sufficient-length",
+          LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
           LINGJING_MAX_CONCURRENCY: "1",
-          MAX_QUEUED_REQUESTS: "0"
+          MAX_QUEUED_REQUESTS: "0",
         }),
         sessionFactory: () => Promise.resolve(session()),
-        transportFactory
+        transportFactory,
       });
       const globalCapacity = new CapacityManager(1, 0);
       const runnerRegistry = new JobRunnerRegistry();
@@ -491,20 +574,19 @@ describe("AccountRuntimeRegistry", () => {
         registry,
         accounts,
         admissions,
-        capacity: globalCapacity
+        capacity: globalCapacity,
       });
       const coordinator = new LingjingGenerationCoordinator({
         repository,
         capacity: globalCapacity,
         scheduler,
         admissions,
-        prepareMedia: () => Promise.reject(
-          new Error("Fixture does not prepare media")
-        ),
+        prepareMedia: () =>
+          Promise.reject(new Error("Fixture does not prepare media")),
         registry: runnerRegistry,
         assetDiscoveryTimeoutMs: 30,
         unknownCapacityHoldMs: 60_000,
-        taskPollIntervalMs: 1
+        taskPollIntervalMs: 1,
       });
 
       await registry.ready();
@@ -517,38 +599,27 @@ describe("AccountRuntimeRegistry", () => {
         apiId: "707",
         modelCode: "fixture-model",
         expectedAssetScene: "image-generation",
-        requestFingerprint: (
-          action === "charge" ? "a" : "b"
-        ).repeat(64),
+        requestFingerprint: (action === "charge" ? "a" : "b").repeat(64),
         idempotencyKeyHash: null,
         spaceId: 0,
         accountId: "legacy",
         quotedPoints: 2,
-        windows: budgetWindows()
+        windows: budgetWindows(),
       });
       if (admitted.outcome !== "created") {
         throw new Error("Fixture admission was not created");
       }
       repository.transition(admitted.job.id, ["queued"], {
         status: "submitting",
-        submittedAt: Date.now()
+        submittedAt: Date.now(),
       });
       const holdUntil = Date.now() + 60_000;
-      const unknown = repository.transition(
-        admitted.job.id,
-        ["submitting"],
-        { status: "unknown", unknownHoldUntil: holdUntil }
-      );
-      globalCapacity.restore(
-        unknown.id,
-        unknown.status,
-        holdUntil
-      );
-      initial.capacity.restore(
-        unknown.id,
-        unknown.status,
-        holdUntil
-      );
+      const unknown = repository.transition(admitted.job.id, ["submitting"], {
+        status: "unknown",
+        unknownHoldUntil: holdUntil,
+      });
+      globalCapacity.restore(unknown.id, unknown.status, holdUntil);
+      initial.capacity.restore(unknown.id, unknown.status, holdUntil);
 
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
       pointsBalance = 73;
@@ -561,10 +632,10 @@ describe("AccountRuntimeRegistry", () => {
       expect(checked.record).toMatchObject({
         enabled: false,
         healthStatus: "ready",
-        pointsBalance: 73
+        pointsBalance: 73,
       });
       expect(checked.record.lastCheckedAt).toBeGreaterThan(
-        initialCheckedAt ?? 0
+        initialCheckedAt ?? 0,
       );
       expect(transportFactory).toHaveBeenCalledTimes(2);
       expect(registry.listEnabled()).toEqual([]);
@@ -578,17 +649,12 @@ describe("AccountRuntimeRegistry", () => {
       expect(reenabled.capacity).toBe(initial.capacity);
       expect(reenabled.discoveryLock).toBe(initial.discoveryLock);
       expect(registry.listEnabled()).toEqual([reenabled]);
-      expect(() => reenabled.capacity.admit("fixture-over-admission"))
-        .toThrow("Generation capacity queue is full");
+      expect(() => reenabled.capacity.admit("fixture-over-admission")).toThrow(
+        "Generation capacity queue is full",
+      );
 
-      const resolved = coordinator.resolveUnknown(
-        "legacy",
-        unknown.id,
-        action
-      );
-      expect(resolved.state).toBe(
-        action === "charge" ? "charged" : "released"
-      );
+      const resolved = coordinator.resolveUnknown("legacy", unknown.id, action);
+      expect(resolved.state).toBe(action === "charge" ? "charged" : "released");
       expect(globalCapacity.counts().active).toBe(0);
       expect(initial.capacity.counts().active).toBe(0);
 
@@ -596,7 +662,7 @@ describe("AccountRuntimeRegistry", () => {
       await registry.close();
       repository.close();
       store.close();
-    }
+    },
   );
 
   it("retains bound runtime services when a refresh becomes unhealthy", async () => {
@@ -611,28 +677,24 @@ describe("AccountRuntimeRegistry", () => {
             ...current,
             ...observation,
             lastCheckedAt: 2,
-            updatedAt: 2
+            updatedAt: 2,
           };
           return current;
-        }
+        },
       },
       config: parseConfig({
-        LINGJING_API_KEY:
-          "fixture-local-secret-with-sufficient-length"
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
       }),
-      sessionFactory: () => failSession
-        ? Promise.reject(new Error("fixture session rebuild failure"))
-        : Promise.resolve(session()),
-      transportFactory: () => transport()
+      sessionFactory: () =>
+        failSession
+          ? Promise.reject(new Error("fixture session rebuild failure"))
+          : Promise.resolve(session()),
+      transportFactory: () => transport(),
     });
 
     await registry.ready();
     const initial = registry.require("legacy");
-    initial.capacity.restore(
-      "job-bound",
-      "processing",
-      null
-    );
+    initial.capacity.restore("job-bound", "processing", null);
     failSession = true;
 
     const refreshed = await registry.refresh("legacy");
@@ -641,7 +703,7 @@ describe("AccountRuntimeRegistry", () => {
     expect(registry.require("legacy")).toBe(initial);
     expect(initial.record).toMatchObject({
       healthStatus: "unhealthy",
-      lastErrorCode: "lingjing_runtime_unhealthy"
+      lastErrorCode: "lingjing_runtime_unhealthy",
     });
     expect(initial.capacity.activeJobIds()).toEqual(["job-bound"]);
     expect(registry.listEnabled()).toEqual([]);
@@ -658,20 +720,32 @@ describe("AccountRuntimeRegistry", () => {
         findById: () => null,
         recordObservation: (id, observation) => {
           observations.push({ id, healthStatus: observation.healthStatus });
-          return { ...(id === legacy.id ? legacy : second), ...observation, lastCheckedAt: 1, updatedAt: 1 };
-        }
+          return {
+            ...(id === legacy.id ? legacy : second),
+            ...observation,
+            lastCheckedAt: 1,
+            updatedAt: 1,
+          };
+        },
       },
-      config: parseConfig({ LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length" }),
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
+      }),
       sessionFactory: () => Promise.resolve(session()),
       transportFactory: () => {
         if (transports++ === 0) return transport();
         throw new Error("fixture transport failure");
-      }
+      },
     });
 
     await registry.ready();
-    expect(registry.listEnabled().map((runtime) => runtime.record.id)).toEqual(["legacy"]);
-    expect(observations).toContainEqual({ id: second.id, healthStatus: "unhealthy" });
+    expect(registry.listEnabled().map((runtime) => runtime.record.id)).toEqual([
+      "legacy",
+    ]);
+    expect(observations).toContainEqual({
+      id: second.id,
+      healthStatus: "unhealthy",
+    });
   });
 
   it("records unexpected session setup failures as unhealthy", async () => {
@@ -684,10 +758,12 @@ describe("AccountRuntimeRegistry", () => {
         recordObservation: (_id, observation) => {
           observations.push(observation.healthStatus);
           return { ...legacy, ...observation, lastCheckedAt: 1, updatedAt: 1 };
-        }
+        },
       },
-      config: parseConfig({ LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length" }),
-      sessionFactory: () => Promise.reject(new Error("fixture I/O failure"))
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
+      }),
+      sessionFactory: () => Promise.reject(new Error("fixture I/O failure")),
     });
 
     await registry.ready();
@@ -701,15 +777,20 @@ describe("AccountRuntimeRegistry", () => {
         list: () => [legacy],
         findById: () => legacy,
         recordObservation: (_id, observation) => {
-          if (observation.healthStatus === "ready") throw new Error("fixture repository failure");
+          if (observation.healthStatus === "ready")
+            throw new Error("fixture repository failure");
           return { ...legacy, ...observation, lastCheckedAt: 1, updatedAt: 1 };
-        }
+        },
       },
-      config: parseConfig({ LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length" }),
+      config: parseConfig({
+        LINGJING_API_KEY: "fixture-local-secret-with-sufficient-length",
+      }),
       sessionFactory: () => Promise.resolve(session()),
-      transportFactory: () => transport()
+      transportFactory: () => transport(),
     });
 
-    await expect(registry.ready()).rejects.toThrow("fixture repository failure");
+    await expect(registry.ready()).rejects.toThrow(
+      "fixture repository failure",
+    );
   });
 });

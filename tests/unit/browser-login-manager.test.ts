@@ -1,1 +1,30 @@
-import{describe,expect,it,vi}from"vitest";import{BrowserLoginManager}from"../../src/accounts/browser-login-manager.js";const config={storageStatePath:"legacy-state",sessionProfilePath:"legacy-profile",dataDirectory:"data"}as never;describe("BrowserLoginManager",()=>{it("deduplicates an active account login and refreshes after success",async()=>{let finish!:(value:number)=>void;const run=vi.fn(()=>new Promise<number>(resolve=>{finish=resolve;})),refresh=vi.fn(()=>Promise.resolve({})),manager=new BrowserLoginManager(config,refresh,run);const first=manager.start("legacy"),second=manager.start("legacy");expect(second.id).toBe(first.id);expect(run).toHaveBeenCalledOnce();finish(0);await vi.waitFor(()=>{expect(manager.find(first.id)?.status).toBe("completed");});expect(refresh).toHaveBeenCalledWith("legacy");});it("records a sanitized failure without refreshing",async()=>{const refresh=vi.fn(),manager=new BrowserLoginManager(config,refresh,()=>Promise.resolve(1)),login=manager.start("legacy");await vi.waitFor(()=>{expect(manager.find(login.id)).toMatchObject({status:"failed",error:"Browser login did not complete"});});expect(refresh).not.toHaveBeenCalled();});});
+import { describe, expect, it } from "vitest";
+import { BrowserLoginManager } from "../../src/accounts/browser-login-manager.js";
+
+describe("BrowserLoginManager", () => {
+  it("creates one active local-browser handoff per account", () => {
+    const manager = new BrowserLoginManager();
+    const first = manager.start("legacy");
+    const second = manager.start("legacy");
+
+    expect(second).toBe(first);
+    expect(first).toMatchObject({
+      accountId: "legacy",
+      status: "running",
+      error: null,
+      loginUrl: "https://lingjing.jdcloud.com/"
+    });
+  });
+
+  it("marks only the matching account handoff completed", () => {
+    const manager = new BrowserLoginManager();
+    const login = manager.start("legacy");
+
+    expect(() => manager.complete(login.id, "another"))
+      .toThrow("Browser login handoff not found");
+    expect(manager.complete(login.id, "legacy")).toMatchObject({
+      status: "completed",
+      accountId: "legacy"
+    });
+  });
+});
