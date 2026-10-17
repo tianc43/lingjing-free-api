@@ -1,4 +1,9 @@
-import { mapUpstreamError } from "./error-map.js";
+import { extractUpstreamDiagnostics, mapUpstreamEnvelope, upstreamBusinessFailed, type UpstreamDiagnostics } from "./error-map.js";
+
+const responseDiagnosticStore = new WeakMap<object, UpstreamDiagnostics>();
+export function responseDiagnostics(value: unknown): UpstreamDiagnostics | undefined {
+  return typeof value === "object" && value !== null ? responseDiagnosticStore.get(value) : undefined;
+}
 
 export interface Envelope<T> {
   error?: { code?: unknown; message?: unknown } | null;
@@ -9,14 +14,16 @@ export function unwrapEnvelope<T>(value: Envelope<T>, statusCode?: number): T;
 export function unwrapEnvelope(value: unknown, statusCode?: number): unknown;
 export function unwrapEnvelope(value: unknown, statusCode?: number): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw mapUpstreamError(undefined, statusCode);
+    throw mapUpstreamEnvelope(value, statusCode);
   }
   const envelope = value as Envelope<unknown>;
   if (statusCode !== undefined && (statusCode < 200 || statusCode >= 300)) {
-    throw mapUpstreamError(envelope.error, statusCode);
+    throw mapUpstreamEnvelope(value, statusCode);
   }
-  if (envelope.error !== null && envelope.error !== undefined) {
-    throw mapUpstreamError(envelope.error, statusCode);
+  if (upstreamBusinessFailed(value)) {
+    throw mapUpstreamEnvelope(value, statusCode);
   }
+  const diagnostics = extractUpstreamDiagnostics(value, statusCode);
+  if (typeof envelope.result === "object" && envelope.result !== null && diagnostics !== undefined) responseDiagnosticStore.set(envelope.result, diagnostics);
   return envelope.result;
 }

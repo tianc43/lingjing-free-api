@@ -6,7 +6,8 @@ import {
   SubmitAmbiguousError,
   TransportUncertainError,
   isTransportUncertain,
-  markInitializedUploadError
+  markInitializedUploadError,
+  upstreamDiagnostics
 } from "./error-map.js";
 import type { LingjingClientOptions, LingjingTransport, ReadRequest, SignedUploadResponse, UploadRequest } from "./types.js";
 
@@ -80,7 +81,12 @@ export class LingjingClient implements LingjingTransport {
       requestWritten = true;
       return await this.perform<T>(path, { method: "POST", body });
     } catch (cause) {
-      if (requestWritten && isTransportUncertain(cause)) throw new SubmitAmbiguousError();
+      const diagnostics = upstreamDiagnostics(cause);
+      // A gateway/server response without an explicit business rejection cannot prove
+      // that the provider did not accept the generation. Never automatically resubmit.
+      const uncertainServerResponse = (diagnostics?.httpStatusCode ?? 0) >= 500
+        && diagnostics?.taskCode !== "TASK_RUN_FAILED";
+      if (requestWritten && (isTransportUncertain(cause) || uncertainServerResponse)) throw new SubmitAmbiguousError(diagnostics);
       throw cause;
     }
   }
@@ -183,7 +189,7 @@ export class LingjingClient implements LingjingTransport {
       observed.body = text;
       value = JSON.parse(text) as unknown;
     } catch {
-      throw new TransportUncertainError();
+      throw new TransportUncertainError({ httpStatusCode: response.statusCode });
     }
     observed.body = value;
     return unwrapEnvelope<T>(value as Envelope<T>, response.statusCode);

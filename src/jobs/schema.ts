@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const CURRENT_SCHEMA_VERSION = 17;
+const CURRENT_SCHEMA_VERSION = 18;
 
 const VERSION_ONE_SQL = `
   CREATE TABLE jobs (
@@ -584,5 +584,9 @@ export function migrateJobDatabase(database: Database.Database): void {
       version=14;
     }
     if(version<15){database.exec(VERSION_FIFTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(15,Date.now());version=15;}if(version<16){database.exec(VERSION_SIXTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(16,Date.now());version=16;}if(version<17){database.exec(VERSION_SEVENTEEN_SQL);database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(17,Date.now());}
+    if (version < 18) {
+      database.exec("ALTER TABLE jobs ADD COLUMN error_diagnostics_json TEXT; ALTER TABLE jobs ADD COLUMN upstream_observation_json TEXT;");
+      database.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(18,Date.now());
+    }
   }).immediate();
 }

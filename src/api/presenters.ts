@@ -3,6 +3,8 @@ import type { AccountSnapshot } from "../lingjing/account.js";
 import type { NormalizedModel } from "../models/types.js";
 import type { JobRecord } from "../jobs/types.js";
 import type { TaskResponse } from "./types.js";
+import { presentUpstreamDiagnostics } from "../lingjing/error-map.js";
+import { upstreamDiagnosticsSchema } from "./schema.js";
 
 const outputSchema = z.object({
   url: z.string(),
@@ -29,7 +31,9 @@ export const taskResponseSchema = z.object({
   ]),
   created_at: z.number(),
   updated_at: z.number(),
-  error: z.object({ code: z.string() }).nullable(),
+  error: z.object({ code: z.string(), message: z.string().optional(), upstream: upstreamDiagnosticsSchema.optional() }).nullable(),
+  upstream: upstreamDiagnosticsSchema.optional(),
+  upstream_task_id: z.string().optional(),
   outputs: z.array(outputSchema)
 });
 
@@ -180,7 +184,10 @@ export function presentTask(job: JobRecord): TaskResponse {
     status: job.status,
     created_at: job.createdAt,
     updated_at: job.updatedAt,
-    error: job.errorCode === null ? null : { code: job.errorCode },
+    error: job.errorCode === null ? null : { code: job.errorCode,
+      ...(job.errorDiagnostics == null ? {} : { message: job.errorDiagnostics.vendor?.message ?? job.errorDiagnostics.message ?? "Lingjing generation failed", upstream: presentUpstreamDiagnostics(job.errorDiagnostics) }) },
+    ...(job.upstreamObservation == null ? {} : { upstream: presentUpstreamDiagnostics(job.upstreamObservation) }),
+    ...(job.upstreamTaskId === null ? {} : { upstream_task_id: job.upstreamTaskId }),
     outputs: job.result?.outputs ?? []
   });
 }

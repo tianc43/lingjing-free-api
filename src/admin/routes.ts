@@ -13,7 +13,7 @@ import {
 } from "../api/schema.js";
 import type { AdminDependencies, AdminRuntimeView } from "../api/types.js";
 import { AppError, errors } from "../errors.js";
-import { TransportUncertainError } from "../lingjing/error-map.js";
+import { presentUpstreamDiagnostics, TransportUncertainError } from "../lingjing/error-map.js";
 import { presentModel } from "../api/presenters.js";
 import { quoteModelPrice } from "../lingjing/model-price.js";
 import {
@@ -158,6 +158,7 @@ function jobView(
   accountNames: ReadonlyMap<string, string>,
   budgetState: BudgetState | null,
 ) {
+  const diagnostics = job.errorDiagnostics == null && job.upstreamObservation == null ? undefined : { ...job.errorDiagnostics, ...job.upstreamObservation };
   return {
     id: job.id,
     account_name: accountNames.get(job.accountId) ?? "Unknown account",
@@ -173,6 +174,9 @@ function jobView(
     created_at: job.createdAt,
     updated_at: job.updatedAt,
     error_code: job.errorCode,
+    error_message: job.errorDiagnostics?.vendor?.message ?? job.errorDiagnostics?.message ?? null,
+    upstream_task_id: job.upstreamTaskId,
+    ...(diagnostics === undefined ? {} : { upstream: presentUpstreamDiagnostics(diagnostics) }),
     outputs: (job.result?.outputs ?? []).map((output) => ({
       url: output.url,
       poster_url: output.posterUrl,

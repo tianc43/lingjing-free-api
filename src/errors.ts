@@ -1,8 +1,13 @@
+import type { PublicUpstreamDiagnostics } from "./lingjing/error-map.js";
+
+export interface ErrorJobContext { job_id?: string; task_url?: string; upstream?: PublicUpstreamDiagnostics; }
+
 export class AppError extends Error {
   readonly statusCode: number;
   readonly type: string;
   readonly code: string;
   readonly param: string | null;
+  context?: ErrorJobContext;
 
   constructor(statusCode: number, type: string, code: string, message: string, param?: string | null) {
     super(message);
@@ -13,13 +18,14 @@ export class AppError extends Error {
     this.param = param ?? null;
   }
 
-  toBody(): { error: { message: string; type: string; param: string | null; code: string } } {
+  toBody(): { error: { message: string; type: string; param: string | null; code: string } & ErrorJobContext } {
     return {
       error: {
         message: this.message,
         type: this.type,
         param: this.param,
-        code: this.code
+        code: this.code,
+        ...this.context
       }
     };
   }

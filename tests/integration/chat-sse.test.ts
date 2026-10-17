@@ -160,6 +160,14 @@ describe("SseWriter", () => {
 });
 
 describe("chat completions SSE", () => {
+  it("includes official vendor diagnosis and the existing job in a failed SSE event", async () => {
+    const failed = { ...currentJob("failed", "generation_submit_rejected"), errorDiagnostics: { httpStatusCode: 200, requestId: "s-sse", vendor: { errorCode: "500:INTERNAL", message: "获取模型服务失败" } } };
+    nextHandle = { job: currentJob("processing"), wait: () => Promise.resolve(failed) };
+    const response = await authorizedInject(fixture.app, { method: "POST", url: "/v1/chat/completions", payload: { model: "fixture-image", messages: [{ role: "user", content: "fixture" }], stream: true } });
+    expect(response.statusCode).toBe(200);
+    expect(parseEvents(response.body).at(-2)).toMatchObject({ event: "error", data: { error: { code: "generation_submit_rejected", job_id: failed.id, task_url: `/v1/tasks/${failed.id}`, upstream: { http_status: 200, request_id: "s-sse", vendor: { error_code: "500:INTERNAL", message: "获取模型服务失败" } } } } });
+    expect(createCalls).toBe(1);
+  });
   let logStore: SqliteStore;
   let callLogs: SqliteCallLogRepository;
   let fixture: TestApp;
@@ -389,7 +397,7 @@ describe("chat completions SSE", () => {
     const timeoutEvents = parseEvents(timeout.body);
     expect(timeoutEvents.at(-2)).toMatchObject({
       event: "error",
-      data: { error: { code: "generation_timeout" } }
+      data: { error: { code: "generation_timeout", job_id: nextHandle.job.id, task_url: `/v1/tasks/${nextHandle.job.id}` } }
     });
     expect(timeoutEvents.at(-1)?.rawData).toBe("[DONE]");
 

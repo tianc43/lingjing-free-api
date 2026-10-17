@@ -4,6 +4,7 @@ import type {
   FastifyRequest
 } from "fastify";
 import { AppError, errors } from "../../errors.js";
+import { bindCallJob } from "../../call-logs/context.js";
 import { z } from "zod";
 import { presentTask, taskResponseSchema } from "../presenters.js";
 import type { MediaInput } from "../../media/types.js";
@@ -181,7 +182,10 @@ export function registerVideoRoutes(
         input.response_mode,
         dependencies.config.videoWaitTimeoutMs
       );
-      if (waited === null) return await pending(reply, handle.job);
+      if (waited === null) {
+        if (handle.job.status === "failed") throwFailed(handle.job);
+        return await pending(reply, handle.job);
+      }
       if (waited.status === "failed") throwFailed(waited);
       if (waited.status !== "completed" || waited.result === null) {
         return await pending(reply, waited);
@@ -205,7 +209,7 @@ export function registerVideoRoutes(
 
   const paramsSchema=z.object({id:z.string().min(1)});
   const listSchema=z.object({limit:z.coerce.number().int().min(1).max(100).default(20),before:z.coerce.number().optional(),status:z.enum(["queued","submitting","discovering","processing","unknown","completed","failed"]).optional()});
-  app.get("/v1/videos/:id",{schema:routeSchema({security:bearerSecurity,params:paramsSchema,response:{200:taskResponseSchema,401:errorResponseSchema,404:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:read");const {id}=paramsSchema.parse(request.params);const job=dependencies.repository.findById(id);if(!job||job.projectId!==principal.projectId||job.kind!=="video")throw new AppError(404,"invalid_request_error","video_not_found","Video job not found");return noStore(reply).send(presentTask(job));});
+  app.get("/v1/videos/:id",{schema:routeSchema({security:bearerSecurity,params:paramsSchema,response:{200:taskResponseSchema,401:errorResponseSchema,404:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:read");const {id}=paramsSchema.parse(request.params);const job=dependencies.repository.findById(id);if(!job||job.projectId!==principal.projectId||job.kind!=="video")throw new AppError(404,"invalid_request_error","video_not_found","Video job not found");bindCallJob(job.id);return noStore(reply).send(presentTask(job));});
   app.get("/v1/videos",{schema:routeSchema({security:bearerSecurity,querystring:listSchema,response:{200:z.object({object:z.literal("list"),data:z.array(taskResponseSchema),next_cursor:z.number().nullable()}),401:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:read");const q=listSchema.parse(request.query);const jobs=dependencies.repository.list({projectId:principal.projectId,kind:"video",limit:q.limit,...(q.before===undefined?{}:{before:q.before}),...(q.status===undefined?{}:{status:q.status})});return noStore(reply).send({object:"list",data:jobs.map(presentTask),next_cursor:jobs.length===q.limit?jobs.at(-1)?.createdAt??null:null});});
   app.post("/v1/videos/:id/cancel",{schema:routeSchema({security:bearerSecurity,params:paramsSchema,response:{200:taskResponseSchema,401:errorResponseSchema,404:errorResponseSchema,409:errorResponseSchema}})},(request,reply)=>{const principal=requireScope(request,"video:create");const {id}=paramsSchema.parse(request.params);try{const job=dependencies.repository.cancelQueued(id,principal.projectId);if(!job||job.kind!=="video")throw new AppError(404,"invalid_request_error","video_not_found","Video job not found");return noStore(reply).send(presentTask(job));}catch(cause){if(cause instanceof AppError)throw cause;throw new AppError(409,"invalid_request_error","video_not_cancellable","Video can only be cancelled before upstream submission");}});
 

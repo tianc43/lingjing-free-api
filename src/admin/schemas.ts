@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { upstreamDiagnosticsSchema } from "../api/schema.js";
 
 const nonNegativeInteger = z.number()
   .int()
@@ -199,6 +200,9 @@ export const adminJobViewSchema = z.object({
   created_at: z.number(),
   updated_at: z.number(),
   error_code: z.string().nullable(),
+  error_message: z.string().nullable(),
+  upstream_task_id: z.string().nullable(),
+  upstream: upstreamDiagnosticsSchema.optional(),
   outputs: z.array(z.object({url:z.string(),poster_url:z.string().nullable(),width:z.number().nullable(),height:z.number().nullable(),duration:z.number().nullable(),format:z.string().nullable()}).strict())
 }).strict();
 

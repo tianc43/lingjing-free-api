@@ -756,9 +756,13 @@ for (const viewport of [
     };
     const upstream: CallLog = {
       ...seed, id: "call-outbound-1", parent_id: seed.id, direction: "outbound",
-      path: "/api/official/generate", duration_ms: 850, status_code: 502, status: "error",
+      path: "/api/official/generate", duration_ms: 850, status_code: 200, status: "error",
       error_code: "official_unavailable", error_message: "官方服务暂时不可用",
-      response_body: { error: "official_unavailable" },
+      upstream_status: "failed", upstream: {
+        httpStatusCode: 200, businessCode: "9", message: "任务执行失败，请稍后重试", requestId: "s-browser-official-failed-request",
+        taskCode: "TASK_RUN_FAILED", vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" }
+      },
+      response_body: { error: { code: 9, message: "任务执行失败，请稍后重试" } },
     };
     const records = [seed, upstream, ...Array.from({ length: 25 }, (_, index) => ({
       ...seed, id: `call-extra-${index}`, trace_id: `trace-extra-${index}`, path: `/v1/jobs/${index}`,
@@ -808,6 +812,10 @@ for (const viewport of [
     await expect(dialog.getByText("https://example.com/result.png", { exact: false })).toBeVisible();
     await dialog.getByRole("button", { name: /本服务 → 灵境/u }).click();
     await expect(dialog.getByText("官方服务暂时不可用", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("官方业务失败", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("s-browser-official-failed-request", { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("官方错误详情").getByText("获取模型服务失败", { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel("官方错误详情").getByText("500:INTERNAL", { exact: true })).toBeVisible();
     await expect(dialog.getByText("call-inbound-1", { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).not.toBeVisible();
@@ -816,7 +824,8 @@ for (const viewport of [
     await page.getByLabel("搜索", { exact: true }).fill("trace-browser-1");
     await page.getByRole("button", { name: "查询", exact: true }).click();
     await expect(page.locator("tbody tr")).toHaveCount(1);
-    await expect(page.getByText("失败 · 502", { exact: true })).toBeVisible();
+    await expect(page.getByText("HTTP 200", { exact: true })).toBeVisible();
+    await expect(page.getByText("官方业务失败", { exact: true })).toBeVisible();
     expect(listQueries.at(-1)?.get("direction")).toBe("outbound");
     expect(listQueries.at(-1)?.get("status")).toBe("error");
     expect(listQueries.at(-1)?.get("search")).toBe("trace-browser-1");
@@ -831,6 +840,66 @@ for (const viewport of [
     await expect(page.getByRole("dialog").getByText("官方服务暂时不可用", { exact: true })).toBeVisible();
     expect(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath("call-detail.png") });
+  });
+}
+
+test("call records distinguish failed official tasks from successful lookups and unknown submissions", async ({ page }) => {
+  const record: CallLog = {
+    id: "call-status-observation", trace_id: "trace-observation", parent_id: null,
+    direction: "outbound", method: "GET", path: "/official/task/status",
+    status: "success", status_code: 200, duration_ms: 100,
+    started_at: 1_700_000_000_000, finished_at: 1_700_000_000_100,
+    job_id: "job-official-failed", account_id: "seed", error_code: null, error_message: null,
+    request_headers: {}, request_body: null, response_headers: {}, response_body: { result: { status: 2 } },
+    upstream_status: "not_reported", upstream: { httpStatusCode: 200, taskStatus: "2", requestId: "s-task-query" }
+  };
+  await page.route("**/admin/api/call-logs**", route => route.fulfill({ json: route.request().url().endsWith(record.id)
+    ? { record, related: [] } : { items: [record], total: 1, page: 1, page_size: 25, retention: { days: 30, max_records: 10000, max_body_chars: 32768 } } }));
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("link", { name: "API 调用记录" }).click();
+  await expect(page.locator("tbody").getByText("成功", { exact: true })).toBeVisible();
+  await expect(page.locator("tbody").getByText("HTTP 200", { exact: true })).toBeVisible();
+  await expect(page.locator("tbody").getByText("官方任务失败", { exact: true })).toBeVisible();
+  record.status_code = null;
+  record.status = "error";
+  record.error_code = "lingjing_submit_ambiguous";
+  record.upstream_status = "unknown";
+  delete record.upstream;
+  record.response_body = null;
+  await page.getByRole("button", { name: "刷新记录" }).click();
+  await expect(page.locator("tbody").getByText("结果未知", { exact: true })).toBeVisible();
+  await expect(page.locator("tbody").getByText("HTTP 未收到", { exact: true })).toBeVisible();
+  await expect(page.locator("tbody").getByText("官方业务结果未知", { exact: true })).toBeVisible();
+});
+
+for (const viewport of [{ name: "desktop", width: 1440, height: 900 }, { name: "mobile", width: 390, height: 844 }] as const) {
+  test(`task page preserves local state and explains official failures and unavailable observations (${viewport.name})`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const base = { account_name: "Seed account", kind: "video", model: "fixture-video", quoted_points: 32, budget_state: "reserved", created_at: 1_700_000_000_000, updated_at: 1_700_000_000_100, outputs: [] };
+    await page.route("**/admin/api/jobs", route => route.fulfill({ json: { jobs: [
+      { ...base, id: "job-official-failed", status: "failed", error_code: "generation_submit_rejected", error_message: "获取模型服务失败", upstream_task_id: "16702988", upstream: { http_status: 200, business_code: "9", request_id: "s-real-upstream-failure-500", task_status: "2", state: "verified", checked_at: 1_700_000_000_100, vendor: { code: "byteDance_seedance_video", error_code: "500:INTERNAL", message: "获取模型服务失败" } } },
+      { ...base, id: "job-waiting-output", status: "processing", error_code: null, upstream: { state: "verified", task_status: "1", checked_at: 1_700_000_000_100 } },
+      { ...base, id: "job-unavailable", status: "processing", error_code: null, upstream: { state: "unavailable", checked_at: 1_700_000_000_100 } }
+    ] } }));
+    await page.goto("http://127.0.0.1:4174/admin/");
+    await page.getByLabel("管理员密码").fill("fixture-admin-password");
+    await page.getByRole("button", { name: "登录" }).click();
+    if (viewport.name === "desktop") await page.getByRole("link", { name: "任务", exact: true }).click();
+    else await page.getByLabel("页面导航").selectOption("tasks");
+    await expect(page.getByText("获取模型服务失败", { exact: true })).toBeVisible();
+    await expect(page.getByText("500:INTERNAL", { exact: true })).toBeVisible();
+    await expect(page.getByText("官方请求：s-real-upstream-failure-500", { exact: true })).toBeVisible();
+    await expect(page.getByText("官方任务：16702988", { exact: true })).toBeVisible();
+    const waiting = page.locator("tbody tr").filter({ hasText: "job-waiting-output" });
+    await expect(waiting.getByText("processing", { exact: true })).toBeVisible();
+    await expect(waiting.getByText("官方已完成，等待输出", { exact: true })).toBeVisible();
+    const unavailable = page.locator("tbody tr").filter({ hasText: "job-unavailable" });
+    await expect(unavailable.getByText("官方状态暂不可核对", { exact: true })).toBeVisible();
+    await expect(unavailable.getByText(/^核验时间：/u)).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("task-official-state.png"), fullPage: true });
   });
 }
 

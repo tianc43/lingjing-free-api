@@ -37,6 +37,19 @@ export interface Job {
   created_at: number;
   updated_at: number;
   error_code: string | null;
+  error_message?: string | null;
+  upstream_task_id?: string | null;
+  upstream?: {
+    http_status?: number;
+    business_code?: string;
+    request_id?: string;
+    task_code?: string;
+    task_status?: string;
+    message?: string;
+    state?: "verified" | "unavailable";
+    checked_at?: number;
+    vendor?: { code?: string; error_code?: string; message?: string };
+  };
   outputs: Array<{url:string;poster_url:string|null;width:number|null;height:number|null;duration:number|null;format:string|null}>;
 }
 
@@ -131,6 +144,16 @@ export interface CallLogSummary {
   job_id: string | null;
   account_id: string | null;
   error_code: string | null;
+  upstream_status?: "failed" | "not_reported" | "unknown";
+  upstream?: {
+    httpStatusCode?: number;
+    businessCode?: string;
+    message?: string;
+    requestId?: string;
+    taskCode?: string;
+    taskStatus?: string;
+    vendor?: { code?: string; errorCode?: string; message?: string };
+  };
 }
 
 export interface CallLog extends CallLogSummary {

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { budgetWindows } from "../accounts/budget.js";
 import { errors } from "../errors.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
+import { extractUpstreamDiagnostics, upstreamBusinessFailed, type UpstreamDiagnostics, type UpstreamObservation } from "../lingjing/error-map.js";
 import type {
   JobListFilter,
   JobOutput,
@@ -57,6 +58,8 @@ interface JobRow {
   poll_attempts: number;
   last_polled_at: number | null;
   error_code: string | null;
+  error_diagnostics_json: string | null;
+  upstream_observation_json: string | null;
   result_json: string | null;
   created_at: number;
   updated_at: number;
@@ -94,6 +97,8 @@ const SELECT_COLUMNS = `
   poll_attempts,
   last_polled_at,
   error_code,
+  error_diagnostics_json,
+  upstream_observation_json,
   result_json,
   created_at,
   updated_at
@@ -186,6 +191,8 @@ function rowToJob(row: JobRow): JobRecord {
     pollAttempts: row.poll_attempts,
     lastPolledAt: row.last_polled_at,
     errorCode: row.error_code,
+    errorDiagnostics: row.error_diagnostics_json === null ? null : JSON.parse(row.error_diagnostics_json) as UpstreamDiagnostics,
+    upstreamObservation: row.upstream_observation_json === null ? null : JSON.parse(row.upstream_observation_json) as UpstreamObservation,
     result: parseResult(row.result_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -307,8 +314,23 @@ export class SqliteJobRepository {
   findById(id: string): JobRecord | null {
     return this.read((database) => {
       const row = this.findRow(database, id);
-      return row === undefined ? null : rowToJob(row);
+      return row === undefined ? null : this.withHistoricalDiagnostics(database, rowToJob(row));
     });
+  }
+
+  private withHistoricalDiagnostics(database: Database.Database, job: JobRecord): JobRecord {
+    if (job.status !== "failed" || job.errorDiagnostics != null) return job;
+    if (database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_call_logs'").get() === undefined) return job;
+    const rows = database.prepare("SELECT response_body,status_code FROM api_call_logs WHERE job_id=? AND direction='outbound' ORDER BY started_at DESC LIMIT 50").all(job.id) as {response_body: string | null; status_code: number | null}[];
+    for (const row of rows) {
+      try {
+        let body: unknown = JSON.parse(row.response_body ?? "null");
+        if (typeof body === "string") body = JSON.parse(body) as unknown;
+        const diagnostics = extractUpstreamDiagnostics(body, row.status_code ?? undefined);
+        if (diagnostics !== undefined && (upstreamBusinessFailed(body) || diagnostics.taskStatus === "2")) return { ...job, errorDiagnostics: diagnostics };
+      } catch { /* Historical log bodies may be truncated; never affect task retrieval. */ }
+    }
+    return job;
   }
 
   list(filter: JobListFilter): JobRecord[] {
@@ -327,7 +349,7 @@ export class SqliteJobRepository {
           projectId: filter.projectId ?? null, status: filter.status ?? null,
           kind: filter.kind ?? null, before: filter.before ?? null, limit: filter.limit
         }) as JobRow[];
-        return rows.map(rowToJob);
+        return rows.map(row => this.withHistoricalDiagnostics(database, rowToJob(row)));
       }
       const rows = filter.projectId === undefined
         ? filter.status === undefined
@@ -348,7 +370,7 @@ export class SqliteJobRepository {
             SELECT ${SELECT_COLUMNS} FROM jobs WHERE project_id = ? AND status = ?
             ORDER BY created_at ASC, rowid ASC LIMIT ?
             `).all(filter.projectId, filter.status, filter.limit) as JobRow[];
-      return rows.map((row) => rowToJob(row));
+      return rows.map((row) => this.withHistoricalDiagnostics(database, rowToJob(row)));
     });
   }
 
@@ -445,6 +467,8 @@ export class SqliteJobRepository {
       const result = transition.archivedResult !== undefined
         ? sanitizeResult(transition.archivedResult)
         : transition.result === undefined ? current.result : sanitizeResult(transition.result);
+      const diagnostics = transition.errorDiagnostics === undefined ? current.errorDiagnostics : transition.errorDiagnostics;
+      const observation = transition.upstreamObservation === undefined ? current.upstreamObservation : transition.upstreamObservation;
       const now = Date.now();
       database.prepare(`
         UPDATE jobs
@@ -464,6 +488,8 @@ export class SqliteJobRepository {
           poll_attempts = @pollAttempts,
           last_polled_at = @lastPolledAt,
           error_code = @errorCode,
+          error_diagnostics_json = @errorDiagnostics,
+          upstream_observation_json = @upstreamObservation,
           result_json = @resultJson,
           updated_at = @updatedAt
         WHERE id = @id
@@ -502,6 +528,8 @@ export class SqliteJobRepository {
         errorCode: transition.errorCode === undefined
           ? current.errorCode
           : transition.errorCode,
+        errorDiagnostics: diagnostics == null ? null : JSON.stringify(diagnostics),
+        upstreamObservation: observation == null ? null : JSON.stringify(observation),
         resultJson: result === null ? null : JSON.stringify(result),
         updatedAt: now
       });

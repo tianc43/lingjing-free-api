@@ -33,6 +33,62 @@ async function clientFixture(logs: SqliteCallLogRepository) {
 }
 
 describe("persistent API call records", () => {
+  const officialFailure = {
+    requestId: "s-official-failure-1", error: { code: 9, message: "任务执行失败，请稍后重试" },
+    result: { result: { success: false, error: "TASK_RUN_FAILED", originError: { venderCode: "byteDance_seedance_video", errCode: "500:INTERNAL", errDesc: "获取模型服务失败" } } }
+  };
+
+  it("separates HTTP 200 from official business failure and exposes safe diagnostic facts", () => {
+    const { logs } = fixture();
+    const id = logs.start({ direction: "outbound", method: "POST", path: "/joycreator/AIModelApiConsole/executeByApiId" });
+    logs.finish(id, { statusCode: 200, body: officialFailure });
+    expect(logs.find(id ?? "")?.record).toMatchObject({ status_code: 200, status: "error", upstream: {
+      httpStatusCode: 200, businessCode: "9", requestId: "s-official-failure-1", taskCode: "TASK_RUN_FAILED",
+      vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" }
+    } });
+  });
+
+  it("derives historical business failures for list, filter and detail without rewriting their original body", () => {
+    const { logs, store } = fixture();
+    const id = logs.start({ direction: "outbound", method: "POST", path: "/official/submit" });
+    logs.finish(id, { statusCode: 200, body: officialFailure });
+    store.read(db => db.prepare("UPDATE api_call_logs SET status='success',error_code=NULL,error_message=NULL WHERE id=?").run(id));
+    const storedBody = store.read(db => (db.prepare("SELECT response_body FROM api_call_logs WHERE id=?").get(id) as { response_body: string }).response_body);
+    expect(logs.list({ status: "error" }).items[0]).toMatchObject({ id, status: "error", status_code: 200, upstream: { requestId: "s-official-failure-1" } });
+    expect(logs.list({ status: "success" }).total).toBe(0);
+    expect(logs.find(id ?? "")?.record).toMatchObject({ status: "error", upstream: { vendor: { message: "获取模型服务失败" } } });
+    expect(store.read(db => (db.prepare("SELECT response_body FROM api_call_logs WHERE id=?").get(id) as { response_body: string }).response_body)).toBe(storedBody);
+  });
+
+  it("recognizes nested-only official failure while accepting a successful envelope with null error", () => {
+    const { logs } = fixture();
+    const failed = logs.start({ direction: "outbound", method: "POST", path: "/official/nested" });
+    logs.finish(failed, { statusCode: 200, body: { error: null, result: officialFailure.result } });
+    expect(logs.find(failed ?? "")?.record.status).toBe("error");
+    const successful = logs.start({ direction: "outbound", method: "GET", path: "/official/success" });
+    logs.finish(successful, { statusCode: 200, body: { error: null, result: { success: true, value: 42 } } });
+    expect(logs.find(successful ?? "")?.record.status).toBe("success");
+  });
+
+  it("keeps a successful inbound task lookup successful when the returned task has failed", () => {
+    const { logs } = fixture();
+    const id = logs.start({ direction: "inbound", method: "GET", path: "/v1/videos/job-failed" });
+    logs.finish(id, { statusCode: 200, body: { id: "job-failed", status: "failed", error: { code: "generation_submit_rejected", message: "Official generation failed" } } });
+    expect(logs.find(id ?? "")?.record).toMatchObject({ status_code: 200, status: "success" });
+    expect(logs.find(id ?? "")?.record).not.toHaveProperty("upstream");
+  });
+
+  it("does not report success without a verified HTTP response and redacts derived diagnostics", () => {
+    const { logs } = fixture();
+    const unknown = logs.start({ direction: "outbound", method: "POST", path: "/official/unverified" });
+    logs.finish(unknown, {});
+    expect(logs.find(unknown ?? "")?.record).toMatchObject({ status: "error", status_code: null, error_code: "response_unverified", upstream_status: "unknown" });
+    const failed = logs.start({ direction: "outbound", method: "POST", path: "/official/sensitive" });
+    logs.finish(failed, { statusCode: 200, body: { ...officialFailure, error: { code: 9, message: "cookie=fixture-vendor-secret Bearer fixture-upstream-secret https://secret.test/object?signature=fixture-signed-secret" } } });
+    const serialized = JSON.stringify(logs.find(failed ?? ""));
+    for (const secret of ["fixture-vendor-secret", "fixture-upstream-secret", "fixture-signed-secret"]) expect(serialized).not.toContain(secret);
+  });
+
   it("redacts credentials, signed URL queries and binary input while retaining prompts and bounded output", () => {
     const { logs } = fixture();
     const id = logs.start({ direction: "inbound", method: "POST", path: "/v1/images?api_key=never-store", headers: { Authorization: "Bearer fixture-downstream-secret", Cookie: "session=fixture-secret-cookie" }, body: { prompt: "有生活感的图片", nested: { csrfToken: "fixture-csrf-secret", uploadUrl: "https://store.test/object?X-Amz-Signature=signed-secret" }, image: "data:image/png;base64,AAsecret" } });

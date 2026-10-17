@@ -3,6 +3,7 @@ import { ReconciliationWorker } from "../../src/jobs/reconciliation-worker.js";
 import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { SqliteWorkerLeaseRepository } from "../../src/jobs/worker-lease-repository.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
+import { mapUpstreamEnvelope } from "../../src/lingjing/error-map.js";
 
 function setup(status: 0 | 1 | 2) {
   let now = 1_000;
@@ -69,6 +70,30 @@ function setup(status: 0 | 1 | 2) {
 }
 
 describe("reconciliation worker", () => {
+  it("marks a failed status read unavailable while retaining the last verified task status", async () => {
+    const app = setup(0);
+    app.repository.transition(app.job.id, ["unknown"], {
+      status: "unknown",
+      unknownHoldUntil: 1_001,
+      upstreamObservation: { state: "verified", checkedAt: 900, taskStatus: "0" }
+    });
+    app.read.mockRejectedValue(mapUpstreamEnvelope({
+      requestId: "s-read-unavailable",
+      error: { code: "INTERNAL_ERROR", message: "Status service unavailable" }
+    }, 503));
+    expect(await app.worker.scan()).toMatchObject({ deferred: 1, failed: 0 });
+    expect(app.repository.findById(app.job.id)).toMatchObject({
+      status: "unknown",
+      upstreamObservation: {
+        state: "unavailable", checkedAt: 1_000, taskStatus: "0",
+        httpStatusCode: 503, requestId: "s-read-unavailable"
+      }
+    });
+    expect(app.read).toHaveBeenCalledTimes(1);
+    expect(app.executionsView.markProviderTerminal).not.toHaveBeenCalled();
+    app.repository.close(); app.store.close();
+  });
+
   it("completes an unknown job by polling the original task without submitting", async () => {
     const app = setup(1);
     expect(await app.worker.scan()).toMatchObject({ completed: 1, failed: 0 });

@@ -8,6 +8,8 @@ import type {
   JobTransition
 } from "./types.js";
 import type { LingjingTransport } from "../lingjing/types.js";
+import { extractUpstreamDiagnostics, upstreamDiagnostics, type UpstreamObservation } from "../lingjing/error-map.js";
+import { responseDiagnostics } from "../lingjing/envelope.js";
 
 export interface TaskPoller {
   poll(job: JobRecord, signal?: AbortSignal): Promise<JobRecord>;
@@ -85,6 +87,7 @@ export class LingjingTaskPoller implements TaskPoller {
       throw new Error(`Job ${job.id} has no upstream task id`);
     }
     signal?.throwIfAborted();
+    let rejectedTaskDiagnostics: ReturnType<typeof upstreamDiagnostics>;
     const response = await abortable(
       this.options.transport.read<unknown>(
         "/openApi/modelmarket/describeUserTask",
@@ -95,21 +98,44 @@ export class LingjingTaskPoller implements TaskPoller {
       ),
       signal,
       "Task polling aborted"
-    );
+    ).catch((cause: unknown) => {
+      signal?.throwIfAborted();
+      const diagnostics = upstreamDiagnostics(cause);
+      // A verified task failure can also be wrapped as a business error. Keep
+      // that explicit terminal status instead of reporting a failed status read.
+      if (diagnostics?.taskStatus === "2"
+        && (diagnostics.httpStatusCode ?? 0) >= 200
+        && (diagnostics.httpStatusCode ?? 0) < 300) {
+        rejectedTaskDiagnostics = diagnostics;
+        return { status: 2 };
+      }
+      throw cause;
+    });
     signal?.throwIfAborted();
     const task = findTask(response);
     if (task === null) throw new Error("Lingjing task response is malformed");
     const status = upstreamStatus(task.status);
     if (status === null) throw new Error("Lingjing task status is invalid");
+    const diagnostics = {
+      ...extractUpstreamDiagnostics(response),
+      ...responseDiagnostics(response),
+      ...rejectedTaskDiagnostics,
+      taskStatus: String(status)
+    };
+    const upstreamObservation: UpstreamObservation = {
+      ...diagnostics,
+      checkedAt: this.now(),
+      state: "verified"
+    };
 
     if (status === 0) {
-      if (job.status === "processing") return job;
       return this.options.repository.transition(
         job.id,
-        ["discovering", "unknown"],
+        ["discovering", "processing", "unknown"],
         {
           status: "processing",
-          ...(job.status === "unknown" ? { errorCode: null } : {})
+          upstreamObservation,
+          ...(job.status === "unknown" ? { errorCode: null, errorDiagnostics: null } : {})
         }
       );
     }
@@ -121,25 +147,39 @@ export class LingjingTaskPoller implements TaskPoller {
         {
           status: "failed",
           failedAt: this.now(),
-          errorCode: "lingjing_task_failed"
+          errorCode: "lingjing_task_failed",
+          errorDiagnostics: diagnostics,
+          upstreamObservation
         }
       );
     }
 
     let result = normalizeJobResult(taskAsAsset(task, job));
     if (result === null) {
-      const assets = await listRecentAssets(
-        this.options.transport,
-        job,
-        signal
+      // Official completion and local output availability are separate facts.
+      // Persist the verified terminal status before the optional asset lookup.
+      const waiting = this.options.repository.transition(
+        job.id,
+        ["discovering", "processing", "unknown"],
+        {
+          status: "processing",
+          upstreamObservation,
+          ...(job.status === "unknown" ? { errorCode: null, errorDiagnostics: null } : {})
+        }
       );
-      signal?.throwIfAborted();
-      const discovered = assets.find((asset) => (
-        asset.taskId !== null && asset.taskId === job.upstreamTaskId
-      ));
-      if (discovered !== undefined) result = normalizeJobResult(discovered);
+      try {
+        const assets = await listRecentAssets(this.options.transport, job, signal);
+        signal?.throwIfAborted();
+        const discovered = assets.find((asset) => (
+          asset.taskId !== null && asset.taskId === job.upstreamTaskId
+        ));
+        if (discovered !== undefined) result = normalizeJobResult(discovered);
+      } catch {
+        signal?.throwIfAborted();
+        return waiting;
+      }
+      if (result === null) return waiting;
     }
-    if (result === null) return job;
 
     return this.options.repository.transition(
       job.id,
@@ -148,7 +188,9 @@ export class LingjingTaskPoller implements TaskPoller {
         status: "completed",
         completedAt: this.now(),
         result,
-        errorCode: null
+        errorCode: null,
+        errorDiagnostics: null,
+        upstreamObservation
       }
     );
   }

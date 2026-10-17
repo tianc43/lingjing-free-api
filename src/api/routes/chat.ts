@@ -34,6 +34,7 @@ import {
   setIfSupported,
   setModelIfSupported,
   throwFailed,
+  withJobContext,
   validateDynamicValues,
   validateMediaCount
 } from "./generation.js";
@@ -221,13 +222,13 @@ function chunk(
   };
 }
 
-function timeoutError(): AppError {
-  return new AppError(
+function timeoutError(job: JobRecord): AppError {
+  return withJobContext(new AppError(
     504,
     "server_error",
     "generation_timeout",
-    "Generation timed out"
-  );
+    "Generation is still pending; poll the existing task and do not resubmit"
+  ), job);
 }
 
 function streamedError(cause: unknown): AppError {
@@ -239,10 +240,10 @@ async function waitForCompletion(
   timeoutMs: number
 ): Promise<JobRecord> {
   const waited = await handle.wait(timeoutMs);
-  if (!TERMINAL.has(waited.status)) throw timeoutError();
+  if (!TERMINAL.has(waited.status)) throw timeoutError(waited);
   if (waited.status === "failed") throwFailed(waited);
   if (waited.status !== "completed" || waited.result === null) {
-    throw errors.upstream();
+    throw withJobContext(new AppError(502, "upstream_error", "generation_status_unknown", "Lingjing generation status is unknown; poll the existing task and do not resubmit"), waited);
   }
   return waited;
 }
@@ -289,7 +290,7 @@ async function streamCompletion(
     }));
     while (!TERMINAL.has(current.status)) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw timeoutError();
+      if (remaining <= 0) throw timeoutError(current);
       current = await handle.wait(
         Math.min(PROGRESS_INTERVAL_MS, remaining),
         stream.abort.signal
@@ -306,7 +307,7 @@ async function streamCompletion(
     }
     if (current.status === "failed") throwFailed(current);
     if (current.status !== "completed" || current.result === null) {
-      throw errors.upstream();
+      throw withJobContext(new AppError(502, "upstream_error", "generation_status_unknown", "Lingjing generation status is unknown; poll the existing task and do not resubmit"), current);
     }
     await stream.writer.event(chunk(identity, {
       content: markdown(current)
@@ -316,7 +317,7 @@ async function streamCompletion(
   } catch (cause) {
     markCallStreamError(streamedError(cause));
     if (stream.abort.signal.aborted) return;
-    const error = streamedError(cause);
+    const error = withJobContext(streamedError(cause), current);
     await stream.writer.event(error.toBody(), "error");
     await stream.writer.done();
   } finally {

@@ -186,6 +186,8 @@ Authorization: Bearer $LINGJING_API_KEY
 
 登录管理台后打开 `/admin/call-logs`，可按调用方向、结果、路径、Trace ID、任务 ID、账号 ID 或错误码筛选及分页。详情展示输入输出、请求响应头、HTTP 状态、业务错误、耗时与关联上下游记录。每次灵境请求及其重试单独记录；异步生成通过任务 ID 关联，入站响应的 `x-request-id` 可用于定位链路。
 
+HTTP 传输结果与官方业务结果分别展示。官方可能以 HTTP 200 返回业务失败；详情中的官方请求 ID、业务码、供应商错误码和说明用于定位原因。对已保存的历史响应也会在读取时解析这些诊断，不改写历史响应正文。账号就绪、健康检查通过或模型出现在目录中，均不代表该模型的生成服务已通过实际验证。
+
 管理员查询接口为 `GET /admin/api/call-logs` 和 `GET /admin/api/call-logs/:id`，沿用管理员会话认证。调用正文会保留提示词，请仅向可信管理员开放。Cookie、API Key、CSRF、签名 URL 查询值和二进制内容会脱敏或省略；正文默认最多 32768 字符，列表明确标示截断。日志从升级后开始采集，最多保留 30 天、10000 条，新增记录时清理；旧日志无法追溯补全。PostgreSQL 模式暂未接入本功能。
 
 以下示例假设 shell 已设置 `LINGJING_API_KEY`，不会在命令中写死密钥。
@@ -269,7 +271,7 @@ curl -sS http://127.0.0.1:8000/v1/videos \
 
 ### 异步任务
 
-`POST /v1/videos` 默认异步并立即返回 HTTP 202、`Location: /v1/videos/<id>` 和任务对象；`/v1/videos/generations` 才是默认等待的兼容入口。等待模式超时但任务仍在运行时也返回 202。
+`POST /v1/videos` 默认异步并立即返回 HTTP 202、`Location: /v1/videos/<id>` 和任务对象；已确定失败的任务直接返回附带任务 ID 的错误。`/v1/videos/generations` 才是默认等待的兼容入口。等待模式超时但任务仍在运行时也返回 202。
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/videos/JOB_ID \
@@ -281,6 +283,8 @@ curl -sS http://127.0.0.1:8000/v1/tasks/JOB_ID \
 ```
 
 状态为 `queued`、`submitting`、`discovering`、`processing`、`unknown`、`completed` 或 `failed`；输出只在可确认并归档后出现。返回的 `/v1/assets/<id>` 需要相同 Project API Key，可用 HTTP Range 播放或下载。
+
+任务查询可另含 `upstream`，记录最后一次官方状态核对：`state=verified` 表示该次读取已验证，`state=unavailable` 表示暂时无法核对；`checked_at` 为毫秒时间戳。官方 `task_status` 为 `"0"`（生成中）、`"1"`（完成）或 `"2"`（失败）。本地仍在等待输出时，可能出现 `status=processing` 且 `upstream.task_status="1"`，它表示官方已完成、本服务尚未取得可交付输出。读取状态失败不等于官方任务失败，不会据此重新提交生成。
 
 ### Chat Completions 与 SSE
 
@@ -341,6 +345,10 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 | 502 | `lingjing_upstream_error`, `lingjing_submit_ambiguous` | 上游响应不可验证 |
 | 503 | `lingjing_session_expired`, `lingjing_csrf_expired`, `temporary_storage_exhausted` | 需刷新会话或本地容量不足 |
 | 504 | `generation_timeout` | Chat 等待超时 |
+
+生成已创建本地任务后，失败、结果未知或 Chat 等待超时的错误会附加 `error.job_id` 和 `error.task_url`，用于继续查询原任务。有可验证的官方诊断时，`error.upstream` 保留 `http_status`、`business_code`、`request_id`、`task_code`，以及 `vendor.code/error_code/message` 等安全字段。字段缺失表示未取得该信息，不能据此推断官方正常。本次诊断持久化和历史补充适用于 SQLite 部署；PostgreSQL 尚未实现等效的诊断持久化。
+
+例如，官方 HTTP 200 内返回业务码 `9`、`TASK_RUN_FAILED`、供应商 `500:INTERNAL / 获取模型服务失败` 时，本服务仍以 HTTP 502 表示生成失败，同时在上述字段保留官方 HTTP 200 与具体原因；不会把官方 HTTP 200 当成生成成功。HTTP 5xx 或连接中断而没有明确业务拒绝时，提交结果仍有不确定性，进入发现/核对流程，不自动重发。
 
 ## Exactly-once 边界与 `unknown`
 

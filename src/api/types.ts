@@ -147,6 +147,8 @@ export interface TaskResponse {
   status: JobStatus;
   created_at: number;
   updated_at: number;
-  error: { code: string } | null;
+  error: { code: string; message?: string | undefined; upstream?: import("../lingjing/error-map.js").PublicUpstreamDiagnostics | undefined } | null;
+  upstream?: import("../lingjing/error-map.js").PublicUpstreamDiagnostics | undefined;
+  upstream_task_id?: string | undefined;
   outputs: JobOutput[];
 }

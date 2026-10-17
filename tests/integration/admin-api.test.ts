@@ -67,6 +67,26 @@ function mutate(
 }
 
 describe("administrator API", () => {
+  it("exposes safe official failure and observation facts on administrator task views", async () => {
+    const fixture = await adminFixture();
+    const { cookie } = await login(fixture);
+    const { job } = fixture.repository.createOrGet({ kind: "video", sourceType: "text-to-video", model: "seedance-fixture", apiId: "750", modelCode: null, expectedAssetScene: "video", requestFingerprint: fixtureHash(), idempotencyKeyHash: null, spaceId: 0 });
+    fixture.repository.transition(job.id, ["queued"], {
+      status: "failed", upstreamTaskId: "16702988", errorCode: "generation_submit_rejected",
+      errorDiagnostics: { httpStatusCode: 200, businessCode: "9", requestId: "s-admin-task-failure", vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" } },
+      upstreamObservation: { state: "verified", checkedAt: 1_700_000_000_000, taskStatus: "2" }
+    });
+    const expected = { id: job.id, status: "failed", upstream_task_id: "16702988", error_message: "获取模型服务失败", upstream: {
+      state: "verified", task_status: "2", checked_at: 1_700_000_000_000, request_id: "s-admin-task-failure", vendor: { error_code: "500:INTERNAL", message: "获取模型服务失败" }
+    } };
+    const detail = await fixture.app.inject({ url: `/admin/api/jobs/${job.id}`, headers: { cookie } });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ job: expected });
+    const list = await fixture.app.inject({ url: "/admin/api/jobs", headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toMatchObject({ jobs: [expected] });
+  });
+
   it("returns an explicit sanitized 404 when administration is disabled", async () => {
     const fixture = await adminFixture(false);
 
