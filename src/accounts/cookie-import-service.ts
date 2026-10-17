@@ -37,6 +37,7 @@ export interface ImportAccountInput {
 }
 
 export interface CookieImportServiceOptions {
+  callLogs?: import("../call-logs/repository.js").SqliteCallLogRepository;
   accounts: Pick<
     SqliteAccountRepository,
     "create" | "findById" | "recordObservation" | "removeUnbound" | "update"
@@ -144,7 +145,7 @@ export class CookieImportService {
     const account = this.options.accounts.findById(accountId);
     if (account === null) throw new Error("Account not found");
     const candidate = parseCookieImport(cookies);
-    const snapshot = await this.describe(candidate.session);
+    const snapshot = await this.describe(candidate.session, accountId);
     const paths =
       accountId === "legacy"
         ? {
@@ -199,11 +200,11 @@ export class CookieImportService {
     }
   }
 
-  private async describe(session: SessionProvider): Promise<AccountSnapshot> {
+  private async describe(session: SessionProvider, accountId?: string): Promise<AccountSnapshot> {
     if (this.options.describeAccount !== undefined) {
       return await this.options.describeAccount(session);
     }
-    const transport = new LingjingClient({ session });
+    const transport = new LingjingClient({ session, ...(accountId === undefined ? {} : { accountId }), ...(this.options.callLogs === undefined ? {} : { callLogs: this.options.callLogs }) });
     const account = new AccountService({
       read: transport.read.bind(transport),
       session,

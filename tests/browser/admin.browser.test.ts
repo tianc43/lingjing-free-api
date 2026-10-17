@@ -7,6 +7,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { join, normalize, resolve } from "node:path";
 import { expect, test } from "playwright/test";
+import type { CallLog } from "../../admin/src/types.js";
 
 type Account = {
   id: string;
@@ -168,7 +169,7 @@ test.beforeAll(async () => {
     }
     if (url.pathname === "/admin/api/session") {
       if (!hasSession) {
-        json(response, { error: { code: "unauthorized" } }, 401);
+        json(response, { error: { code: "admin_authentication_required" } }, 401);
         return;
       }
       json(response, {
@@ -183,7 +184,7 @@ test.beforeAll(async () => {
         expireNext = false;
         json(
           response,
-          { error: { code: "unauthorized", message: "Session expired" } },
+          { error: { code: "admin_authentication_required", message: "Session expired" } },
           401,
         );
         return;
@@ -609,6 +610,7 @@ test.beforeAll(async () => {
         "/admin/",
         "/admin/accounts",
         "/admin/tasks",
+        "/admin/call-logs",
         "/admin/playground",
         "/admin/api-access",
         "/admin/settings",
@@ -735,6 +737,114 @@ test("operator manages API access keys and copies service examples", async ({
   await expect(page.getByText("已撤销")).toBeVisible();
   await page.getByRole("link", { name: "订阅账号" }).click();
   await expect(page.getByText(/^ljk_fixture_secret/u)).toHaveCount(0);
+});
+
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "mobile", width: 390, height: 844 },
+] as const) {
+  test(`operator traces API calls and removed menus stay absent (${viewport.name})`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const seed: CallLog = {
+      id: "call-inbound-1", trace_id: "trace-browser-1", parent_id: null,
+      direction: "inbound", method: "POST", path: "/v1/images/generations",
+      status: "success", status_code: 200, duration_ms: 1250,
+      started_at: 1_700_000_000_000, finished_at: 1_700_000_001_250,
+      job_id: "job-browser-1", account_id: "seed", error_code: null, error_message: null,
+      request_headers: { authorization: "[REDACTED]" }, request_body: { prompt: "测试输入", model: "image-model" },
+      response_headers: { "content-type": "application/json" }, response_body: { data: [{ url: "https://example.com/result.png" }] },
+    };
+    const upstream: CallLog = {
+      ...seed, id: "call-outbound-1", parent_id: seed.id, direction: "outbound",
+      path: "/api/official/generate", duration_ms: 850, status_code: 502, status: "error",
+      error_code: "official_unavailable", error_message: "官方服务暂时不可用",
+      response_body: { error: "official_unavailable" },
+    };
+    const records = [seed, upstream, ...Array.from({ length: 25 }, (_, index) => ({
+      ...seed, id: `call-extra-${index}`, trace_id: `trace-extra-${index}`, path: `/v1/jobs/${index}`,
+    }))];
+    const listQueries: URLSearchParams[] = [];
+    await page.route("**/admin/api/call-logs**", async route => {
+      const url = new URL(route.request().url());
+      const id = url.pathname.split("/call-logs/")[1];
+      if (id) {
+        const record = records.find(item => item.id === id);
+        await route.fulfill({ json: { record, related: record?.trace_id === seed.trace_id ? [seed, upstream] : [] } });
+        return;
+      }
+      listQueries.push(url.searchParams);
+      const filtered = records.filter(item =>
+        (!url.searchParams.get("direction") || item.direction === url.searchParams.get("direction")) &&
+        (!url.searchParams.get("status") || item.status === url.searchParams.get("status")) &&
+        (!url.searchParams.get("search") || item.trace_id.includes(url.searchParams.get("search")!)));
+      const currentPage = Number(url.searchParams.get("page") ?? 1);
+      await route.fulfill({ json: {
+        items: filtered.slice((currentPage - 1) * 25, currentPage * 25), total: filtered.length,
+        page: currentPage, page_size: 25, retention: { days: 30, max_records: 10000, max_body_chars: 32768 },
+      } });
+    });
+    await page.goto("http://127.0.0.1:4174/admin/");
+    await page.getByLabel("管理员密码").fill("fixture-admin-password");
+    await page.getByRole("button", { name: "登录" }).click();
+    if (viewport.name === "desktop") {
+      await expect(page.getByRole("link", { name: "用户与项目" })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "套餐" })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Webhook" })).toHaveCount(0);
+      await page.getByRole("link", { name: "API 调用记录" }).click();
+    } else {
+      await expect(page.getByLabel("页面导航").locator("option")).not.toContainText(["用户与项目", "套餐", "Webhook"]);
+      await page.getByLabel("页面导航").selectOption("call-logs");
+    }
+    await expect(page.getByRole("heading", { name: "API 调用记录" })).toBeVisible();
+    await expect(page.getByText("第 1 / 2 页")).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath("call-logs.png"), fullPage: true });
+    await page.getByRole("button", { name: "下一页" }).click();
+    await expect(page.getByText("第 2 / 2 页")).toBeVisible();
+    expect(listQueries.at(-1)?.get("page")).toBe("2");
+    await page.getByRole("button", { name: "上一页" }).click();
+    await page.getByRole("button", { name: "查看调用 call-inbound-1", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("测试输入", { exact: false })).toBeVisible();
+    await expect(dialog.getByText("https://example.com/result.png", { exact: false })).toBeVisible();
+    await dialog.getByRole("button", { name: /本服务 → 灵境/u }).click();
+    await expect(dialog.getByText("官方服务暂时不可用", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("call-inbound-1", { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    await page.getByLabel("调用方向").selectOption("outbound");
+    await page.getByLabel("调用结果").selectOption("error");
+    await page.getByLabel("搜索", { exact: true }).fill("trace-browser-1");
+    await page.getByRole("button", { name: "查询", exact: true }).click();
+    await expect(page.locator("tbody tr")).toHaveCount(1);
+    await expect(page.getByText("失败 · 502", { exact: true })).toBeVisible();
+    expect(listQueries.at(-1)?.get("direction")).toBe("outbound");
+    expect(listQueries.at(-1)?.get("status")).toBe("error");
+    expect(listQueries.at(-1)?.get("search")).toBe("trace-browser-1");
+    await page.getByLabel("搜索", { exact: true }).fill("missing-trace");
+    await page.getByRole("button", { name: "查询", exact: true }).click();
+    await expect(page.getByText("暂无符合条件的调用记录。新调用完成后可刷新查看。")).toBeVisible();
+    await page.getByLabel("搜索", { exact: true }).fill("");
+    await page.getByRole("button", { name: "查询", exact: true }).click();
+    await expect(page.locator("tbody tr")).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.getByRole("button", { name: "查看调用 call-outbound-1", exact: true }).click();
+    await expect(page.getByRole("dialog").getByText("官方服务暂时不可用", { exact: true })).toBeVisible();
+    expect(await page.getByRole("dialog").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("call-detail.png") });
+  });
+}
+
+test("upstream 401 does not expire the administrator session", async ({ page }) => {
+  await page.route("**/admin/api/accounts/seed/check", route => route.fulfill({
+    status: 401, json: { error: { code: "lingjing_session_expired", message: "上游登录已过期" } },
+  }));
+  await page.goto("http://127.0.0.1:4174/admin/");
+  await page.getByLabel("管理员密码").fill("fixture-admin-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await page.getByRole("button", { name: "刷新余额 Seed account" }).click();
+  await expect(page.getByText("上游登录已过期")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "账号" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "管理员登录" })).toHaveCount(0);
 });
 
 for (const viewport of [

@@ -1,4 +1,5 @@
 import type { Writable } from "node:stream";
+import { observeCallStreamEvent } from "../call-logs/context.js";
 
 export class SseWriter {
   private sentDone = false;
@@ -9,12 +10,14 @@ export class SseWriter {
     const frame = (event === undefined ? "" : `event: ${event}\n`)
       + `data: ${JSON.stringify(value)}\n\n`;
     await this.write(frame);
+    observeCallStreamEvent(value, event);
   }
 
   async done(): Promise<void> {
     if (this.sentDone) return;
     this.sentDone = true;
     await this.write("data: [DONE]\n\n");
+    observeCallStreamEvent("[DONE]");
   }
 
   private async write(value: string): Promise<void> {

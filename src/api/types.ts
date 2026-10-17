@@ -59,6 +59,7 @@ export interface AdminRuntimeView {
 }
 
 export interface AdminDependencies {
+  callLogs?: import("../call-logs/repository.js").SqliteCallLogRepository;
   config: AppConfig;
   webhooks: Pick<SqliteWebhookRepository, "configure" | "list" | "setEnabled" | "deliveries" | "replay">;
   plans: Pick<SqlitePlanRepository, "create" | "list" | "assign" | "assertVideo">;
@@ -94,6 +95,7 @@ export interface AdminDependencies {
 }
 
 export interface AppDependencies {
+  callLogs?: import("../call-logs/repository.js").SqliteCallLogRepository;
   config: AppConfig;
   webhooks: AdminDependencies["webhooks"];
   plans: AdminDependencies["plans"];

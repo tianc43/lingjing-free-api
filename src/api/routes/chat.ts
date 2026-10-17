@@ -5,6 +5,7 @@ import type {
 } from "fastify";
 import { z } from "zod";
 import { AppError, errors } from "../../errors.js";
+import { bindCallJob, markCallStreamError } from "../../call-logs/context.js";
 import type { GenerationHandle } from "../../generation/types.js";
 import type { JobRecord } from "../../jobs/types.js";
 import type { MediaInput } from "../../media/types.js";
@@ -313,6 +314,7 @@ async function streamCompletion(
     await stream.writer.event(chunk(identity, {}, "stop"));
     await stream.writer.done();
   } catch (cause) {
+    markCallStreamError(streamedError(cause));
     if (stream.abort.signal.aborted) return;
     const error = streamedError(cause);
     await stream.writer.event(error.toBody(), "error");
@@ -383,6 +385,7 @@ export function registerChatRoutes(
     const timeoutMs = kind === "image"
       ? dependencies.config.imageWaitTimeoutMs
       : dependencies.config.videoWaitTimeoutMs;
+    bindCallJob(handle.job.id);
 
     if (input.stream) {
       await streamCompletion(reply, handle, model, timeoutMs);

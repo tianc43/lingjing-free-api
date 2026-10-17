@@ -116,8 +116,48 @@ export interface Overview {
   recent_failures: Job[];
 }
 
-export interface WebhookDelivery {id:string;project_id:string;job_id:string;event_type:string;status:"pending"|"delivered"|"dead";attempts:number;next_attempt_at:number;last_error:string|null;delivered_at:number|null;created_at:number;}
-export interface WebhookEndpoint { id:string; project_id:string; url:string; secret:string; enabled:boolean; }
+export interface CallLogSummary {
+  id: string;
+  trace_id: string;
+  parent_id: string | null;
+  direction: "inbound" | "outbound";
+  method: string;
+  path: string;
+  status_code: number | null;
+  status: "success" | "error" | "pending";
+  duration_ms: number | null;
+  started_at: number;
+  finished_at: number | null;
+  job_id: string | null;
+  account_id: string | null;
+  error_code: string | null;
+}
+
+export interface CallLog extends CallLogSummary {
+  request_headers: unknown;
+  request_body: unknown;
+  response_headers: unknown;
+  response_body: unknown;
+  error_message: string | null;
+}
+
+export interface CallLogFilters {
+  direction?: "inbound" | "outbound";
+  status?: "success" | "error" | "pending";
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface CallLogPage {
+  items: CallLogSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  retention: { days: number; max_records: number; max_body_chars: number };
+}
+
+export interface CallLogDetail { record: CallLog; related: CallLogSummary[]; }
 export interface UsageEntry { id:string; job_id:string; user_id:string; project_id:string; api_key_id:string|null; account_id:string; type:"hold"|"charge"|"release"|"refund"|"adjustment"; points:number; reason:string; created_at:number; }
 export interface UsageData { summary:{ held_points:number; charged_points:number; released_points:number; refunded_points:number; adjusted_points:number; net_points:number; entry_count:number }; entries:UsageEntry[]; }
 
@@ -132,25 +172,6 @@ export interface Settings {
   legacy_api_key_configured: boolean;
   api_base_url: string;
   output_retention_ms:number;
-}
-
-export interface Plan { id:string; name:string; enabled:boolean; allowed_modes:("text-to-video"|"image-to-video")[]; allowed_models:string[]; max_duration_seconds:number; allowed_resolutions:string[]; daily_limit_points:number; monthly_limit_points:number; max_concurrency:number; max_queued_requests:number; created_at:number; updated_at:number; }
-
-export interface User {
-  id: string;
-  name: string;
-  status: "active" | "disabled";
-  created_at: number;
-  updated_at: number;
-}
-
-export interface Project {
-  id: string;
-  user_id: string;
-  name: string;
-  status: "active" | "disabled";
-  created_at: number;
-  updated_at: number;
 }
 
 export type ApiKeyScope = "models:read" | "video:create" | "video:read" | "image:create" | "image:read";

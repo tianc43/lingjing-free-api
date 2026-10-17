@@ -54,8 +54,8 @@ import { SqliteStore } from "./persistence/sqlite-store.js";
 import { startPostgresEntrypoint } from "./persistence/postgres-entrypoint.js";
 import { SqliteUsageRepository } from "./usage/sqlite-usage-repository.js";
 import { SqliteWebhookRepository } from "./webhooks/sqlite-webhook-repository.js";
-import { WebhookDeliveryWorker } from "./webhooks/delivery-worker.js";
 import { SqlitePlanRepository } from "./plans/sqlite-plan-repository.js";
+import { SqliteCallLogRepository } from "./call-logs/repository.js";
 
 const SHUTDOWN_DRAIN_MS = 30_000;
 const SHUTDOWN_RUNNER_WAIT_MS = 30_000;
@@ -204,6 +204,7 @@ export async function startServer(
     return {driver:"postgres",app:runtime.app,runtime,stop:()=>runtime.close()};
   }
   const store = new SqliteStore(config.dbPath);
+  const callLogs = new SqliteCallLogRepository(store);
   const accounts = new SqliteAccountRepository(store);
   const signInAttempts = new SqliteSignInAttemptRepository(store);
   const identities = new SqliteIdentityRepository(store);
@@ -230,11 +231,12 @@ export async function startServer(
   const runtimes = new AccountRuntimeRegistry({
     accounts,
     config,
+    callLogs,
     ...(options.transport === undefined
       ? {}
       : { transportFactory: () => options.transport as LingjingTransport })
   });
-  const cookieImporter = new CookieImportService({ accounts, config, runtimes });
+  const cookieImporter = new CookieImportService({ accounts, config, runtimes, callLogs });
   const browserLogins = new BrowserLoginManager();
   const tempDirectory = join(dirname(resolve(config.dbPath)), "tmp");
   let startupCleanup: (() => Promise<void>) | undefined;
@@ -383,7 +385,6 @@ export async function startServer(
       reconcile: async () => {
         await reconciler.scan();
         await archiveRecovery.scan();
-        await new WebhookDeliveryWorker(webhooks).scan();
       },
       cleanupAssets: (olderThan) => assets.deleteUnbound(olderThan),
       cleanupExpiredAssets:(now)=>assets.deleteExpired(now),
@@ -413,6 +414,7 @@ export async function startServer(
     };
     const dependencies: AppDependencies = {
       config,
+      callLogs,
       webhooks,
       plans,
       usage,

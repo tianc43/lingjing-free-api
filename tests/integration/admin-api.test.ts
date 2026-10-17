@@ -3,6 +3,7 @@ import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { budgetWindows } from "../../src/accounts/budget.js";
 import { CookieImportRollbackError } from "../../src/accounts/cookie-import-service.js";
 import { adminCookieOptions } from "../../src/admin/routes.js";
+import { TransportUncertainError } from "../../src/lingjing/error-map.js";
 import {
   createTestApp,
   fixtureHash,
@@ -257,6 +258,21 @@ describe("administrator API", () => {
       error: { code: "import_validation_timeout" },
     });
     importer.import = originalImport;
+  });
+
+  it("preserves the deployed transport-unavailable credential import fix", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const importer = fixture.dependencies.cookieImporter as unknown as { import(): Promise<never> };
+    importer.import = () => Promise.reject(new TransportUncertainError());
+    const response = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST", url: "/admin/api/accounts/import",
+      payload: { name: "Unavailable", priority: 0, daily_point_limit: 0, monthly_point_limit: 0,
+        cookie_format: "header", cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin" }
+    });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({error:{code:"import_validation_unavailable"}});
+    assertNoSensitiveValues(response.body, ["fixture-csrf", "fixture-private-pin"]);
   });
 
   it("returns a dedicated sanitized server error when cookie import rollback is incomplete", async () => {
@@ -812,52 +828,15 @@ describe("administrator API", () => {
     expect(formulaPath).toBe("/openApi/billingprice/calculateTotalPriceV2");
   });
 
-  it("creates users, projects and project-scoped API keys", async () => {
+  it("removes identity, plan and webhook management endpoints", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);
-    const userResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/users",
-      payload: { name: "Studio A" },
-    });
-    expect(userResponse.statusCode).toBe(201);
-    const user = userResponse.json<{ user: { id: string } }>().user;
-    const projectResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/projects",
-      payload: { user_id: user.id, name: "Campaign" },
-    });
-    expect(projectResponse.statusCode).toBe(201);
-    const project = projectResponse.json<{ project: { id: string } }>().project;
-    const keyResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/api-keys",
-      payload: {
-        name: "Video worker",
-        user_id: user.id,
-        project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"],
-      },
-    });
-    expect(keyResponse.statusCode).toBe(201);
-    expect(keyResponse.json()).toMatchObject({
-      key: {
-        user_id: user.id,
-        project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"],
-      },
-    });
-    const secret = keyResponse.json<{ api_key: string }>().api_key;
-    const apiKeys = fixture.dependencies.apiKeys as unknown as {
-      authenticate(token: string): { projectId: string } | null;
-    };
-    expect(apiKeys.authenticate(secret)?.projectId).toBe(project.id);
-    await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: `/admin/api/projects/${project.id}/status`,
-      payload: { status: "disabled" },
-    });
-    expect(apiKeys.authenticate(secret)).toBeNull();
+    for (const path of ["/users", "/projects", "/plans", "/webhooks", "/webhook-deliveries"]) {
+      expect((await fixture.app.inject({url: `/admin/api${path}`, headers:{cookie}})).statusCode).toBe(404);
+      expect((await mutate(fixture, cookie, body.csrf_token, {
+        method:"POST", url:`/admin/api${path}`, payload:{}
+      })).statusCode).toBe(404);
+    }
   });
 
   it("creates, lists, disables, enables and revokes a managed API key", async () => {

@@ -1,6 +1,6 @@
 # Lingjing Free API
 
-把一个或多个已登录的灵境网页订阅组成可调度账号池，对外提供项目隔离的文生视频、图生视频和兼容图片 API，并配套 User、Project、Plan、API Key、Usage、Webhook 与同源管理控制台。
+把一个或多个已登录的灵境网页订阅组成可调度账号池，对外提供文生视频、图生视频和兼容图片 API，并配套账号、API Key、用量、API 调用记录与同源管理控制台。
 
 ## 项目边界
 
@@ -137,7 +137,7 @@ PostgreSQL Browser 命令会自动启动并清理隔离 PostgreSQL 容器，等�
 1. 打开 `<origin>/admin/`，用 `LINGJING_ADMIN_PASSWORD` 登录，再进入“灵境”账号页。
 2. 在灵境网页完成登录。在浏览器开发者工具的一个已认证请求中手工复制 `Cookie` Header，或从浏览器导出 Cookie JSON；选择相应格式粘贴到控制台并填写账号名称/预算。网页控制台**不能**自动读取跨域 Cookie，也不能读取带 `HttpOnly` 属性的 Cookie，这是浏览器的同源与 Cookie 安全边界。
 3. 新账号提交导入；既有账号点击“重新登录”，在自动打开的本地灵境页面完成登录后，将 Cookie 粘贴到同时出现的回填窗口。等待控制台验证后确认会员和余额摘要。任何响应和账号列表都不会回显 Cookie。
-4. 在“Users & projects”创建下游调用主体，在“Plans”分配视频能力、日/月点数与并发限制，再进入“API keys”为指定 Project 创建最小权限 Key。明文 Key 与 Webhook Secret 只在成功创建或轮换时显示一次。
+4. 进入“API 密钥”创建最小权限 Key；新 Key 使用默认调用身份。明文 Key 只在成功创建时显示一次。用户与项目、套餐和 Webhook 管理入口已移除，SQLite 后台不再发送 Webhook；既有身份、Key、账本和生成记录保留。
 5. 使用控制台显示的 Base URL（通常为 `<origin>/v1`）和 `Authorization: Bearer ${LINGJING_API_KEY}` 调用。这里的 `${LINGJING_API_KEY}` 是调用方环境变量；迁移后应赋值为刚创建的托管 Key，而不是把 Key 写进代码。
 6. 怀疑泄露时先禁用 Key 验证调用会得到 401；确认不再需要时撤销。禁用可以重新启用，撤销是终态，不能重新启用或恢复同一明文值。
 
@@ -180,7 +180,13 @@ Authorization: Bearer $LINGJING_API_KEY
 | GET | `/v1/tasks?limit=20&status=unknown` | 最近任务列表 |
 | POST | `/v1/chat/completions` | OpenAI 风格非流式或 SSE 生成 |
 
-`/v1/videos/generations` 仅作为兼容别名，默认等待结果；新调用应使用默认异步的 canonical `/v1/videos`。管理端还提供 Subscriptions、Users & projects、Plans、Usage、Webhooks、API keys 和 Playground 页面。
+`/v1/videos/generations` 仅作为兼容别名，默认等待结果；新调用应使用默认异步的 canonical `/v1/videos`。管理端提供账号、用量、API 调用记录、API 密钥和 Playground 页面。
+
+### API 调用记录（SQLite）
+
+登录管理台后打开 `/admin/call-logs`，可按调用方向、结果、路径、Trace ID、任务 ID、账号 ID 或错误码筛选及分页。详情展示输入输出、请求响应头、HTTP 状态、业务错误、耗时与关联上下游记录。每次灵境请求及其重试单独记录；异步生成通过任务 ID 关联，入站响应的 `x-request-id` 可用于定位链路。
+
+管理员查询接口为 `GET /admin/api/call-logs` 和 `GET /admin/api/call-logs/:id`，沿用管理员会话认证。调用正文会保留提示词，请仅向可信管理员开放。Cookie、API Key、CSRF、签名 URL 查询值和二进制内容会脱敏或省略；正文默认最多 32768 字符，列表明确标示截断。日志从升级后开始采集，最多保留 30 天、10000 条，新增记录时清理；旧日志无法追溯补全。PostgreSQL 模式暂未接入本功能。
 
 以下示例假设 shell 已设置 `LINGJING_API_KEY`，不会在命令中写死密钥。
 

@@ -1,6 +1,7 @@
 import type {
   JobRunnerRegistry as JobRunnerRegistryContract
 } from "./types.js";
+import { withCallJob } from "../call-logs/context.js";
 
 interface RunnerEntry {
   promise: Promise<void>;
@@ -74,7 +75,7 @@ export class JobRunnerRegistry implements JobRunnerRegistryContract {
       };
     }
 
-    const promise = Promise.resolve().then(work);
+    const promise = Promise.resolve().then(() => withCallJob(jobId, work));
     const entry = { promise };
     this.running.set(jobId, entry);
     void promise.finally(() => {

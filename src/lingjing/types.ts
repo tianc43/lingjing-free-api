@@ -28,6 +28,8 @@ export interface LingjingTransport {
 }
 
 export interface LingjingClientOptions {
+  callLogs?: import("../call-logs/repository.js").SqliteCallLogRepository;
+  accountId?: string;
   baseUrl?: URL;
   session: SessionProvider;
   dispatcher?: Dispatcher;

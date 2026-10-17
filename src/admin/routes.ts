@@ -12,7 +12,8 @@ import {
   routeSchema,
 } from "../api/schema.js";
 import type { AdminDependencies, AdminRuntimeView } from "../api/types.js";
-import { errors } from "../errors.js";
+import { AppError, errors } from "../errors.js";
+import { TransportUncertainError } from "../lingjing/error-map.js";
 import { presentModel } from "../api/presenters.js";
 import { quoteModelPrice } from "../lingjing/model-price.js";
 import {
@@ -34,20 +35,8 @@ import {
   adminJobViewSchema,
   createApiKeyBodySchema,
   createApiKeyResponseSchema,
-  createProjectBodySchema,
-  createUserBodySchema,
-  createPlanBodySchema,
-  configureWebhookBodySchema,
-  webhookResponseSchema,
-  webhookListResponseSchema,
-  webhookStatusBodySchema,
-  webhookDeliveryListSchema,
-  assignPlanBodySchema,
-  planListResponseSchema,
-  planResponseSchema,
   createAccountBodySchema,
   createAccountResponseSchema,
-  identityParamsSchema,
   importAccountBodySchema,
   jobListQuerySchema,
   jobListResponseSchema,
@@ -64,12 +53,7 @@ import {
   playgroundRunResponseSchema,
   resolveUnknownBodySchema,
   sessionResponseSchema,
-  setIdentityStatusBodySchema,
   settingsResponseSchema,
-  projectListResponseSchema,
-  projectResponseSchema,
-  userListResponseSchema,
-  userResponseSchema,
   updateAccountBodySchema,
   updateAccountCredentialsBodySchema,
   usageQuerySchema,
@@ -77,6 +61,7 @@ import {
 } from "./schemas.js";
 import type { AdminSession } from "./session.js";
 import { AdminSessionStore } from "./session.js";
+import { registerCallLogRoutes } from "../call-logs/routes.js";
 
 const ADMIN_COOKIE = "lingjing_admin_session";
 const ACTIVE_STATUSES: ReadonlySet<JobStatus> = new Set([
@@ -336,26 +321,6 @@ function accountMutation<T>(operation: () => T): T {
   }
 }
 
-function userView(user: import("../identity/types.js").UserRecord) {
-  return {
-    id: user.id,
-    name: user.name,
-    status: user.status,
-    created_at: user.createdAt,
-    updated_at: user.updatedAt,
-  };
-}
-function projectView(project: import("../identity/types.js").ProjectRecord) {
-  return {
-    id: project.id,
-    user_id: project.userId,
-    name: project.name,
-    status: project.status,
-    created_at: project.createdAt,
-    updated_at: project.updatedAt,
-  };
-}
-
 function apiKeyView(key: ApiKeyRecord) {
   return {
     id: key.id,
@@ -421,6 +386,10 @@ function importFailure(cause: unknown) {
   if (cause instanceof Error && /timed?\s*out|timeout/iu.test(cause.message)) {
     return errors.importValidationTimeout();
   }
+  if (cause instanceof TransportUncertainError) {
+    return new AppError(502, "upstream_error", "import_validation_unavailable",
+      "暂时无法连接灵境验证账号，请稍后重试。");
+  }
   return errors.invalidImportedSession();
 }
 
@@ -435,6 +404,7 @@ export async function registerAdminRoutes(
 
   await app.register(
     function adminApi(adminApp) {
+      registerCallLogRoutes(adminApp, dependencies.callLogs);
       adminApp.addHook("onRequest", (request, reply): Promise<void> => {
         noStore(reply);
         if (
@@ -668,130 +638,6 @@ export async function registerAdminRoutes(
                 allJobs(dependencies),
               ),
             });
-        },
-      );
-
-      adminApp.get(
-        "/users",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            querystring: emptyQuerySchema,
-            response: { 200: userListResponseSchema, 401: errorResponseSchema },
-          }),
-        },
-        (_request, reply) =>
-          noStore(reply).send({
-            users: dependencies.identities.listUsers().map(userView),
-          }),
-      );
-      adminApp.post(
-        "/users",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            body: createUserBodySchema,
-            response: {
-              201: userResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const body = createUserBodySchema.parse(request.body);
-          return noStore(reply)
-            .code(201)
-            .send({
-              user: userView(dependencies.identities.createUser(body.name)),
-            });
-        },
-      );
-      adminApp.post(
-        "/users/:id/status",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            params: identityParamsSchema,
-            body: setIdentityStatusBodySchema,
-            response: {
-              200: userResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const { id } = identityParamsSchema.parse(request.params);
-          const { status } = setIdentityStatusBodySchema.parse(request.body);
-          return noStore(reply).send({
-            user: userView(dependencies.identities.setUserStatus(id, status)),
-          });
-        },
-      );
-      adminApp.get(
-        "/projects",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            querystring: emptyQuerySchema,
-            response: {
-              200: projectListResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (_request, reply) =>
-          noStore(reply).send({
-            projects: dependencies.identities.listProjects().map(projectView),
-          }),
-      );
-      adminApp.post(
-        "/projects",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            body: createProjectBodySchema,
-            response: {
-              201: projectResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const body = createProjectBodySchema.parse(request.body);
-          return noStore(reply)
-            .code(201)
-            .send({
-              project: projectView(
-                dependencies.identities.createProject(body.user_id, body.name),
-              ),
-            });
-        },
-      );
-      adminApp.post(
-        "/projects/:id/status",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            params: identityParamsSchema,
-            body: setIdentityStatusBodySchema,
-            response: {
-              200: projectResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const { id } = identityParamsSchema.parse(request.params);
-          const { status } = setIdentityStatusBodySchema.parse(request.body);
-          return noStore(reply).send({
-            project: projectView(
-              dependencies.identities.setProjectStatus(id, status),
-            ),
-          });
         },
       );
 
@@ -1558,229 +1404,6 @@ export async function registerAdminRoutes(
             },
             recent_failures: recentFailures,
           });
-        },
-      );
-
-      adminApp.get(
-        "/webhook-deliveries",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            querystring: emptyQuerySchema,
-            response: {
-              200: webhookDeliveryListSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (_request, reply) =>
-          noStore(reply).send({
-            deliveries: dependencies.webhooks
-              .deliveries()
-              .map((d) => ({
-                id: d.id,
-                project_id: d.projectId,
-                job_id: d.jobId,
-                event_type: d.eventType,
-                status: d.status ?? "pending",
-                attempts: d.attempts,
-                next_attempt_at: d.nextAttemptAt,
-                last_error: d.lastError ?? null,
-                delivered_at: d.deliveredAt ?? null,
-                created_at: d.createdAt ?? 0,
-              })),
-          }),
-      );
-      adminApp.post(
-        "/webhook-deliveries/:id/replay",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            params: identityParamsSchema,
-            response: { 400: errorResponseSchema, 401: errorResponseSchema },
-          }),
-        },
-        (request, reply) => {
-          const { id } = identityParamsSchema.parse(request.params);
-          dependencies.webhooks.replay(id);
-          return noStore(reply).code(204).send();
-        },
-      );
-      adminApp.get(
-        "/webhooks",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            querystring: emptyQuerySchema,
-            response: {
-              200: webhookListResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (_request, reply) =>
-          noStore(reply).send({
-            webhooks: dependencies.webhooks
-              .list()
-              .map((w) => ({
-                id: w.id,
-                project_id: w.projectId,
-                url: w.url,
-                secret: "",
-                enabled: w.enabled,
-              })),
-          }),
-      );
-      adminApp.post(
-        "/webhooks/:id/status",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            params: identityParamsSchema,
-            body: webhookStatusBodySchema,
-            response: {
-              200: webhookResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const { id } = identityParamsSchema.parse(request.params);
-          const { enabled } = webhookStatusBodySchema.parse(request.body);
-          const w = dependencies.webhooks.setEnabled(id, enabled);
-          return noStore(reply).send({
-            webhook: {
-              id: w.id,
-              project_id: w.projectId,
-              url: w.url,
-              secret: "",
-              enabled: w.enabled,
-            },
-          });
-        },
-      );
-      adminApp.post(
-        "/webhooks",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            body: configureWebhookBodySchema,
-            response: {
-              201: webhookResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const b = configureWebhookBodySchema.parse(request.body);
-          const webhook = dependencies.webhooks.configure(b.project_id, b.url);
-          return noStore(reply)
-            .code(201)
-            .send({
-              webhook: {
-                id: webhook.id,
-                project_id: webhook.projectId,
-                url: webhook.url,
-                secret: webhook.secret,
-                enabled: webhook.enabled,
-              },
-            });
-        },
-      );
-
-      adminApp.get(
-        "/plans",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            querystring: emptyQuerySchema,
-            response: { 200: planListResponseSchema, 401: errorResponseSchema },
-          }),
-        },
-        (_request, reply) =>
-          noStore(reply).send({
-            plans: dependencies.plans
-              .list()
-              .map((p) => ({
-                id: p.id,
-                name: p.name,
-                enabled: p.enabled,
-                allowed_modes: p.allowedModes,
-                allowed_models: p.allowedModels,
-                max_duration_seconds: p.maxDurationSeconds,
-                allowed_resolutions: p.allowedResolutions,
-                daily_limit_points: p.dailyLimitPoints,
-                monthly_limit_points: p.monthlyLimitPoints,
-                max_concurrency: p.maxConcurrency,
-                max_queued_requests: p.maxQueuedRequests,
-                created_at: p.createdAt,
-                updated_at: p.updatedAt,
-              })),
-          }),
-      );
-      adminApp.post(
-        "/plans",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            body: createPlanBodySchema,
-            response: {
-              201: planResponseSchema,
-              400: errorResponseSchema,
-              401: errorResponseSchema,
-            },
-          }),
-        },
-        (request, reply) => {
-          const b = createPlanBodySchema.parse(request.body);
-          const p = dependencies.plans.create({
-            name: b.name,
-            enabled: b.enabled,
-            allowedModes: b.allowed_modes,
-            allowedModels: b.allowed_models,
-            maxDurationSeconds: b.max_duration_seconds,
-            allowedResolutions: b.allowed_resolutions,
-            dailyLimitPoints: b.daily_limit_points,
-            monthlyLimitPoints: b.monthly_limit_points,
-            maxConcurrency: b.max_concurrency,
-            maxQueuedRequests: b.max_queued_requests,
-          });
-          return noStore(reply)
-            .code(201)
-            .send({
-              plan: {
-                id: p.id,
-                name: p.name,
-                enabled: p.enabled,
-                allowed_modes: p.allowedModes,
-                allowed_models: p.allowedModels,
-                max_duration_seconds: p.maxDurationSeconds,
-                allowed_resolutions: p.allowedResolutions,
-                daily_limit_points: p.dailyLimitPoints,
-                monthly_limit_points: p.monthlyLimitPoints,
-                max_concurrency: p.maxConcurrency,
-                max_queued_requests: p.maxQueuedRequests,
-                created_at: p.createdAt,
-                updated_at: p.updatedAt,
-              },
-            });
-        },
-      );
-      adminApp.post(
-        "/plans/assign",
-        {
-          schema: routeSchema({
-            security: publicSecurity,
-            body: assignPlanBodySchema,
-            response: { 400: errorResponseSchema, 401: errorResponseSchema },
-          }),
-        },
-        (request, reply) => {
-          const b = assignPlanBodySchema.parse(request.body);
-          dependencies.plans.assign(b.project_id, b.plan_id);
-          return noStore(reply).code(204).send();
         },
       );
 

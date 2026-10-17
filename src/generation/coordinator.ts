@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { bindCallJob } from "../call-logs/context.js";
 import {
   combineCapacityLeases,
   type AccountScheduler
@@ -266,6 +267,7 @@ implements GenerationCoordinator {
         globalAdmission
       });
       globalAdmission = null;
+      bindCallJob(admission.job.id);
 
       if (!admission.created) {
         await disposeAll(ownedPrepared);

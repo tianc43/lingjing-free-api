@@ -37,6 +37,10 @@ describe("admin static application", () => {
         "content-type": expect.stringContaining("text/html")
       })
     });
+    await expect(testApp.app.inject("/admin/call-logs")).resolves.toMatchObject({statusCode:200});
+    for (const path of ["identities", "plans", "webhooks"]) {
+      await expect(testApp.app.inject(`/admin/${path}`)).resolves.toMatchObject({statusCode:404});
+    }
     await expect(testApp.app.inject("/admin/api-access")).resolves.toMatchObject({
       headers: expect.objectContaining({
         "content-type": expect.stringContaining("text/html")

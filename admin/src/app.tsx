@@ -12,21 +12,19 @@ import { LoginPage } from "./pages/login-page";
 import { OverviewPage } from "./pages/overview-page";
 import { SettingsPage } from "./pages/settings-page";
 import { TasksPage } from "./pages/tasks-page";
+const CallLogsPage = lazy(() => import("./pages/call-logs-page").then(module => ({ default: module.CallLogsPage })));
 const ApiAccessPage=lazy(()=>import("./pages/api-access-page").then(module=>({default:module.ApiAccessPage})));
-const IdentitiesPage=lazy(()=>import("./pages/identities-page").then(module=>({default:module.IdentitiesPage})));
-const PlansPage=lazy(()=>import("./pages/plans-page").then(module=>({default:module.PlansPage})));
 const PlaygroundPage=lazy(()=>import("./pages/playground-page").then(module=>({default:module.PlaygroundPage})));
 const UsagePage=lazy(()=>import("./pages/usage-page").then(module=>({default:module.UsagePage})));
-const WebhooksPage=lazy(()=>import("./pages/webhooks-page").then(module=>({default:module.WebhooksPage})));
-import type { Account, AccountCredentialInput, AccountImportInput, AccountInput, ApiKey, Job, Overview, Plan, Project, Settings, SignInStatus, UsageData, User, WebhookDelivery, WebhookEndpoint } from "./types";
+import type { Account, AccountCredentialInput, AccountImportInput, AccountInput, ApiKey, Job, Overview, Settings, SignInStatus, UsageData } from "./types";
 
-type ResourceName = "accounts" | "overview" | "jobs" | "settings" | "apiKeys" | "identities" | "plans" | "usage" | "webhooks";
+type ResourceName = "accounts" | "overview" | "jobs" | "settings" | "apiKeys" | "usage";
 type ResourceErrors = Partial<Record<ResourceName, string>>;
 type ResourceLoading = Record<ResourceName, boolean>;
 
 function pageFromPath(): PageName {
   const value = location.pathname.replace(/^\/admin\/?/, "");
-  return value === "accounts" || value === "identities" || value === "playground" || value === "tasks" || value === "plans" || value === "usage" || value === "webhooks" || value === "api-access" || value === "developer-docs" || value === "settings" ? value : "overview";
+  return value === "accounts" || value === "call-logs" || value === "playground" || value === "tasks" || value === "usage" || value === "api-access" || value === "developer-docs" || value === "settings" ? value : "overview";
 }
 
 function Skeleton() {
@@ -47,14 +45,9 @@ export function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [webhookDeliveries,setWebhookDeliveries]=useState<WebhookDelivery[]>([]);
-  const [webhooks,setWebhooks]=useState<WebhookEndpoint[]>([]);
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [apiKeySecret, setApiKeySecret] = useState<string | null>(null);
-  const [resourceLoading, setResourceLoading] = useState<ResourceLoading>({ accounts: false, overview: false, jobs: false, settings: false, apiKeys: false, identities: false, plans: false, usage: false, webhooks: false });
+  const [resourceLoading, setResourceLoading] = useState<ResourceLoading>({ accounts: false, overview: false, jobs: false, settings: false, apiKeys: false, usage: false });
   const [resourceErrors, setResourceErrors] = useState<ResourceErrors>({});
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,16 +91,10 @@ export function App() {
   const loadJobs = useCallback(() => runResource("jobs", () => api.jobs(), setJobs), [api, runResource]);
   const loadSettings = useCallback(() => runResource("settings", () => api.settings(), setSettings), [api, runResource]);
   const loadApiKeys = useCallback(() => runResource("apiKeys", () => api.apiKeys(), setApiKeys), [api, runResource]);
-  const loadWebhooks=useCallback(()=>runResource("webhooks",async()=>{const [endpoints,deliveries]=await Promise.all([api.webhooks(),api.webhookDeliveries()]);return{endpoints,deliveries};},value=>{setWebhooks(value.endpoints);setWebhookDeliveries(value.deliveries);}),[api,runResource]);
-  const loadPlans = useCallback(() => runResource("plans", () => api.plans(), setPlans), [api, runResource]);
   const loadUsage = useCallback((filters: { user_id?:string; project_id?:string } = {}) => runResource("usage", () => api.usage(filters), setUsage), [api, runResource]);
-  const loadIdentities = useCallback(() => runResource("identities", async () => {
-    const [nextUsers, nextProjects] = await Promise.all([api.users(), api.projects()]);
-    return { users: nextUsers, projects: nextProjects };
-  }, (value) => { setUsers(value.users); setProjects(value.projects); }), [api, runResource]);
   const load = useCallback(async () => {
-    await Promise.all([loadAccounts(), loadOverview(), loadJobs(), loadSettings(), loadApiKeys(), loadIdentities(), loadPlans(), loadUsage(), loadWebhooks()]);
-  }, [loadAccounts, loadApiKeys, loadIdentities, loadJobs, loadPlans, loadUsage, loadWebhooks, loadOverview, loadSettings]);
+    await Promise.all([loadAccounts(), loadOverview(), loadJobs(), loadSettings(), loadApiKeys(), loadUsage()]);
+  }, [loadAccounts, loadApiKeys, loadJobs, loadUsage, loadOverview, loadSettings]);
 
   useEffect(() => {
     void api.session().then(async (ready) => {
@@ -132,7 +119,7 @@ export function App() {
     setError(null);
     setApiKeySecret(null);
     history.pushState({}, "", `/admin/${next === "overview" ? "" : next}`);
-    const titles:Record<PageName,string>={overview:"总览",accounts:"订阅账号",identities:"用户与项目",playground:"调用测试",tasks:"任务",plans:"套餐",usage:"用量",webhooks:"Webhook", "api-access":"API 密钥","developer-docs":"开发者文档",settings:"运行环境"};document.title=`${titles[next]} · 灵境运营控制台`;
+    const titles:Record<PageName,string>={overview:"总览",accounts:"订阅账号","call-logs":"API 调用记录",playground:"调用测试",tasks:"任务",usage:"用量", "api-access":"API 密钥","developer-docs":"开发者文档",settings:"运行环境"};document.title=`${titles[next]} · 灵境运营控制台`;
     setPage(next);
     focusPageHeading();
   };
@@ -245,15 +232,6 @@ export function App() {
       setError(cause instanceof Error ? cause.message : "无法撤销 API 密钥");
     }
   };
-  const configureWebhook=async(projectId:string,url:string)=>{const endpoint=await api.configureWebhook(projectId,url);await loadWebhooks();return endpoint;};
-  const replayWebhook=async(id:string)=>{await api.replayWebhook(id);await loadWebhooks();};
-  const toggleWebhook=async(endpoint:WebhookEndpoint)=>{await api.setWebhookEnabled(endpoint.id,!endpoint.enabled);await loadWebhooks();};
-  const createPlan = async (input: Omit<Plan,"id"|"created_at"|"updated_at">) => { await api.createPlan(input); await loadPlans(); };
-  const assignPlan = async (projectId:string,planId:string) => { await api.assignPlan(projectId,planId); setNotice("套餐已分配给项目"); };
-  const createUser = async (name: string) => { await api.createUser(name); await loadIdentities(); };
-  const createProject = async (userId: string, name: string) => { await api.createProject(userId, name); await loadIdentities(); };
-  const toggleUser = async (user: User) => { await api.setUserStatus(user.id, user.status === "active" ? "disabled" : "active"); await loadIdentities(); };
-  const toggleProject = async (project: Project) => { await api.setProjectStatus(project.id, project.status === "active" ? "disabled" : "active"); await Promise.all([loadIdentities(), loadApiKeys()]); };
   const logout = () => void api.logout().finally(() => {
     setAuthenticated(false);
     setApiKeySecret(null);
@@ -267,21 +245,17 @@ export function App() {
     ? <><ResourceFailure error={resourceErrors.overview} onRetry={() => void loadOverview()} />{overview === null && resourceLoading.overview ? <Skeleton /> : overview !== null && <OverviewPage overview={overview} />}</>
     : page === "accounts"
       ? <><ResourceFailure error={resourceErrors.accounts} onRetry={() => void loadAccounts()} />{resourceLoading.accounts && accounts.length === 0 ? <Skeleton /> : <AccountsPage accounts={accounts} signInStatus={signInStatus} onCreate={() => setOnboardingOpen(true)} onEdit={setDialog} onToggle={(account) => void toggle(account)} onCheck={(account)=>void check(account)} onLogin={(account)=>void browserLogin(account)} checking={checking} loggingIn={loggingIn} />}</>
-    : page === "identities"
-      ? <><ResourceFailure error={resourceErrors.identities} onRetry={() => void loadIdentities()} />{resourceLoading.identities && users.length === 0 ? <Skeleton /> : <IdentitiesPage users={users} projects={projects} onCreateUser={createUser} onCreateProject={createProject} onToggleUser={toggleUser} onToggleProject={toggleProject} />}</>
+    : page === "call-logs"
+      ? <CallLogsPage api={api} />
     : page === "playground"
       ? <PlaygroundPage loadModels={(kind, mode, refresh) => api.playgroundModels(kind, mode, refresh)} quote={(input) => api.quotePlayground(input)} run={(input) => api.runPlayground(input)} getJob={(id) => api.job(id)} />
     :page==="developer-docs"?<DeveloperDocsPage/>
-    : page === "webhooks"
-      ? <><ResourceFailure error={resourceErrors.webhooks} onRetry={()=>void loadWebhooks()}/>{resourceLoading.webhooks&&webhooks.length===0?<Skeleton/>:<WebhooksPage projects={projects} webhooks={webhooks} deliveries={webhookDeliveries} onConfigure={configureWebhook} onToggle={toggleWebhook} onReplay={replayWebhook}/>}</>
-    : page === "plans"
-      ? <><ResourceFailure error={resourceErrors.plans} onRetry={() => void loadPlans()} />{resourceLoading.plans && plans.length===0?<Skeleton/>:<PlansPage plans={plans} projects={projects} onCreate={createPlan} onAssign={assignPlan}/>}</>
     : page === "usage"
-      ? <><ResourceFailure error={resourceErrors.usage} onRetry={() => void loadUsage()} />{usage === null ? <Skeleton /> : <UsagePage data={usage} users={users} projects={projects} onFilter={loadUsage} />}</>
+      ? <><ResourceFailure error={resourceErrors.usage} onRetry={() => void loadUsage()} />{usage === null ? <Skeleton /> : <UsagePage data={usage} onFilter={loadUsage} />}</>
     : page === "tasks"
         ? <><ResourceFailure error={resourceErrors.jobs} onRetry={() => void loadJobs()} />{resourceLoading.jobs && jobs.length === 0 ? <Skeleton /> : <TasksPage accounts={accounts} jobs={jobs} />}</>
         : page === "api-access"
-          ? <><ResourceFailure error={resourceErrors.settings ?? resourceErrors.apiKeys} onRetry={() => { void loadSettings(); void loadApiKeys(); }} />{(settings === null && resourceLoading.settings) || resourceLoading.apiKeys && apiKeys.length === 0 ? <Skeleton /> : settings !== null && <ApiAccessPage settings={settings} keys={apiKeys} users={users} projects={projects} onCreate={createApiKey} onToggle={toggleApiKey} onRevoke={revokeApiKey} />}</>
+          ? <><ResourceFailure error={resourceErrors.settings ?? resourceErrors.apiKeys} onRetry={() => { void loadSettings(); void loadApiKeys(); }} />{(settings === null && resourceLoading.settings) || resourceLoading.apiKeys && apiKeys.length === 0 ? <Skeleton /> : settings !== null && <ApiAccessPage settings={settings} keys={apiKeys} onCreate={createApiKey} onToggle={toggleApiKey} onRevoke={revokeApiKey} />}</>
           : <><ResourceFailure error={resourceErrors.settings} onRetry={() => void loadSettings()} />{settings === null && resourceLoading.settings ? <Skeleton /> : settings !== null && <SettingsPage settings={settings} />}</>;
 
   return <AppShell page={page} onNavigate={navigate} onLogout={logout}>
