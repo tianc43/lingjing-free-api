@@ -123,7 +123,10 @@ export function registerImageRoutes(
         input.response_mode,
         dependencies.config.imageWaitTimeoutMs
       );
-      if (waited === null) return await pending(reply, handle.job);
+      if (waited === null) {
+        if (handle.job.status === "failed") throwFailed(handle.job);
+        return await pending(reply, handle.job);
+      }
       if (waited.status === "failed") throwFailed(waited);
       if (waited.status !== "completed" || waited.result === null) {
         return await pending(reply, waited);

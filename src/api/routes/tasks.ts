@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { AppError } from "../../errors.js";
+import { bindCallJob } from "../../call-logs/context.js";
 import { presentTask, taskResponseSchema } from "../presenters.js";
 import {
   bearerSecurity,
@@ -68,6 +69,7 @@ export function registerTaskRoutes(
     const job = dependencies.repository.findById(params.id);
     if (job === null || job.projectId !== principal.projectId) throw taskNotFound();
     requireScope(request, job.kind === "video" ? "video:read" : "image:read");
+    bindCallJob(job.id);
     return noStore(reply).send(presentTask(job));
   });
 

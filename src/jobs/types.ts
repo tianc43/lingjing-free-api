@@ -1,4 +1,5 @@
 import type { SourceType } from "../models/types.js";
+import type { UpstreamDiagnostics, UpstreamObservation } from "../lingjing/error-map.js";
 
 export type JobStatus =
   | "queued"
@@ -60,6 +61,8 @@ export interface JobTransition {
   pollAttempts?: number;
   lastPolledAt?: number | null;
   errorCode?: string | null;
+  errorDiagnostics?: UpstreamDiagnostics | null;
+  upstreamObservation?: UpstreamObservation | null;
   archivedResult?: JobResult;
   result?: JobResult | null;
 }
@@ -96,6 +99,8 @@ export interface JobRecord extends NewJob {
   pollAttempts?: number;
   lastPolledAt?: number | null;
   errorCode: string | null;
+  errorDiagnostics?: UpstreamDiagnostics | null;
+  upstreamObservation?: UpstreamObservation | null;
   result: JobResult | null;
   createdAt: number;
   updatedAt: number;

@@ -24,6 +24,7 @@ type RuntimeConfig = Pick<
 >;
 
 export interface AccountRuntimeRegistryOptions {
+  callLogs?: import("../call-logs/repository.js").SqliteCallLogRepository;
   accounts: Pick<
     SqliteAccountRepository,
     "list" | "findById" | "recordObservation"
@@ -200,7 +201,7 @@ export class AccountRuntimeRegistry {
     try {
       transport = (
         this.options.transportFactory ??
-        ((item) => new LingjingClient({ session: item }))
+        ((item) => new LingjingClient({ session: item, accountId: record.id, ...(this.options.callLogs === undefined ? {} : { callLogs: this.options.callLogs }) }))
       )(session);
       account = new AccountService({
         read: transport.read.bind(transport),

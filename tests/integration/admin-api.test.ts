@@ -3,6 +3,7 @@ import type { InjectOptions, LightMyRequestResponse } from "fastify";
 import { budgetWindows } from "../../src/accounts/budget.js";
 import { CookieImportRollbackError } from "../../src/accounts/cookie-import-service.js";
 import { adminCookieOptions } from "../../src/admin/routes.js";
+import { TransportUncertainError } from "../../src/lingjing/error-map.js";
 import {
   createTestApp,
   fixtureHash,
@@ -66,6 +67,26 @@ function mutate(
 }
 
 describe("administrator API", () => {
+  it("exposes safe official failure and observation facts on administrator task views", async () => {
+    const fixture = await adminFixture();
+    const { cookie } = await login(fixture);
+    const { job } = fixture.repository.createOrGet({ kind: "video", sourceType: "text-to-video", model: "seedance-fixture", apiId: "750", modelCode: null, expectedAssetScene: "video", requestFingerprint: fixtureHash(), idempotencyKeyHash: null, spaceId: 0 });
+    fixture.repository.transition(job.id, ["queued"], {
+      status: "failed", upstreamTaskId: "16702988", errorCode: "generation_submit_rejected",
+      errorDiagnostics: { httpStatusCode: 200, businessCode: "9", requestId: "s-admin-task-failure", vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" } },
+      upstreamObservation: { state: "verified", checkedAt: 1_700_000_000_000, taskStatus: "2" }
+    });
+    const expected = { id: job.id, status: "failed", upstream_task_id: "16702988", error_message: "获取模型服务失败", upstream: {
+      state: "verified", task_status: "2", checked_at: 1_700_000_000_000, request_id: "s-admin-task-failure", vendor: { error_code: "500:INTERNAL", message: "获取模型服务失败" }
+    } };
+    const detail = await fixture.app.inject({ url: `/admin/api/jobs/${job.id}`, headers: { cookie } });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ job: expected });
+    const list = await fixture.app.inject({ url: "/admin/api/jobs", headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toMatchObject({ jobs: [expected] });
+  });
+
   it("returns an explicit sanitized 404 when administration is disabled", async () => {
     const fixture = await adminFixture(false);
 
@@ -257,6 +278,21 @@ describe("administrator API", () => {
       error: { code: "import_validation_timeout" },
     });
     importer.import = originalImport;
+  });
+
+  it("preserves the deployed transport-unavailable credential import fix", async () => {
+    const fixture = await adminFixture();
+    const { cookie, body } = await login(fixture);
+    const importer = fixture.dependencies.cookieImporter as unknown as { import(): Promise<never> };
+    importer.import = () => Promise.reject(new TransportUncertainError());
+    const response = await mutate(fixture, cookie, body.csrf_token, {
+      method: "POST", url: "/admin/api/accounts/import",
+      payload: { name: "Unavailable", priority: 0, daily_point_limit: 0, monthly_point_limit: 0,
+        cookie_format: "header", cookie_input: "csrfToken=fixture-csrf; pin=fixture-private-pin" }
+    });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({error:{code:"import_validation_unavailable"}});
+    assertNoSensitiveValues(response.body, ["fixture-csrf", "fixture-private-pin"]);
   });
 
   it("returns a dedicated sanitized server error when cookie import rollback is incomplete", async () => {
@@ -812,52 +848,15 @@ describe("administrator API", () => {
     expect(formulaPath).toBe("/openApi/billingprice/calculateTotalPriceV2");
   });
 
-  it("creates users, projects and project-scoped API keys", async () => {
+  it("removes identity, plan and webhook management endpoints", async () => {
     const fixture = await adminFixture();
     const { cookie, body } = await login(fixture);
-    const userResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/users",
-      payload: { name: "Studio A" },
-    });
-    expect(userResponse.statusCode).toBe(201);
-    const user = userResponse.json<{ user: { id: string } }>().user;
-    const projectResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/projects",
-      payload: { user_id: user.id, name: "Campaign" },
-    });
-    expect(projectResponse.statusCode).toBe(201);
-    const project = projectResponse.json<{ project: { id: string } }>().project;
-    const keyResponse = await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: "/admin/api/api-keys",
-      payload: {
-        name: "Video worker",
-        user_id: user.id,
-        project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"],
-      },
-    });
-    expect(keyResponse.statusCode).toBe(201);
-    expect(keyResponse.json()).toMatchObject({
-      key: {
-        user_id: user.id,
-        project_id: project.id,
-        scopes: ["models:read", "video:create", "video:read"],
-      },
-    });
-    const secret = keyResponse.json<{ api_key: string }>().api_key;
-    const apiKeys = fixture.dependencies.apiKeys as unknown as {
-      authenticate(token: string): { projectId: string } | null;
-    };
-    expect(apiKeys.authenticate(secret)?.projectId).toBe(project.id);
-    await mutate(fixture, cookie, body.csrf_token, {
-      method: "POST",
-      url: `/admin/api/projects/${project.id}/status`,
-      payload: { status: "disabled" },
-    });
-    expect(apiKeys.authenticate(secret)).toBeNull();
+    for (const path of ["/users", "/projects", "/plans", "/webhooks", "/webhook-deliveries"]) {
+      expect((await fixture.app.inject({url: `/admin/api${path}`, headers:{cookie}})).statusCode).toBe(404);
+      expect((await mutate(fixture, cookie, body.csrf_token, {
+        method:"POST", url:`/admin/api${path}`, payload:{}
+      })).statusCode).toBe(404);
+    }
   });
 
   it("creates, lists, disables, enables and revokes a managed API key", async () => {

@@ -4,12 +4,18 @@ import { z } from "zod";
 export const publicSecurity = [] as const;
 export const bearerSecurity = [{ bearerAuth: [] }] as const;
 export const emptyQuerySchema = z.object({}).strict();
+export const upstreamDiagnosticsSchema = z.object({
+  http_status: z.number().optional(), business_code: z.string().optional(), message: z.string().optional(), request_id: z.string().optional(),
+  task_code: z.string().optional(), task_status: z.string().optional(), checked_at: z.number().optional(), state: z.enum(["verified", "unavailable"]).optional(),
+  vendor: z.object({ code: z.string().optional(), error_code: z.string().optional(), message: z.string().optional() }).optional()
+});
 export const errorResponseSchema = z.object({
   error: z.object({
     message: z.string(),
     type: z.string(),
     param: z.string().nullable(),
-    code: z.string()
+    code: z.string(),
+    job_id: z.string().optional(), task_url: z.string().optional(), upstream: upstreamDiagnosticsSchema.optional()
   })
 });
 

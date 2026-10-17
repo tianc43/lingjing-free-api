@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { bindCallJob } from "../call-logs/context.js";
 import {
   combineCapacityLeases,
   type AccountScheduler
@@ -28,7 +29,7 @@ import type {
   JobStatus,
   JobTransition
 } from "../jobs/types.js";
-import { SubmitAmbiguousError, upstreamDiagnostics } from "../lingjing/error-map.js";
+import { SubmitAmbiguousError, upstreamDiagnostics, type UpstreamDiagnostics, type UpstreamObservation } from "../lingjing/error-map.js";
 import { buildPriceQuery } from "../lingjing/price-query.js";
 import { buildFormulaKey } from "../lingjing/price-query.js";
 import type { OutputArchiver } from "../media/output-archiver.js";
@@ -266,6 +267,7 @@ implements GenerationCoordinator {
         globalAdmission
       });
       globalAdmission = null;
+      bindCallJob(admission.job.id);
 
       if (!admission.created) {
         await disposeAll(ownedPrepared);
@@ -510,10 +512,11 @@ implements GenerationCoordinator {
     const failAndRelease = (
       jobId: string,
       expectedStatuses: readonly JobStatus[],
-      errorCode: string
+      errorCode: string,
+      diagnostics?: UpstreamDiagnostics
     ): void => {
       if (budgetState !== "reserved") return;
-      this.failAndRelease(jobId, expectedStatuses, errorCode);
+      this.failAndRelease(jobId, expectedStatuses, errorCode, diagnostics);
       budgetState = "released";
     };
     try {
@@ -589,6 +592,7 @@ implements GenerationCoordinator {
             capturedAt,
             this.currentFence()
           );
+          let submitObservation: UpstreamObservation | undefined;
           await submitReservation.run(async () => {
             assertWorkerOwnership();
             let ambiguous = false;
@@ -608,7 +612,8 @@ implements GenerationCoordinator {
                 failAndRelease(
                   submitting.id,
                   ["submitting"],
-                  "generation_submit_rejected"
+                  "generation_submit_rejected",
+                  diagnostics
                 );
                 this.logger.warn({
                   account_id: runtime.record.id,
@@ -634,6 +639,7 @@ implements GenerationCoordinator {
                 throw cause;
               }
               ambiguous = true;
+              submitObservation = { ...upstreamDiagnostics(cause), checkedAt: this.now(), state: "unavailable" };
               this.options.executions?.markAmbiguous(
                 job.id,
                 "submit_transport_ambiguous",
@@ -651,7 +657,7 @@ implements GenerationCoordinator {
           const discovering = this.transition(
             submitting.id,
             ["submitting"],
-            { status: "discovering" }
+            { status: "discovering", ...(submitObservation === undefined ? {} : { upstreamObservation: submitObservation }) }
           );
           return this.discovererFor(runtime).discover(
             discovering,
@@ -686,7 +692,8 @@ implements GenerationCoordinator {
         failAndRelease(
           current.id,
           ["queued"],
-          cause instanceof AppError?cause.code:"generation_before_submit_failed"
+          cause instanceof AppError?cause.code:"generation_before_submit_failed",
+          upstreamDiagnostics(cause)
         );
       }
       this.releaseIfTerminalOrRefreshUnknown(job.id, runtime, lease);
@@ -992,8 +999,18 @@ implements GenerationCoordinator {
           );
         }
         this.refreshProcessingLease(current, runtime);
-      } catch {
+      } catch (cause) {
         this.pollerAbort.signal.throwIfAborted();
+        const latest = this.requireJob(current.id);
+        if (latest.status === "processing") {
+          current = this.transition(current.id, ["processing"], {
+            status: "processing",
+            upstreamObservation: {
+              ...(latest.upstreamObservation?.taskStatus === undefined ? {} : { taskStatus: latest.upstreamObservation.taskStatus }),
+              ...upstreamDiagnostics(cause), checkedAt: this.now(), state: "unavailable"
+            }
+          });
+        }
         await this.waitForPollInterval();
         current = this.requireJob(current.id);
         if (isTerminal(current)) {
@@ -1299,12 +1316,14 @@ implements GenerationCoordinator {
   private failAndRelease(
     id: string,
     expectedStatuses: readonly JobStatus[],
-    errorCode: string
+    errorCode: string,
+    diagnostics?: UpstreamDiagnostics
   ): JobRecord {
     const failed = this.options.admissions.failAndRelease(
       id,
       expectedStatuses,
-      errorCode
+      errorCode,
+      diagnostics
     );
     this.notifier.notify(failed.id);
     return failed;

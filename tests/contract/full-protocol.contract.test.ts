@@ -203,7 +203,7 @@ describe("complete Lingjing web protocol contract", () => {
     ["insufficient points", "POINT_NOT_ENOUGH", 200, "lingjing_insufficient_points"],
     ["rate limit", "RATE_LIMIT", 429, "lingjing_rate_limited"],
     ["policy refusal", "CONTENT_AUDIT", 200, "content_policy_violation"],
-    ["upstream 5xx", "UPSTREAM_FAILURE", 503, "lingjing_upstream_error"]
+    ["upstream 5xx", "UPSTREAM_FAILURE", 503, "lingjing_submit_ambiguous"]
   ] as const)(
     "maps %s without retrying generation submit",
     async (_name, code, statusCode, expectedCode) => {

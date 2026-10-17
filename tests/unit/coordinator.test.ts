@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../src/errors.js";
-import { mapUpstreamError } from "../../src/lingjing/error-map.js";
+import { mapUpstreamError, mapUpstreamEnvelope } from "../../src/lingjing/error-map.js";
 import { JobRunnerRegistry } from "../../src/generation/runner-registry.js";
 import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import {
@@ -23,6 +23,17 @@ afterEach(async () => {
 });
 
 describe("LingjingGenerationCoordinator", () => {
+  it("persists the official Seedance rejection with vendor details and releases once", async () => {
+    const app = harness();
+    app.failNextSubmit(mapUpstreamEnvelope({ requestId: "s-official-request", error: { code: 9, message: "任务执行失败，请稍后重试" }, result: { result: { success: false, error: "TASK_RUN_FAILED", originError: { venderCode: "byteDance_seedance_video", errCode: "500:INTERNAL", errDesc: "获取模型服务失败" } } } }, 200));
+    const handle = await app.coordinator.create(fixtureRequest());
+    const failed = await handle.wait(5_000);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "generation_submit_rejected", errorDiagnostics: { httpStatusCode: 200, requestId: "s-official-request", vendor: { errorCode: "500:INTERNAL", message: "获取模型服务失败" } } });
+    expect(app.repository.findById(handle.job.id)?.errorDiagnostics).toEqual(failed.errorDiagnostics);
+    expect(app.releaseCount()).toBe(1);
+    expect(app.chargeCount()).toBe(0);
+    expect(app.submitCount()).toBe(1);
+  });
   it("submits the same current live price request used for admission", async () => {
     const model = {
       id: "758",
@@ -759,6 +770,7 @@ describe("LingjingGenerationCoordinator", () => {
       "submitting",
       "discovering",
       "processing",
+      "processing",
       "completed"
     ]);
     expect(app.submitCount()).toBe(1);
@@ -910,7 +922,9 @@ describe("LingjingGenerationCoordinator", () => {
       ["submitting"],
       {
         status: "unknown",
-        unknownHoldUntil: 100,
+        // Leave enough real timer budget for discovery under parallel-suite load;
+        // the injected clock below still checks expiry of this exact deadline.
+        unknownHoldUntil: 10_000,
         errorCode: "generation_discovery_timeout"
       }
     );
@@ -925,7 +939,7 @@ describe("LingjingGenerationCoordinator", () => {
     await app.registry.waitUntilIdle();
     const processing=app.repository.findById(unknown.id);
     expect(processing).toMatchObject({status:"completed",errorCode:null});
-    now = 101;
+    now = 10_001;
     app.capacity.expireUnknown(now);
     expect(app.capacity.activeJobIds()).not.toContain(unknown.id);
     expect(app.repository.findById(unknown.id)).toMatchObject({

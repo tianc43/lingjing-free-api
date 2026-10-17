@@ -8,11 +8,9 @@ const ADMIN_CLIENT_ROUTES = new Set([
   "/admin",
   "/admin/",
   "/admin/accounts",
-  "/admin/identities",
   "/admin/playground",
-  "/admin/plans",
   "/admin/usage",
-  "/admin/webhooks",
+  "/admin/call-logs",
   "/admin/tasks",
   "/admin/api-access",
   "/admin/settings"

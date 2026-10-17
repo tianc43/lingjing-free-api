@@ -7,6 +7,7 @@ import { SqliteJobRepository } from "../../src/jobs/sqlite-repository.js";
 import { fingerprintUpstreamPayload } from "../../src/jobs/upstream-fingerprint.js";
 import type { JobRecord, NewJob } from "../../src/jobs/types.js";
 import type { LingjingTransport } from "../../src/lingjing/types.js";
+import { unwrapEnvelope } from "../../src/lingjing/envelope.js";
 import { removeTestDirectory } from "../helpers/cleanup.js";
 
 const directories: string[] = [];
@@ -33,6 +34,26 @@ const fixtureSubmitPayload = {
   refId: "fixture-ref",
   params: [{ idx: "1", values: "fixture prompt" }]
 };
+
+it("preserves a terminal task failure even when the official envelope also reports business failure", async () => {
+  const { repository, job } = repositoryWithProcessingJob();
+  const transport = { read: vi.fn(() => Promise.resolve().then(() => unwrapEnvelope({
+    requestId: "s-poll-terminal-failure",
+    error: null,
+    result: { task: {
+      taskId: job.upstreamTaskId, status: 2, success: false,
+      error: "TASK_RUN_FAILED", errMsg: "Provider rejected this task"
+    } }
+  }, 200))) } as unknown as LingjingTransport;
+  try {
+    const result = await new LingjingTaskPoller({ repository, transport, now: () => 20_000 }).poll(job);
+    expect(result).toMatchObject({
+      status: "failed", errorCode: "lingjing_task_failed",
+      errorDiagnostics: { httpStatusCode: 200, requestId: "s-poll-terminal-failure", message: "Provider rejected this task" },
+      upstreamObservation: { state: "verified", taskStatus: "2", checkedAt: 20_000 }
+    });
+  } finally { repository.close(); }
+});
 
 function repositoryWithProcessingJob(): {
   repository: SqliteJobRepository;
@@ -109,6 +130,111 @@ function transportWithTask(task: unknown): {
 }
 
 describe("LingjingTaskPoller", () => {
+  it.each([0, 1] as const)("persists a verified official status %s even while local output is pending", async (status) => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const read = vi.fn((path: string) => Promise.resolve(path.includes("describeUserTask")
+      ? { data: { task: { status, taskResults: [] } } }
+      : { records: [] }));
+    const poller = new LingjingTaskPoller({
+      repository,
+      transport: { read } as unknown as LingjingTransport,
+      now: () => 15_000
+    });
+
+    try {
+      const result = await poller.poll(job);
+      expect(result.status).toBe("processing");
+      expect(result.upstreamObservation).toMatchObject({
+        state: "verified", checkedAt: 15_000, taskStatus: String(status)
+      });
+      expect(repository.findById(job.id)?.upstreamObservation).toEqual(result.upstreamObservation);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("persists official completion alongside the usable output", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const { transport } = transportWithTask({ status: 1, videoUrl: "https://media.example/final.mp4" });
+    const poller = new LingjingTaskPoller({ repository, transport, now: () => 15_000 });
+
+    try {
+      const result = await poller.poll(job);
+      expect(result).toMatchObject({
+        status: "completed",
+        upstreamObservation: { state: "verified", checkedAt: 15_000, taskStatus: "1" },
+        result: { outputs: [{ url: "https://media.example/final.mp4" }] }
+      });
+      expect(repository.findById(job.id)?.upstreamObservation).toEqual(result.upstreamObservation);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("retains the official failure reason with a sanitized terminal diagnostic", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const { transport } = transportWithTask({
+      status: 2,
+      errMsg: "获取模型服务失败 token=private-token https://private.example/result",
+      originError: { venderCode: "byteDance_seedance_video", errCode: "500:INTERNAL", errDesc: "获取模型服务失败" }
+    });
+    const poller = new LingjingTaskPoller({ repository, transport, now: () => 15_000 });
+
+    try {
+      const result = await poller.poll(job);
+      expect(result).toMatchObject({
+        status: "failed", errorCode: "lingjing_task_failed",
+        upstreamObservation: { state: "verified", checkedAt: 15_000, taskStatus: "2" },
+        errorDiagnostics: {
+          taskStatus: "2", message: "获取模型服务失败 token=[REDACTED] [URL]",
+          vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" }
+        }
+      });
+      expect(JSON.stringify(repository.findById(job.id)?.errorDiagnostics)).not.toContain("private-token");
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("preserves the official completion when the separate asset lookup is unavailable", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const read = vi.fn((path: string) => path.includes("describeUserTask")
+      ? Promise.resolve({ data: { task: { status: 1, taskResults: [] } } })
+      : Promise.reject(new Error("asset lookup unavailable")));
+    const poller = new LingjingTaskPoller({ repository, transport: { read } as unknown as LingjingTransport, now: () => 15_000 });
+
+    try {
+      const result = await poller.poll(job);
+      expect(result).toMatchObject({
+        status: "processing", result: null,
+        upstreamObservation: { state: "verified", checkedAt: 15_000, taskStatus: "1" }
+      });
+      expect(repository.findById(job.id)?.upstreamObservation).toEqual(result.upstreamObservation);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it("retains HTTP status and request ID after the official response envelope is unwrapped", async () => {
+    const { repository, job } = repositoryWithProcessingJob();
+    const response = unwrapEnvelope({
+      requestId: "s-fixture-poll", error: null,
+      result: { data: { task: { status: 0 } } }
+    }, 200);
+    const poller = new LingjingTaskPoller({
+      repository, transport: { read: () => Promise.resolve(response) } as unknown as LingjingTransport, now: () => 15_000
+    });
+
+    try {
+      const result = await poller.poll(job);
+      expect(result.upstreamObservation).toMatchObject({
+        state: "verified", checkedAt: 15_000, taskStatus: "0", httpStatusCode: 200, requestId: "s-fixture-poll"
+      });
+    } finally {
+      repository.close();
+    }
+  });
+
   it.each([
     [0, "processing"],
     [1, "completed"],

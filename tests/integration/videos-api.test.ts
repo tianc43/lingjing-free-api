@@ -106,6 +106,30 @@ function handle(
 }
 
 describe("video generation API", () => {
+  it.each(["wait", "async"])("exposes official rejection diagnostics and the existing job for %s mode", async (responseMode) => {
+    initialJob = { ...videoJob("failed", [], "generation_submit_rejected"), errorDiagnostics: {
+      httpStatusCode: 200, businessCode: "9", requestId: "s-official-request", message: "任务执行失败，请稍后重试",
+      taskCode: "TASK_RUN_FAILED", vendor: { code: "byteDance_seedance_video", errorCode: "500:INTERNAL", message: "获取模型服务失败" }
+    } };
+    finalJob = initialJob;
+    const response = await authorizedInject(fixture.app, { method: "POST", url: "/v1/videos/generations", payload: {
+      model: "fixture-video", prompt: "fixture", mode: "text-to-video", response_mode: responseMode
+    } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({ error: { code: "generation_submit_rejected", message: "获取模型服务失败", job_id: initialJob.id,
+      task_url: `/v1/tasks/${initialJob.id}`, upstream: { http_status: 200, request_id: "s-official-request", business_code: "9", task_code: "TASK_RUN_FAILED", vendor: { error_code: "500:INTERNAL", message: "获取模型服务失败" } }
+    } });
+  });
+
+  it("keeps official errors available in both task and video reads", async () => {
+    const saved = fixture.repository.createOrGet({ kind: "video", sourceType: "text-to-video", model: "fixture-video", apiId: "808", modelCode: null, expectedAssetScene: "text-to-video", requestFingerprint: "a".repeat(64), idempotencyKeyHash: null, spaceId: 0 }).job;
+    fixture.repository.transition(saved.id, ["queued"], { status: "failed", errorCode: "generation_submit_rejected", errorDiagnostics: { requestId: "s-query", httpStatusCode: 200, vendor: { errorCode: "500:INTERNAL", message: "获取模型服务失败" } } });
+    for (const url of [`/v1/tasks/${saved.id}`, `/v1/videos/${saved.id}`]) {
+      const response = await authorizedInject(fixture.app, { method: "GET", url });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ id: saved.id, status: "failed", error: { code: "generation_submit_rejected", message: "获取模型服务失败", upstream: { request_id: "s-query", http_status: 200, vendor: { error_code: "500:INTERNAL" } } } });
+    }
+  });
   let fixture: TestApp;
   let requests: GenerationRequest[];
   let initialJob: JobRecord;

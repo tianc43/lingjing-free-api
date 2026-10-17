@@ -6,7 +6,8 @@ import {
   SubmitAmbiguousError,
   TransportUncertainError,
   isTransportUncertain,
-  markInitializedUploadError
+  markInitializedUploadError,
+  upstreamDiagnostics
 } from "./error-map.js";
 import type { LingjingClientOptions, LingjingTransport, ReadRequest, SignedUploadResponse, UploadRequest } from "./types.js";
 
@@ -80,7 +81,12 @@ export class LingjingClient implements LingjingTransport {
       requestWritten = true;
       return await this.perform<T>(path, { method: "POST", body });
     } catch (cause) {
-      if (requestWritten && isTransportUncertain(cause)) throw new SubmitAmbiguousError();
+      const diagnostics = upstreamDiagnostics(cause);
+      // A gateway/server response without an explicit business rejection cannot prove
+      // that the provider did not accept the generation. Never automatically resubmit.
+      const uncertainServerResponse = (diagnostics?.httpStatusCode ?? 0) >= 500
+        && diagnostics?.taskCode !== "TASK_RUN_FAILED";
+      if (requestWritten && (isTransportUncertain(cause) || uncertainServerResponse)) throw new SubmitAmbiguousError(diagnostics);
       throw cause;
     }
   }
@@ -118,6 +124,7 @@ export class LingjingClient implements LingjingTransport {
     const headers = Object.fromEntries(Object.entries(init.headers ?? {}).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
     const controller = new AbortController();
     const timer = setTimeout(() => { controller.abort(); }, init.timeoutMs);
+    const logId = this.options.callLogs?.start({ direction: "outbound", method: "PUT", path: url.toString(), headers, body: init.body, ...(this.options.accountId === undefined ? {} : { accountId: this.options.accountId }) }) ?? null;
     try {
       const requestOptions: NonNullable<Parameters<typeof request>[1]> & { maxRedirections: number } = {
         method: init.method,
@@ -131,11 +138,28 @@ export class LingjingClient implements LingjingTransport {
       };
       const response = await request(url, requestOptions);
       await response.body.dump();
+      this.options.callLogs?.finish(logId, { statusCode: response.statusCode, headers: response.headers, body: "[SIGNED UPLOAD RESPONSE BODY OMITTED]" });
       return { statusCode: response.statusCode, headers: headerRecord(response.headers) };
+    } catch (error) {
+      this.options.callLogs?.finish(logId, { error });
+      throw error;
     } finally { clearTimeout(timer); }
   }
 
   private async perform<T>(path: string, init: { method: "GET" | "POST" | "PUT"; body?: unknown; query?: ReadRequest["query"]; headers?: Record<string, string>; timeoutMs?: number; timestamp?: boolean }): Promise<T> {
+    const logId = this.options.callLogs?.start({ direction: "outbound", method: init.method, path, headers: init.headers, body: { query: init.query, body: init.body }, ...(this.options.accountId === undefined ? {} : { accountId: this.options.accountId }) }) ?? null;
+    const observed: { statusCode?: number; headers?: unknown; body?: unknown; requestHeaders?: unknown } = {};
+    try {
+      const result = await this.performRequest<T>(path, init, observed);
+      this.options.callLogs?.finish(logId, observed);
+      return result;
+    } catch (error) {
+      this.options.callLogs?.finish(logId, { ...observed, error });
+      throw error;
+    }
+  }
+
+  private async performRequest<T>(path: string, init: { method: "GET" | "POST" | "PUT"; body?: unknown; query?: ReadRequest["query"]; headers?: Record<string, string>; timeoutMs?: number; timestamp?: boolean }, observed: { statusCode?: number; headers?: unknown; body?: unknown; requestHeaders?: unknown }): Promise<T> {
     const url = this.trustedUrl(path, init.query, init.timestamp);
     const snapshot = await this.options.session.load();
     const cookie = await snapshot.jar.getCookieString(url.toString());
@@ -146,6 +170,7 @@ export class LingjingClient implements LingjingTransport {
     };
     if (cookie.length > 0) headers.Cookie = cookie;
     if (snapshot.csrfToken !== null) headers["x-csrf-token"] = snapshot.csrfToken;
+    observed.requestHeaders = headers;
     const jsonBody = init.body !== undefined && !(typeof init.body === "string" || Buffer.isBuffer(init.body) || init.body instanceof Uint8Array || init.body instanceof FormData || init.body instanceof Readable);
     if (jsonBody) headers["content-type"] ??= "application/json";
     const payload = jsonBody ? JSON.stringify(init.body) : init.body;
@@ -155,13 +180,18 @@ export class LingjingClient implements LingjingTransport {
     } catch {
       throw new TransportUncertainError();
     }
+    observed.statusCode = response.statusCode;
+    observed.headers = response.headers;
     await this.options.session.applySetCookies(url, setCookieValues(response.headers["set-cookie"]));
     let value: unknown;
     try {
-      value = JSON.parse(await response.body.text()) as unknown;
+      const text = await response.body.text();
+      observed.body = text;
+      value = JSON.parse(text) as unknown;
     } catch {
-      throw new TransportUncertainError();
+      throw new TransportUncertainError({ httpStatusCode: response.statusCode });
     }
+    observed.body = value;
     return unwrapEnvelope<T>(value as Envelope<T>, response.statusCode);
   }
 

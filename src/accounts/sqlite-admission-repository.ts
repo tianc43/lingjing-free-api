@@ -6,6 +6,7 @@ import { allowedTransitions } from "../jobs/sqlite-repository.js";
 import type { SqliteStore } from "../persistence/sqlite-store.js";
 import { budgetWindows } from "./budget.js";
 import type { AdmissionInput, AdmissionResult } from "./types.js";
+import type { UpstreamDiagnostics, UpstreamObservation } from "../lingjing/error-map.js";
 
 export type BudgetState = "reserved" | "charged" | "released";
 
@@ -48,6 +49,8 @@ interface JobRow {
   poll_attempts: number;
   last_polled_at: number | null;
   error_code: string | null;
+  error_diagnostics_json: string | null;
+  upstream_observation_json: string | null;
   result_json: string | null;
   created_at: number;
   updated_at: number;
@@ -68,7 +71,7 @@ const JOB_SELECT_COLUMNS = `
   status, creation_code, upstream_task_id, upstream_fingerprint, submitted_at,
   discovered_at, completed_at, failed_at, unknown_hold_until,
   processing_deadline_at, reconcile_after, uncertainty_reason, poll_attempts,
-  last_polled_at, error_code, result_json, created_at, updated_at
+  last_polled_at, error_code, error_diagnostics_json, upstream_observation_json, result_json, created_at, updated_at
 `;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
@@ -143,6 +146,8 @@ function jobFromRow(row: JobRow): JobRecord {
     pollAttempts: row.poll_attempts,
     lastPolledAt: row.last_polled_at,
     errorCode: row.error_code,
+    errorDiagnostics: row.error_diagnostics_json === null ? null : JSON.parse(row.error_diagnostics_json) as UpstreamDiagnostics,
+    upstreamObservation: row.upstream_observation_json === null ? null : JSON.parse(row.upstream_observation_json) as UpstreamObservation,
     result: parseResult(row.result_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -479,7 +484,8 @@ export class SqliteAdmissionRepository {
   failAndRelease(
     jobId: string,
     expectedStatuses: readonly JobStatus[],
-    errorCode: string
+    errorCode: string,
+    diagnostics?: UpstreamDiagnostics
   ): JobRecord {
     return this.store.immediate((database) => {
       const current = this.findJob(database, jobId);
@@ -500,9 +506,10 @@ export class SqliteAdmissionRepository {
             failed_at = ?,
             unknown_hold_until = NULL,
             error_code = ?,
+            error_diagnostics_json = ?,
             updated_at = ?
         WHERE id = ?
-      `).run(now, errorCode, now, jobId);
+      `).run(now, errorCode, diagnostics === undefined ? null : JSON.stringify(diagnostics), now, jobId);
       database.prepare(`
         INSERT INTO job_status_history(job_id, status, created_at)
         VALUES (?, 'failed', ?)

@@ -523,14 +523,16 @@ export function createGenerationHarness(options: {
       expectedStatuses: Parameters<
         SqliteAdmissionRepository["failAndRelease"]
       >[1],
-      errorCode: string
+      errorCode: string,
+      diagnostics?: Parameters<SqliteAdmissionRepository["failAndRelease"]>[3]
     ) => {
       releaseCalls += 1;
       budgetEvents.push("release");
       return admissionsRepository.failAndRelease(
         jobId,
         expectedStatuses,
-        errorCode
+        errorCode,
+        diagnostics
       );
     },
     resolveUnknown: admissionsRepository.resolveUnknown.bind(

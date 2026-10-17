@@ -279,6 +279,7 @@ describe("account, model, and task API", () => {
         model: "fixture-image",
         status: "processing",
         error: null,
+        upstream_task_id: "private-upstream-task-id",
         outputs: []
       }]
     });
@@ -290,7 +291,6 @@ describe("account, model, and task API", () => {
       "private-model-code",
       "private-asset-scene",
       "private-creation-code",
-      "private-upstream-task-id",
       "91001"
     ]) {
       expect(response.body).not.toContain(forbidden);

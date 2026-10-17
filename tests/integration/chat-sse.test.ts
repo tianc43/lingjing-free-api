@@ -5,6 +5,8 @@ import { errors } from "../../src/errors.js";
 import type { GenerationHandle } from "../../src/generation/types.js";
 import type { JobRecord } from "../../src/jobs/types.js";
 import { SseWriter } from "../../src/api/sse.js";
+import { SqliteStore } from "../../src/persistence/sqlite-store.js";
+import { SqliteCallLogRepository } from "../../src/call-logs/repository.js";
 import {
   authorizedInject,
   createTestApp,
@@ -158,6 +160,16 @@ describe("SseWriter", () => {
 });
 
 describe("chat completions SSE", () => {
+  it("includes official vendor diagnosis and the existing job in a failed SSE event", async () => {
+    const failed = { ...currentJob("failed", "generation_submit_rejected"), errorDiagnostics: { httpStatusCode: 200, requestId: "s-sse", vendor: { errorCode: "500:INTERNAL", message: "获取模型服务失败" } } };
+    nextHandle = { job: currentJob("processing"), wait: () => Promise.resolve(failed) };
+    const response = await authorizedInject(fixture.app, { method: "POST", url: "/v1/chat/completions", payload: { model: "fixture-image", messages: [{ role: "user", content: "fixture" }], stream: true } });
+    expect(response.statusCode).toBe(200);
+    expect(parseEvents(response.body).at(-2)).toMatchObject({ event: "error", data: { error: { code: "generation_submit_rejected", job_id: failed.id, task_url: `/v1/tasks/${failed.id}`, upstream: { http_status: 200, request_id: "s-sse", vendor: { error_code: "500:INTERNAL", message: "获取模型服务失败" } } } } });
+    expect(createCalls).toBe(1);
+  });
+  let logStore: SqliteStore;
+  let callLogs: SqliteCallLogRepository;
   let fixture: TestApp;
   let nextHandle: GenerationHandle;
   let createError: Error | null;
@@ -165,6 +177,8 @@ describe("chat completions SSE", () => {
   let stopPollerCalls: number;
 
   beforeEach(async () => {
+    logStore = new SqliteStore(":memory:");
+    callLogs = new SqliteCallLogRepository(logStore);
     createError = null;
     createCalls = 0;
     stopPollerCalls = 0;
@@ -173,6 +187,7 @@ describe("chat completions SSE", () => {
       wait: () => Promise.resolve(currentJob("completed"))
     };
     fixture = await createTestApp({
+      callLogs,
       catalog: {
         list: vi.fn((sourceType) => Promise.resolve(
           sourceType === "image-generation" ? [imageModel] : []
@@ -200,6 +215,7 @@ describe("chat completions SSE", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     await fixture.close();
+    logStore.close();
   });
 
   it("sends role first, progress, content, stop, and one DONE using correct headers", async () => {
@@ -277,6 +293,12 @@ describe("chat completions SSE", () => {
       status: "processing",
       elapsed_seconds: 15
     });
+    const recorded = callLogs.list().items[0];
+    expect(recorded).toMatchObject({ status: "success", status_code: 200, job_id: "job_abcdef1234567890", trace_id: response.headers["x-request-id"] });
+    const detail = recorded ? callLogs.find(recorded.id) : null;
+    expect(detail?.record.response_body).toMatchObject({ format: "sse", omitted_events: 0 });
+    expect(JSON.stringify(detail?.record.response_body)).toContain("https://media.example/result.png");
+    expect(JSON.stringify(detail?.record.response_body)).toContain("[DONE]");
   });
 
   it("does not emit progress before the exact 15 second boundary", async () => {
@@ -348,6 +370,10 @@ describe("chat completions SSE", () => {
       && event.data?.error?.code === "content_policy_violation"
     )).toBe(true);
     expect(events.at(-1)?.rawData).toBe("[DONE]");
+    const recorded = callLogs.list().items.find((item) => item.status_code === 200);
+    expect(recorded).toMatchObject({ status: "error", error_code: "content_policy_violation" });
+    const detail = recorded ? callLogs.find(recorded.id) : null;
+    expect(JSON.stringify(detail?.record.response_body)).toContain("content_policy_violation");
   });
 
   it("turns wait timeouts and thrown unknown errors into safe SSE errors", async () => {
@@ -371,7 +397,7 @@ describe("chat completions SSE", () => {
     const timeoutEvents = parseEvents(timeout.body);
     expect(timeoutEvents.at(-2)).toMatchObject({
       event: "error",
-      data: { error: { code: "generation_timeout" } }
+      data: { error: { code: "generation_timeout", job_id: nextHandle.job.id, task_url: `/v1/tasks/${nextHandle.job.id}` } }
     });
     expect(timeoutEvents.at(-1)?.rawData).toBe("[DONE]");
 

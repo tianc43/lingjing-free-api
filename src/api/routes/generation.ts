@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AppError, errors } from "../../errors.js";
+import { presentUpstreamDiagnostics } from "../../lingjing/error-map.js";
 import type { GenerationHandle } from "../../generation/types.js";
 import type { JobRecord } from "../../jobs/types.js";
 import { assertPublicHttpTarget } from "../../media/address-policy.js";
@@ -247,12 +248,19 @@ function safeFailureCode(value: string | null): string {
 }
 
 export function throwFailed(job: JobRecord): never {
-  throw new AppError(
+  throw withJobContext(new AppError(
     502,
     "upstream_error",
     safeFailureCode(job.errorCode),
-    "Lingjing generation failed"
-  );
+    job.errorDiagnostics?.vendor?.message ?? job.errorDiagnostics?.message ?? "Lingjing generation failed"
+  ), job);
+}
+
+export function withJobContext(error: AppError, job: JobRecord): AppError {
+  const diagnostics = job.errorDiagnostics ?? job.upstreamObservation;
+  error.context = { ...error.context, job_id: job.id, task_url: `/v1/tasks/${job.id}`,
+    ...(diagnostics == null ? {} : { upstream: presentUpstreamDiagnostics(diagnostics) }) };
+  return error;
 }
 
 export async function waitedJob(

@@ -1,5 +1,6 @@
 import type { AccountRecord } from "../accounts/types.js";
 import type { LingjingTransport } from "../lingjing/types.js";
+import { upstreamDiagnostics } from "../lingjing/error-map.js";
 import type { SqliteExecutionRepository } from "../generation/execution-repository.js";
 import { LingjingTaskPoller } from "./poller.js";
 import type { SqliteJobRepository } from "./sqlite-repository.js";
@@ -126,10 +127,10 @@ export class ReconciliationWorker {
           this.defer(job.id, job.pollAttempts ?? 0, "provider_still_processing",fence);
           result.deferred += 1;
         }
-      } catch {
+      } catch (cause) {
         if(!this.options.workerLeases.owns(currentLease)){result.skipped+=1;continue;}
         const fence:JobFence={workerId:currentLease.workerId,leaseToken:currentLease.leaseToken,fencingToken:currentLease.fencingToken,now:this.options.now?.()??Date.now()};
-        this.defer(job.id, job.pollAttempts ?? 0, "provider_poll_unavailable",fence);
+        this.defer(job.id, job.pollAttempts ?? 0, "provider_poll_unavailable",fence,cause);
         result.deferred += 1;
       } finally {
         clearInterval(heartbeat);
@@ -139,11 +140,13 @@ export class ReconciliationWorker {
     return result;
   }
 
-  private defer(jobId: string, attempts: number, reason: string,fence:JobFence): void {
+  private defer(jobId: string, attempts: number, reason: string,fence:JobFence,cause?:unknown): void {
     const now = this.options.now?.() ?? Date.now();
     const base = this.options.baseDelayMs ?? 5 * 60_000;
     const maximum = this.options.maxDelayMs ?? 6 * 60 * 60_000;
     const delay = Math.min(maximum, base * 2 ** Math.min(attempts, 10));
+    const unavailable = reason === "provider_poll_unavailable" || reason === "bound_account_unavailable";
+    const lastStatus = unavailable ? this.options.repository.findById(jobId)?.upstreamObservation?.taskStatus : undefined;
     this.options.repository.transition(jobId, ["unknown"], {
       status: "unknown",
       unknownHoldUntil: now + delay,
@@ -151,7 +154,11 @@ export class ReconciliationWorker {
       uncertaintyReason: "provider_status_unknown",
       pollAttempts: attempts + 1,
       lastPolledAt: now,
-      errorCode: reason
+      errorCode: reason,
+      ...(unavailable ? { upstreamObservation: {
+        ...(lastStatus === undefined ? {} : { taskStatus: lastStatus }),
+        ...upstreamDiagnostics(cause), checkedAt: now, state: "unavailable" as const
+      } } : {})
     },fence);
     this.options.executions.markProviderStatusUnknown(jobId, reason, now,fence);
   }

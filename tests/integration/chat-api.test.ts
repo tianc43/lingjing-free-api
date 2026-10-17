@@ -76,6 +76,15 @@ function modelFor(
 }
 
 describe("chat completions API", () => {
+  it("preserves the existing job when a chat generation outcome is unknown", async () => {
+    finalJob = { ...job("image", [], "unknown"), upstreamObservation: { state: "unavailable", checkedAt: 1234, httpStatusCode: 503, requestId: "s-gateway" } };
+    const response = await authorizedInject(fixture.app, { method: "POST", url: "/v1/chat/completions", payload: {
+      model: "fixture-image", messages: [{ role: "user", content: "draw" }]
+    } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({ error: { code: "generation_status_unknown", job_id: finalJob.id, task_url: `/v1/tasks/${finalJob.id}`, upstream: { state: "unavailable", http_status: 503, request_id: "s-gateway" } } });
+    expect(requests).toHaveLength(1);
+  });
   let fixture: TestApp;
   let requests: GenerationRequest[];
   let models: Record<string, NormalizedModel[]>;

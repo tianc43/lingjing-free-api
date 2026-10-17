@@ -33,6 +33,7 @@ import {
 import type { AppDependencies } from "./api/types.js";
 import { AppError, errors } from "./errors.js";
 import { z } from "zod";
+import { registerCallLogHooks } from "./call-logs/hooks.js";
 
 export type { AppDependencies } from "./api/types.js";
 
@@ -71,6 +72,7 @@ export async function buildApp(
   });
 
   registerErrorHandler(app);
+  if (dependencies.callLogs) registerCallLogHooks(app, dependencies.callLogs);
   app.setNotFoundHandler((request) => {
     const requestPath = request.url.split("?", 1)[0] ?? "";
     if (adminPath(request.url) || requestPath.startsWith("/assets/")) {

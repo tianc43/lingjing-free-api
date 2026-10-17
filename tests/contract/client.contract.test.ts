@@ -4,6 +4,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LingjingClient } from "../../src/lingjing/client.js";
+import { upstreamDiagnostics } from "../../src/lingjing/error-map.js";
 import type { PreparedMedia } from "../../src/media/types.js";
 import { CookieFileProvider } from "../../src/session/cookie-file-provider.js";
 import { StorageStateProvider } from "../../src/session/storage-state-provider.js";
@@ -45,6 +46,33 @@ function preparedMedia(): PreparedMedia & { disposeCount: () => number } {
 }
 
 describe("LingjingClient contract", () => {
+  it.each([503, "INTERNAL_ERROR", "SERVER_ERROR"])("keeps JSON HTTP 503 (%s) ambiguous and never resubmits", async (businessCode) => {
+    const { client, mock } = await createClientWithSessionMode();
+    const path = "/joycreator/AIModelApiConsole/executeByApiId";
+    mock.queueEnvelope(path, { statusCode: 503, error: { code: businessCode, message: "Gateway unavailable" }, result: null });
+    try {
+      await client.submitOnce(path, {});
+      expect.fail("expected uncertain submit");
+    } catch (cause) {
+      expect(cause).toMatchObject({ code: "lingjing_submit_ambiguous" });
+      expect(upstreamDiagnostics(cause)).toMatchObject({ httpStatusCode: 503, businessCode: String(businessCode) });
+    }
+    expect(mock.count(path)).toBe(1);
+  });
+
+  it("retains a definite business rejection delivered with HTTP 200", async () => {
+    const { client, mock } = await createClientWithSessionMode();
+    const path = "/joycreator/AIModelApiConsole/executeByApiId";
+    mock.queueEnvelope(path, { error: { code: 9, message: "任务执行失败，请稍后重试" }, result: { result: { success: false, error: "TASK_RUN_FAILED", originError: { venderCode: "byteDance_seedance_video", errCode: "500:INTERNAL", errDesc: "获取模型服务失败" } } } });
+    try {
+      await client.submitOnce(path, {});
+      expect.fail("expected rejection");
+    } catch (cause) {
+      expect(cause).toMatchObject({ code: "lingjing_upstream_error" });
+      expect(upstreamDiagnostics(cause)?.vendor?.message).toBe("获取模型服务失败");
+    }
+    expect(mock.count(path)).toBe(1);
+  });
   it("sends Cookie, x-csrf-token, same-origin Referer and timestamp", async () => {
     const { client, mock } = await createClientWithSessionMode();
     const result = await client.read<{ ok: boolean }>("/read-endpoint");

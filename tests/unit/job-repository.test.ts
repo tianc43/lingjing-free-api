@@ -171,6 +171,36 @@ describe("job fingerprints", () => {
 });
 
 describe("SqliteJobRepository", () => {
+  it("retains upstream errors and observation after reopening the database", () => {
+    const databasePath = temporaryDatabasePath();
+    let repository = new SqliteJobRepository(databasePath);
+    const job = repository.createOrGet(fixtureNewJob).job;
+    repository.transition(job.id, ["queued"], { status: "failed", errorCode: "generation_submit_rejected", errorDiagnostics: { httpStatusCode: 200, requestId: "s-persisted", vendor: { errorCode: "500:INTERNAL", message: "获取模型服务失败" } }, upstreamObservation: { state: "verified", checkedAt: 123, taskStatus: "2" } });
+    repository.close();
+    repository = new SqliteJobRepository(databasePath);
+    expect(repository.findById(job.id)).toMatchObject({ errorDiagnostics: { requestId: "s-persisted", vendor: { errorCode: "500:INTERNAL" } }, upstreamObservation: { taskStatus: "2", checkedAt: 123 } });
+    repository.close();
+  });
+
+  it("reads old task diagnostics from matching historical logs without rewriting them", () => {
+    const databasePath = temporaryDatabasePath();
+    const store = new SqliteStore(databasePath);
+    const repository = new SqliteJobRepository(store);
+    const job = repository.createOrGet(fixtureNewJob).job;
+    repository.transition(job.id, ["queued"], { status: "failed", errorCode: "generation_submit_rejected" });
+    const body = JSON.stringify({ requestId: "s-historical", error: { code: 9, message: "任务执行失败" }, result: { result: { error: "TASK_RUN_FAILED", originError: { venderCode: "byteDance_seedance_video", errCode: "500:INTERNAL", errDesc: "获取模型服务失败" } } } });
+    store.read(database => {
+      database.exec("CREATE TABLE api_call_logs(job_id TEXT,direction TEXT,started_at INTEGER,response_body TEXT,status_code INTEGER)");
+      database.prepare("INSERT INTO api_call_logs VALUES(?, 'outbound', 1, ?, 200)").run(job.id, body);
+    });
+    expect(repository.findById(job.id)?.errorDiagnostics).toMatchObject({ requestId: "s-historical", vendor: { message: "获取模型服务失败" } });
+    store.read(database => {
+      expect((database.prepare("SELECT response_body FROM api_call_logs").get() as {response_body:string}).response_body).toBe(body);
+      expect((database.prepare("SELECT error_diagnostics_json FROM jobs WHERE id=?").get(job.id) as {error_diagnostics_json:string|null}).error_diagnostics_json).toBeNull();
+    });
+    repository.close();
+    store.close();
+  });
   it("keeps a supplied shared store open when the repository closes", () => {
     const store = new SqliteStore(":memory:");
     const repository = new SqliteJobRepository(store);
